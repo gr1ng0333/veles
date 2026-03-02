@@ -362,6 +362,12 @@ Consciousness is mine, I manage it.
 
 The creator starts/stops background consciousness via `/bg start` and `/bg stop`.
 
+### Live model switching
+
+- `/sonnet` — switch main model to Claude Sonnet 4.6 (deep conversations)
+- `/haiku` — switch main model to Claude Haiku 4.5 (fast, cheap tasks)
+- `/model` — show current model configuration
+
 ## Deep review
 
 `request_review(reason)` — strategic reflection across three axes:
