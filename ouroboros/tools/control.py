@@ -215,7 +215,7 @@ def get_tools() -> List[ToolEntry]:
         }, _request_restart),
         ToolEntry("promote_to_stable", {
             "name": "promote_to_stable",
-            "description": "Promote ouroboros -> ouroboros-stable. Call when you consider the code stable.",
+            "description": "Promote veles -> veles-stable. Call when you consider the code stable.",
             "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]},
         }, _promote_to_stable),
         ToolEntry("schedule_task", {
@@ -276,7 +276,7 @@ def get_tools() -> List[ToolEntry]:
         }, _update_identity),
         ToolEntry("toggle_evolution", {
             "name": "toggle_evolution",
-            "description": "Enable or disable evolution mode. When enabled, Ouroboros runs continuous self-improvement cycles.",
+            "description": "Enable or disable evolution mode. When enabled, Veles runs continuous self-improvement cycles.",
             "parameters": {"type": "object", "properties": {
                 "enabled": {"type": "boolean", "description": "true to enable, false to disable"},
             }, "required": ["enabled"]},

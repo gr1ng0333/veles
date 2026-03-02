@@ -60,8 +60,8 @@ def ensure_repo_present() -> None:
     else:
         subprocess.run(["git", "remote", "set-url", "origin", REMOTE_URL],
                         cwd=str(REPO_DIR), check=True)
-    subprocess.run(["git", "config", "user.name", "Ouroboros"], cwd=str(REPO_DIR), check=True)
-    subprocess.run(["git", "config", "user.email", "ouroboros@users.noreply.github.com"],
+    subprocess.run(["git", "config", "user.name", "Veles"], cwd=str(REPO_DIR), check=True)
+    subprocess.run(["git", "config", "user.email", "veles@users.noreply.github.com"],
                     cwd=str(REPO_DIR), check=True)
     subprocess.run(["git", "fetch", "origin"], cwd=str(REPO_DIR), check=True)
 
