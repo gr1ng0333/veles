@@ -451,6 +451,22 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             send_with_budget(chat_id, f"🧠 Background consciousness: {bg_status}")
         return f"[Supervisor handled /bg {action}]\n"
 
+    if lowered.startswith("/sonnet"):
+        os.environ["OUROBOROS_MODEL"] = "anthropic/claude-sonnet-4.6"
+        send_with_budget(chat_id, "🧠 Switched to Claude Sonnet 4.6. Deep conversation mode.")
+        return True
+
+    if lowered.startswith("/haiku"):
+        os.environ["OUROBOROS_MODEL"] = "anthropic/claude-haiku-4.5"
+        send_with_budget(chat_id, "⚡ Switched to Claude Haiku 4.5. Fast & cheap mode.")
+        return True
+
+    if lowered.startswith("/model"):
+        current = os.environ.get("OUROBOROS_MODEL", "unknown")
+        light = os.environ.get("OUROBOROS_MODEL_LIGHT", "unknown")
+        send_with_budget(chat_id, f"🔧 Current models:\n• Main: {current}\n• Light: {light}")
+        return True
+
     return ""
 
 
