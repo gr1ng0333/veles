@@ -231,14 +231,14 @@ def _summarize_dialogue(ctx: ToolContext, last_n: int = 200) -> str:
         for entry in entries:
             ts = entry.get("ts", "")
             direction = entry.get("direction", "")
-            role = "Creator" if direction == "in" else "Ouroboros"
+            role = "Creator" if direction == "in" else "Veles"
             text = entry.get("text", "")
             dialogue_text.append(f"[{ts}] {role}: {text}")
 
         formatted_dialogue = "\n".join(dialogue_text)
 
         # Build summarization prompt
-        prompt = f"""Summarize the following dialogue history between the creator and Ouroboros.
+        prompt = f"""Summarize the following dialogue history between the creator and Veles.
 
 Extract:
 1. Key decisions made (technical, architectural, strategic)

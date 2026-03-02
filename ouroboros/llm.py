@@ -292,4 +292,10 @@ class LLMClient:
             models.append(code)
         if light and light != main and light != code:
             models.append(light)
+        # Extra models available for switch_model (comma-separated)
+        extra = os.environ.get("OUROBOROS_EXTRA_MODELS", "")
+        for m in extra.split(","):
+            m = m.strip()
+            if m and m not in models:
+                models.append(m)
         return models

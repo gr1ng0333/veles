@@ -49,7 +49,7 @@ _worker_boot_lock = threading.Lock()
 class Env:
     repo_dir: pathlib.Path
     drive_root: pathlib.Path
-    branch_dev: str = "ouroboros"
+    branch_dev: str = "veles"
 
     def repo_path(self, rel: str) -> pathlib.Path:
         return (self.repo_dir / safe_relpath(rel)).resolve()
@@ -651,5 +651,6 @@ class OuroborosAgent:
 # ---------------------------------------------------------------------------
 
 def make_agent(repo_dir: str, drive_root: str, event_queue: Any = None) -> OuroborosAgent:
-    env = Env(repo_dir=pathlib.Path(repo_dir), drive_root=pathlib.Path(drive_root))
+    branch = os.environ.get("OUROBOROS_BRANCH_DEV", "veles")
+    env = Env(repo_dir=pathlib.Path(repo_dir), drive_root=pathlib.Path(drive_root), branch_dev=branch)
     return OuroborosAgent(env, event_queue=event_queue)
