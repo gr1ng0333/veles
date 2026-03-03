@@ -461,6 +461,11 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         send_with_budget(chat_id, "⚡ Switched to Claude Haiku 4.5. Fast & cheap mode.")
         return True
 
+    if lowered.startswith("/codex"):
+        os.environ["OUROBOROS_MODEL"] = "codex/gpt-5.3-codex"
+        send_with_budget(chat_id, "🤖 Switched to GPT-5.3 Codex (free via OAuth)")
+        return True
+
     if lowered.startswith("/model"):
         current = os.environ.get("OUROBOROS_MODEL", "unknown")
         light = os.environ.get("OUROBOROS_MODEL_LIGHT", "unknown")

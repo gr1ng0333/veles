@@ -161,6 +161,12 @@ class LLMClient:
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
+        # Codex proxy: route "codex/*" models through ChatGPT OAuth endpoint
+        if model.startswith("codex/"):
+            from ouroboros.codex_proxy import call_codex
+            actual_model = model[len("codex/"):]
+            return call_codex(messages, tools=tools, model=actual_model)
+
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
 
