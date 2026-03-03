@@ -1,7 +1,6 @@
 # Secrets
 .env
-.env.local
-.env.production
+.env.*
 *.key
 *.pem
 
@@ -27,4 +26,3 @@ Thumbs.db
 # Release artifacts (not tracked)
 .create_release.py
 .release_notes.md
-venv/
