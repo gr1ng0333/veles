@@ -367,6 +367,19 @@ def call_codex(
     else:
         payload["instructions"] = "You are a helpful assistant."
 
+    # Codex needs explicit encouragement to use tools with large system prompts
+    if tools:
+        codex_tool_hint = (
+            "\n\nIMPORTANT: You have tools available. When the user asks to search, "
+            "look up information, read/write files, or perform any action — you MUST "
+            "use the appropriate tool. Do NOT answer from memory when a tool call is "
+            "more appropriate. Always prefer tool calls over text responses for "
+            "actionable requests."
+        )
+        payload["instructions"] += codex_tool_hint
+
+    payload["reasoning"] = {"effort": "medium"}
+
     converted_tools = _tools_to_responses_format(tools)
     if converted_tools:
         payload["tools"] = converted_tools
