@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.2.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.3.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,11 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.3.0 -- VPS Health Check Tool
+- New `vps_health_check` tool in `ouroboros/tools/health.py` for runtime diagnostics (SearXNG reachability, disk usage, RAM usage, uptime).
+- Tool persists structured JSON reports (default: `/opt/veles-data/state/health_check.json`) and returns a concise markdown health summary with ✅/⚠️ indicators.
+- Designed for fast operational checks during runtime and evolution cycles.
 
 ### v6.2.0 -- Critical Bugfixes + LLM-First Dedup
 - **Fix: worker_id==0 hard-timeout bug** -- `int(x or -1)` treated worker 0 as -1, preventing terminate on timeout and causing double task execution. Replaced all `x or default` patterns with None-safe checks.
