@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.3.2 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.4.1 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,12 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.4.1 -- Loop Guard for Repeated Tool Calls
+- Added repeat-detection in `ouroboros/loop.py` for exact same tool call signatures.
+- After 4 identical consecutive calls, injects a system warning to force strategy change.
+- Added repeated-error fingerprint detection; after 3 identical consecutive errors, injects a critical pivot warning.
+- Stores emitted guard warnings in trace state to avoid duplicate warning spam.
 
 ### v6.4.0 -- Time Orientation Tool (UTC/MSK)
 - New `time_status` tool (`ouroboros/tools/time_tools.py`) for fast time awareness.

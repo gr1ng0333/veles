@@ -928,48 +928,59 @@ def _process_tool_results(
     llm_trace: Dict[str, Any],
     emit_progress: Callable[[str], None],
 ) -> int:
-    """
-    Process tool execution results and append to messages/trace.
-
-    Args:
-        results: List of tool execution result dicts
-        messages: Message list to append tool results to
-        llm_trace: Trace dict to append tool call info to
-        emit_progress: Callback for progress updates
-
-    Returns:
-        Number of errors encountered
-    """
     error_count = 0
-
+    trace_calls = llm_trace.setdefault("tool_calls", [])
+    guard = llm_trace.setdefault("loop_guard_emitted", {"signatures": [], "errors": []})
+    emitted_signatures = set(guard.get("signatures") or [])
+    emitted_errors = set(guard.get("errors") or [])
     for exec_result in results:
         fn_name = exec_result["fn_name"]
         is_error = exec_result["is_error"]
-
         if is_error:
             error_count += 1
-
-        # Truncate tool result before appending to messages
-        truncated_result = _truncate_tool_result(exec_result["result"])
-
-        # Append tool result message
-        messages.append({
-            "role": "tool",
-            "tool_call_id": exec_result["tool_call_id"],
-            "content": truncated_result
-        })
-
-        # Append to LLM trace
-        llm_trace["tool_calls"].append({
+        call_signature = _build_call_signature(fn_name, exec_result["args_for_log"])
+        error_fingerprint = _normalize_error_text(exec_result["result"]) if is_error else None
+        messages.append({"role": "tool", "tool_call_id": exec_result["tool_call_id"], "content": _truncate_tool_result(exec_result["result"])})
+        trace_calls.append({
             "tool": fn_name,
             "args": _safe_args(exec_result["args_for_log"]),
             "result": truncate_for_log(exec_result["result"], 700),
             "is_error": is_error,
+            "call_signature": call_signature,
+            "error_fingerprint": error_fingerprint,
         })
-
+        if _count_recent_repeats(trace_calls, "call_signature", call_signature) >= 4 and call_signature not in emitted_signatures:
+            emit_progress("⚠️ Loop guard: same tool call repeated 4x; forcing strategy change.")
+            messages.append({"role": "system", "content": "Loop guard warning: exact same tool call repeated 4 times in a row. Do not retry unchanged; change strategy, args, or tool."})
+            emitted_signatures.add(call_signature)
+        if error_fingerprint and _count_recent_repeats(trace_calls, "error_fingerprint", error_fingerprint) >= 3 and error_fingerprint not in emitted_errors:
+            emit_progress("🚫 Loop guard: same tool error repeated 3x; pivot required.")
+            messages.append({"role": "system", "content": "Loop guard critical: same tool error repeated 3 times in a row. Do not retry unchanged; pivot or report blocker."})
+            emitted_errors.add(error_fingerprint)
+    guard["signatures"] = list(emitted_signatures)
+    guard["errors"] = list(emitted_errors)
     return error_count
 
 
+def _build_call_signature(fn_name: str, args: Any) -> str:
+    payload = {"tool": fn_name, "args": _safe_args(args)}
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _normalize_error_text(result: Any) -> str:
+    text = result if isinstance(result, str) else repr(result)
+    return " ".join(text.strip().lower().split())[:500]
+
+
+def _count_recent_repeats(tool_calls: List[Dict[str, Any]], field: str, value: Optional[str]) -> int:
+    if not value:
+        return 0
+    count = 0
+    for call in reversed(tool_calls):
+        if call.get(field) != value:
+            break
+        count += 1
+    return count
 def _safe_args(v: Any) -> Any:
     """Ensure args are JSON-serializable for trace logging."""
     try:
