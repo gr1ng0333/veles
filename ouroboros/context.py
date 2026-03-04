@@ -179,11 +179,13 @@ def _build_health_invariants(env: Any) -> str:
     try:
         state_json = read_text(env.drive_path("state/state.json"))
         state_data = json.loads(state_json)
-        if state_data.get("budget_drift_alert"):
-            drift_pct = state_data.get("budget_drift_pct", 0)
-            our = state_data.get("spent_usd", 0)
-            theirs = state_data.get("openrouter_total_usd", 0)
-            checks.append(f"WARNING: BUDGET DRIFT {drift_pct:.1f}% — tracked=${our:.2f} vs OpenRouter=${theirs:.2f}")
+        drift_pct = float(state_data.get("budget_drift_pct") or 0.0)
+        our = float(state_data.get("spent_usd") or 0.0)
+        theirs = float(state_data.get("openrouter_total_usd") or 0.0)
+        if drift_pct > 20.0:
+            checks.append(
+                f"WARNING: BUDGET DRIFT {drift_pct:.1f}% — tracked=${our:.2f} vs OpenRouter=${theirs:.2f}"
+            )
         else:
             checks.append("OK: budget drift within tolerance")
     except Exception:
@@ -209,7 +211,7 @@ def _build_health_invariants(env: Any) -> str:
         identity_path = env.drive_path("memory/identity.md")
         if identity_path.exists():
             age_hours = (_time.time() - identity_path.stat().st_mtime) / 3600
-            if age_hours > 8:
+            if age_hours > 4:
                 checks.append(f"WARNING: STALE IDENTITY — identity.md last updated {age_hours:.0f}h ago")
             else:
                 checks.append("OK: identity.md recent")
