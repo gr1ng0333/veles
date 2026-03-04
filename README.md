@@ -226,6 +226,11 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
+### v6.5.0 -- Doctor Diagnostics Tool
+- Added new `doctor` tool in `ouroboros/tools/health.py` for consolidated runtime diagnostics.
+- Checks: version sync (`VERSION`/`pyproject.toml`/`README.md`), GitHub CLI availability, identity freshness, and budget drift.
+- Persists structured report to `/opt/veles-data/state/doctor_report.json` and returns concise markdown summary.
+
 ### v6.4.1 -- Loop Guard for Repeated Tool Calls
 - Added repeat-detection in `ouroboros/loop.py` for exact same tool call signatures.
 - After 4 identical consecutive calls, injects a system warning to force strategy change.

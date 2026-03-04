@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
 import urllib.request
 from datetime import datetime, timezone
@@ -207,6 +208,101 @@ def _vps_health_check(
         return f"⚠️ Failed to run VPS health check: {e}"
 
 
+
+
+def _doctor(
+    ctx: ToolContext,
+    output_path: str = '/opt/veles-data/state/doctor_report.json',
+    stale_identity_hours: float = 4.0,
+) -> str:
+    """Run consolidated diagnostics and persist JSON doctor report."""
+    report: Dict[str, Any] = {
+        'timestamp_utc': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        'checks': {},
+        'overall_healthy': True,
+    }
+
+    def add_check(name: str, ok: bool, details: Dict[str, Any]) -> None:
+        report['checks'][name] = {'ok': bool(ok), **details}
+        if not ok:
+            report['overall_healthy'] = False
+
+    # 1) VERSION sync invariant (VERSION == pyproject == README mention)
+    try:
+        repo = pathlib.Path(ctx.repo_dir)
+        version = (repo / 'VERSION').read_text(encoding='utf-8').strip()
+        pyproject = (repo / 'pyproject.toml').read_text(encoding='utf-8')
+        m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.MULTILINE)
+        py_ver = m.group(1).strip() if m else ''
+        readme = (repo / 'README.md').read_text(encoding='utf-8')
+        ok = bool(version and py_ver and version == py_ver and version in readme)
+        add_check('version_sync', ok, {'version': version, 'pyproject_version': py_ver})
+    except Exception as e:
+        add_check('version_sync', False, {'error': str(e)})
+
+    # 2) GitHub CLI availability
+    gh_path = shutil.which('gh')
+    add_check('github_cli', gh_path is not None, {'path': gh_path or ''})
+
+    # 3) Identity freshness
+    try:
+        identity = pathlib.Path(ctx.drive_root) / 'memory' / 'identity.md'
+        if identity.exists():
+            age_hours = max((datetime.now(timezone.utc).timestamp() - identity.stat().st_mtime) / 3600.0, 0.0)
+            ok = age_hours <= float(stale_identity_hours)
+            add_check('identity_freshness', ok, {'age_hours': round(age_hours, 2), 'threshold_hours': float(stale_identity_hours)})
+        else:
+            add_check('identity_freshness', False, {'error': 'identity.md not found'})
+    except Exception as e:
+        add_check('identity_freshness', False, {'error': str(e)})
+
+    # 4) Budget drift (if state file exists)
+    try:
+        state_path = pathlib.Path('/opt/veles-data/state/state.json')
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+            drift = float(state.get('budget_drift_pct') or 0.0)
+            tracked = float(state.get('spent_usd') or 0.0)
+            openrouter = float(state.get('openrouter_total_usd') or 0.0)
+            ok = abs(drift) <= 20.0
+            add_check('budget_drift', ok, {'drift_pct': round(drift, 2), 'tracked_usd': tracked, 'openrouter_usd': openrouter})
+        else:
+            add_check('budget_drift', False, {'error': 'state.json not found'})
+    except Exception as e:
+        add_check('budget_drift', False, {'error': str(e)})
+
+    out = pathlib.Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    status = '✅' if report['overall_healthy'] else '⚠️'
+    lines = [
+        '## Doctor Report',
+        f"- **Timestamp (UTC):** {report['timestamp_utc']}",
+        f"- **Overall:** {status} {'healthy' if report['overall_healthy'] else 'attention needed'}",
+    ]
+
+    for name, item in report['checks'].items():
+        icon = '✅' if item.get('ok') else '⚠️'
+        if name == 'version_sync':
+            lines.append(f"- **{name}:** {icon} VERSION={item.get('version','?')} pyproject={item.get('pyproject_version','?')}")
+        elif name == 'github_cli':
+            path = item.get('path') or 'not found'
+            lines.append(f"- **{name}:** {icon} {path}")
+        elif name == 'identity_freshness':
+            if item.get('ok'):
+                lines.append(f"- **{name}:** {icon} age={item.get('age_hours')}h (<= {item.get('threshold_hours')}h)")
+            else:
+                lines.append(f"- **{name}:** {icon} {item.get('error','stale')}")
+        elif name == 'budget_drift':
+            if 'drift_pct' in item:
+                lines.append(f"- **{name}:** {icon} drift={item.get('drift_pct')}% (tracked=${item.get('tracked_usd')} vs OR=${item.get('openrouter_usd')})")
+            else:
+                lines.append(f"- **{name}:** {icon} {item.get('error','unknown')}")
+
+    lines.append(f"- **Report written:** `{output_path}`")
+    return '\n'.join(lines)
+
 def get_tools():
     return [
         ToolEntry('codebase_health', {
@@ -227,4 +323,16 @@ def get_tools():
                 'required': [],
             },
         }, _vps_health_check),
+        ToolEntry('doctor', {
+            'name': 'doctor',
+            'description': 'Run consolidated diagnostics (version sync, gh CLI availability, identity freshness, budget drift) and persist JSON report.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'output_path': {'type': 'string'},
+                    'stale_identity_hours': {'type': 'number'},
+                },
+                'required': [],
+            },
+        }, _doctor),
     ]
