@@ -276,12 +276,20 @@ def enforce_task_timeouts() -> None:
 
         if runtime_sec >= SOFT_TIMEOUT_SEC and not bool(meta.get("soft_sent")):
             meta["soft_sent"] = True
-            if owner_chat_id:
-                send_with_budget(
-                    owner_chat_id,
-                    f"⏱️ Task {task_id} running for {int(runtime_sec)}s. "
-                    f"type={task_type}, heartbeat_lag={int(hb_lag_sec)}s. Continuing.",
-                )
+            append_jsonl(
+                DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "type": "task_soft_timeout",
+                    "task_id": task_id,
+                    "task_type": task_type,
+                    "worker_id": worker_id,
+                    "runtime_sec": round(runtime_sec, 2),
+                    "heartbeat_lag_sec": round(hb_lag_sec, 2),
+                    "heartbeat_stale": hb_stale,
+                    "attempt": attempt,
+                },
+            )
 
         if runtime_sec < HARD_TIMEOUT_SEC:
             continue

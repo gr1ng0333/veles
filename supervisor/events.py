@@ -21,6 +21,10 @@ from typing import Any, Dict, Optional
 log = logging.getLogger(__name__)
 
 
+def _format_done_summary(task_id: str, task_type: str, runtime_sec: float, rounds: int, cost_usd: float) -> str:
+    return f"✅ Done {task_id} ({task_type or 'task'}) in {int(max(0.0, runtime_sec))}s · rounds {int(max(0, rounds))} · cost ${max(0.0, cost_usd):.2f}"
+
+
 def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
     usage = evt.get("usage") or {}
     ctx.update_budget_from_usage(usage)
@@ -91,6 +95,13 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     task_type = str(evt.get("task_type") or "")
     wid = evt.get("worker_id")
 
+    running_meta = ctx.RUNNING.get(str(task_id)) if task_id else None
+    if not isinstance(running_meta, dict):
+        running_meta = {}
+    started_at = float(running_meta.get("started_at") or 0.0)
+    runtime_sec = max(0.0, time.time() - started_at) if started_at > 0 else 0.0
+    soft_sent = bool(running_meta.get("soft_sent"))
+
     # Track evolution task success/failure for circuit breaker
     if task_type == "evolution":
         st = ctx.load_state()
@@ -150,6 +161,25 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             os.rename(tmp_file, result_file)
     except Exception as e:
         log.warning("Failed to store task result in events: %s", e)
+
+    # Concise mandatory completion report for substantial tasks
+    try:
+        owner_chat_id = int((ctx.load_state() or {}).get("owner_chat_id") or 0)
+        rounds = int(evt.get("total_rounds") or 0)
+        cost_usd = float(evt.get("cost_usd") or 0.0)
+        should_report = (
+            runtime_sec >= 45.0
+            or task_type in {"evolution", "review"}
+            or soft_sent
+        )
+        if owner_chat_id and should_report and task_id:
+            ctx.send_with_budget(
+                owner_chat_id,
+                _format_done_summary(str(task_id), task_type, runtime_sec, rounds, cost_usd),
+                is_progress=True,
+            )
+    except Exception:
+        log.debug("Failed to send concise completion report", exc_info=True)
 
 
 def _handle_task_metrics(evt: Dict[str, Any], ctx: Any) -> None:
