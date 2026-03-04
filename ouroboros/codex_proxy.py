@@ -350,6 +350,19 @@ def call_codex(
         payload["tools"] = converted_tools
         payload["tool_choice"] = "auto"
 
+    # Debug: dump full payload before sending
+    try:
+        _debug_path = Path("/tmp/codex_debug.json")
+        _debug_path.write_text(json.dumps({
+            "payload": payload,
+            "raw_tools_count": len(tools) if tools else 0,
+            "converted_tools_count": len(converted_tools) if converted_tools else 0,
+            "raw_tools_sample": tools[:2] if tools else [],
+            "converted_tools_sample": converted_tools[:2] if converted_tools else [],
+        }, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    except Exception:
+        pass
+
     last_error: Optional[Exception] = None
     event_data: Dict[str, Any] = {}
 
