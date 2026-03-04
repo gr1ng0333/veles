@@ -131,13 +131,32 @@ def _messages_to_input(
 
         if role == "system":
             if content:
-                system_parts.append(content)
+                if isinstance(content, str):
+                    system_parts.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("text"):
+                            system_parts.append(part["text"])
+                        elif isinstance(part, str):
+                            system_parts.append(part)
+                else:
+                    system_parts.append(str(content))
             continue
 
         if role == "user":
             if isinstance(content, list):
-                # Multipart content (images etc.) — pass through
-                items.append({"role": "user", "content": content})
+                converted = []
+                for part in content:
+                    if isinstance(part, dict):
+                        p = dict(part)
+                        if p.get("type") == "text":
+                            p["type"] = "input_text"
+                        elif p.get("type") == "image_url":
+                            p["type"] = "input_image"
+                        converted.append(p)
+                    else:
+                        converted.append(part)
+                items.append({"role": "user", "content": converted})
             elif content:
                 items.append({
                     "role": "user",
@@ -323,6 +342,8 @@ def call_codex(
     }
     if instructions:
         payload["instructions"] = instructions
+    else:
+        payload["instructions"] = "You are a helpful assistant."
 
     converted_tools = _tools_to_responses_format(tools)
     if converted_tools:
