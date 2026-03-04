@@ -152,7 +152,12 @@ def _messages_to_input(
                         if p.get("type") == "text":
                             p["type"] = "input_text"
                         elif p.get("type") == "image_url":
-                            p["type"] = "input_image"
+                            # Flatten nested {"image_url": {"url": "..."}} → {"image_url": "..."}
+                            img = p.get("image_url", {})
+                            if isinstance(img, dict):
+                                p = {"type": "input_image", "image_url": img.get("url", "")}
+                            else:
+                                p = {"type": "input_image", "image_url": str(img)}
                         converted.append(p)
                     else:
                         converted.append(part)
@@ -353,7 +358,32 @@ def call_codex(
     Returns:
         (message_dict, usage_dict) — same contract as LLMClient.chat().
     """
-    input_items, extracted_instructions = _messages_to_input(messages)
+    try:
+        input_items, extracted_instructions = _messages_to_input(messages)
+    except Exception as e:
+        log.warning("Failed to convert messages, filtering images: %s", e)
+        # Retry without image content
+        filtered = []
+        for msg in messages:
+            c = msg.get("content", "")
+            if isinstance(c, list):
+                text_only = [
+                    p for p in c
+                    if isinstance(p, dict) and p.get("type") in ("text", "input_text")
+                ]
+                if not text_only:
+                    text_only = [
+                        {"type": "input_text", "text": p.get("text", "")}
+                        for p in c
+                        if isinstance(p, dict) and p.get("text")
+                    ]
+                if text_only:
+                    filtered.append({**msg, "content": text_only})
+            elif isinstance(c, str):
+                filtered.append(msg)
+            else:
+                filtered.append(msg)
+        input_items, extracted_instructions = _messages_to_input(filtered)
     instructions = system_prompt or extracted_instructions
 
     payload: Dict[str, Any] = {
