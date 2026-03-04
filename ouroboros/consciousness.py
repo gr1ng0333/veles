@@ -298,7 +298,13 @@ class BackgroundConsciousness:
         return "You are Ouroboros in background consciousness mode. Think."
 
     def _build_context(self) -> str:
-        parts = [self._load_bg_prompt()]
+        _lang_rule = (
+            "LANGUAGE RULE: Always respond in Russian (русский язык) unless the user "
+            "explicitly writes in English. This applies to all messages, status reports, "
+            "evolution logs, and consciousness outputs. Internal tool calls and code "
+            "can remain in English."
+        )
+        parts = [_lang_rule + "\n\n" + self._load_bg_prompt()]
 
         # Bible (abbreviated)
         bible_path = self._repo_dir / "BIBLE.md"
