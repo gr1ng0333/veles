@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.3.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.3.1 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,10 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.3.1 -- Version Sync Fix
+- Fixed release invariant desync: `pyproject.toml` version now matches `VERSION` and README.
+- No functional code changes; patch release for metadata consistency (Bible P7).
 
 ### v6.3.0 -- VPS Health Check Tool
 - New `vps_health_check` tool in `ouroboros/tools/health.py` for runtime diagnostics (SearXNG reachability, disk usage, RAM usage, uptime).
