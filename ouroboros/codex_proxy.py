@@ -306,7 +306,29 @@ def _do_request(access_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     ctx = ssl.create_default_context()
     with urllib.request.urlopen(req, timeout=TIMEOUT_SEC, context=ctx) as resp:
         raw = resp.read().decode("utf-8")
-    return _parse_sse_response(raw)
+
+    # Debug: dump raw SSE response
+    try:
+        Path("/tmp/codex_sse_raw.txt").write_text(raw[:50000], encoding="utf-8")
+    except Exception:
+        pass
+
+    parsed = _parse_sse_response(raw)
+
+    # Debug: dump parsed response.completed
+    try:
+        _resp = parsed.get("response", {})
+        _output = _resp.get("output", [])
+        Path("/tmp/codex_response_debug.json").write_text(json.dumps({
+            "output_count": len(_output),
+            "output_types": [item.get("type") for item in _output],
+            "output_items": _output[:5],
+            "usage": _resp.get("usage"),
+        }, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    except Exception:
+        pass
+
+    return parsed
 
 
 # ---------------------------------------------------------------------------
