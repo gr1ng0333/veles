@@ -226,6 +226,11 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
+### v6.4.0 -- Time Orientation Tool (UTC/MSK)
+- New `time_status` tool (`ouroboros/tools/time_tools.py`) for fast time awareness.
+- Returns structured JSON with UTC, Moscow time (Europe/Moscow), Unix timestamp, and optional requested timezone view.
+- Invalid timezone inputs are handled gracefully with UTC fallback + warning.
+
 ### v6.3.2 -- Health Invariant Alignment
 - Health Invariants now warn on numeric budget drift >20% directly (not only on `budget_drift_alert`), with tracked vs OpenRouter amounts.
 - Stale identity threshold aligned to 4h (was 8h) to match SYSTEM duty cadence.
