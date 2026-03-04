@@ -320,8 +320,18 @@ def build_llm_messages(
     # BIBLE.md always included (Constitution requires it for every decision)
     # README.md only for evolution/review (architecture context)
     needs_full_context = task_type in ("evolution", "review", "scheduled")
+
+    # Language rule — must come before all other instructions
+    _lang_rule = (
+        "LANGUAGE RULE: Always respond in Russian (русский язык) unless the user "
+        "explicitly writes in English. This applies to all messages, status reports, "
+        "evolution logs, and consciousness outputs. Internal tool calls and code "
+        "can remain in English.\n\n"
+    )
+
     static_text = (
-        base_prompt + "\n\n"
+        _lang_rule
+        + base_prompt + "\n\n"
         + "## BIBLE.md\n\n" + clip_text(bible_md, 180000)
     )
     if needs_full_context:
