@@ -208,26 +208,27 @@ def init_state() -> Dict[str, Any]:
     """
     Initialize state at session start, capturing snapshots for budget drift detection.
 
-    Fetches OpenRouter ground truth and stores session_daily_snapshot and
-    session_spent_snapshot for drift calculation.
+    Fetches OpenRouter ground truth and stores session snapshots used in drift calculation.
     """
     lock_fd = acquire_file_lock(STATE_LOCK_PATH)
     try:
         st = _load_state_unlocked()
 
-        # Capture session snapshots for drift detection
-        st["session_spent_snapshot"] = float(st.get("spent_usd") or 0.0)
-
         # Fetch OpenRouter ground truth to capture total_usd baseline
         ground_truth = check_openrouter_ground_truth()
         if ground_truth is not None:
-            st["session_total_snapshot"] = ground_truth["total_usd"]
             st["openrouter_total_usd"] = ground_truth["total_usd"]
             st["openrouter_daily_usd"] = ground_truth["daily_usd"]
             st["openrouter_last_check_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            _sync_spent_with_ground_truth(st, ground_truth["total_usd"], reason="init_state")
+
+            # Capture snapshots in aligned order after potential sync
+            st["session_total_snapshot"] = ground_truth["total_usd"]
+            st["session_spent_snapshot"] = float(st.get("spent_usd") or 0.0)
         else:
-            # If we can't fetch ground truth, use 0 as baseline
+            # If we can't fetch ground truth, keep tracked spent baseline
             st["session_total_snapshot"] = 0.0
+            st["session_spent_snapshot"] = float(st.get("spent_usd") or 0.0)
 
         # Reset drift tracking
         st["budget_drift_pct"] = None
@@ -288,6 +289,32 @@ def check_openrouter_ground_truth() -> Optional[Dict[str, float]]:
     except Exception:
         log.warning("Failed to fetch OpenRouter ground truth", exc_info=True)
         return None
+
+
+def _sync_spent_with_ground_truth(st: Dict[str, Any], ground_total_usd: float, reason: str) -> None:
+    """One-way sync: if OpenRouter total is higher than tracked spent_usd, lift spent_usd.
+
+    We never decrease spent_usd from ground truth here to avoid accidental drops when
+    API jitter/shared-key ambiguity exists.
+    """
+    tracked = float(st.get("spent_usd") or 0.0)
+    gt = float(ground_total_usd or 0.0)
+    if gt > tracked + 1e-9:
+        st["spent_usd"] = gt
+        try:
+            append_jsonl(
+                DRIVE_ROOT / "logs" / "events.jsonl",
+                {
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "event": "budget_spent_synced",
+                    "reason": reason,
+                    "tracked_before": tracked,
+                    "ground_truth_total": gt,
+                    "delta": gt - tracked,
+                },
+            )
+        except Exception:
+            log.debug("Failed to append budget_spent_synced event", exc_info=True)
 
 
 def budget_pct(st: Dict[str, Any]) -> float:
@@ -352,6 +379,7 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> None:
                 st["openrouter_total_usd"] = ground_truth["total_usd"]
                 st["openrouter_daily_usd"] = ground_truth["daily_usd"]
                 st["openrouter_last_check_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                _sync_spent_with_ground_truth(st, ground_truth["total_usd"], reason="periodic_check")
 
                 session_total_snap = st.get("session_total_snapshot")
                 session_spent_snap = st.get("session_spent_snapshot")

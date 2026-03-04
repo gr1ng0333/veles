@@ -226,6 +226,12 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
+### v6.5.1 -- Budget Sync + Quiet Progress Reporting
+- Fixed `spent_usd` drift by one-way syncing tracked spend to OpenRouter total when higher (init and periodic checks).
+- Corrected session snapshot initialization order to avoid false ~100% budget drift at startup.
+- Removed Telegram soft-timeout spam; soft-timeout events are now logged to `supervisor.jsonl`.
+- Added concise mandatory completion report for substantial tasks (single-line summary).
+
 ### v6.5.0 -- Doctor Diagnostics Tool
 - Added new `doctor` tool in `ouroboros/tools/health.py` for consolidated runtime diagnostics.
 - Checks: version sync (`VERSION`/`pyproject.toml`/`README.md`), GitHub CLI availability, identity freshness, and budget drift.
