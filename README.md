@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.3.1 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.3.2 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,10 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.3.2 -- Health Invariant Alignment
+- Health Invariants now warn on numeric budget drift >20% directly (not only on `budget_drift_alert`), with tracked vs OpenRouter amounts.
+- Stale identity threshold aligned to 4h (was 8h) to match SYSTEM duty cadence.
 
 ### v6.3.1 -- Version Sync Fix
 - Fixed release invariant desync: `pyproject.toml` version now matches `VERSION` and README.
