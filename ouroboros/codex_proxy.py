@@ -135,23 +135,24 @@ def _messages_to_input(
             continue
 
         if role == "user":
-            if isinstance(content, str):
-                items.append({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": content}],
-                })
-            elif isinstance(content, list):
+            if isinstance(content, list):
                 # Multipart content (images etc.) — pass through
                 items.append({"role": "user", "content": content})
+            elif content:
+                items.append({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": str(content)}],
+                })
             continue
 
         if role == "assistant":
             tool_calls = msg.get("tool_calls")
             if tool_calls:
                 if content:
+                    text = content if isinstance(content, str) else json.dumps(content)
                     items.append({
                         "role": "assistant",
-                        "content": [{"type": "output_text", "text": content}],
+                        "content": [{"type": "output_text", "text": text}],
                     })
                 for tc in tool_calls:
                     fn = tc.get("function", {})
@@ -162,9 +163,10 @@ def _messages_to_input(
                         "call_id": tc.get("id", ""),
                     })
             elif content:
+                text = content if isinstance(content, str) else json.dumps(content)
                 items.append({
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": content}],
+                    "content": [{"type": "output_text", "text": text}],
                 })
             continue
 
@@ -224,7 +226,7 @@ def _output_to_chat_message(output: List[Dict[str, Any]]) -> Dict[str, Any]:
             })
 
     msg: Dict[str, Any] = {"role": "assistant"}
-    msg["content"] = "\n".join(text_parts) if text_parts else None
+    msg["content"] = "\n".join(str(p) for p in text_parts) if text_parts else None
     if tool_calls:
         msg["tool_calls"] = tool_calls
     return msg
