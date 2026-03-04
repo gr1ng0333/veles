@@ -114,6 +114,7 @@ EXPECTED_TOOLS = [
     "compact_context",
     "list_available_tools",
     "enable_tools",
+    "vps_health_check",
 ]
 
 
@@ -323,7 +324,7 @@ def test_no_env_dumping():
     dangerous = re.compile(r'(?:print|json\.dumps|log)\s*\(.*\bos\.environ\b(?!\s*[\[.])')
     violations = []
     for root, dirs, files in os.walk(REPO):
-        dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', 'tests')]
+        dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', 'tests', 'venv', '.venv')]
         for f in files:
             if not f.endswith(".py"):
                 continue
@@ -341,7 +342,7 @@ def test_no_oversized_modules():
     max_lines = 1000
     violations = []
     for root, dirs, files in os.walk(REPO):
-        dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', 'tests')]
+        dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', 'tests', 'venv', '.venv')]
         for f in files:
             if not f.endswith(".py"):
                 continue
@@ -388,7 +389,7 @@ def _get_function_sizes():
     """Return list of (file, func_name, lines) for all functions."""
     results = []
     for root, dirs, files in os.walk(REPO):
-        dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', 'tests')]
+        dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', 'tests', 'venv', '.venv')]
         for f in files:
             if not f.endswith(".py"):
                 continue
