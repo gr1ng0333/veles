@@ -124,9 +124,26 @@ class BackgroundConsciousness:
     # Main loop
     # -------------------------------------------------------------------
 
+    def _policy_wakeup_sec(self) -> float:
+        """Wakeup policy from owner: 600s with tasks, 10800s when idle."""
+        try:
+            qpath = self._drive_root / "state" / "queue_snapshot.json"
+            if qpath.exists():
+                snap = json.loads(read_text(qpath))
+                pending = int(snap.get("pending_count", 0) or 0)
+                running = int(snap.get("running_count", 0) or 0)
+                if (pending + running) > 0:
+                    return 600.0
+        except Exception:
+            log.debug("Failed to read queue snapshot for wakeup policy", exc_info=True)
+        return 10800.0
+
     def _loop(self) -> None:
         """Daemon thread: sleep → wake → think → sleep."""
         while not self._stop_event.is_set():
+            # Owner policy: wake every 600s with tasks, otherwise every 3h
+            self._next_wakeup_sec = self._policy_wakeup_sec()
+
             # Wait for next wakeup
             self._wakeup_event.clear()
             self._wakeup_event.wait(timeout=self._next_wakeup_sec)
@@ -140,7 +157,7 @@ class BackgroundConsciousness:
 
             # Budget check
             if not self._check_budget():
-                self._next_wakeup_sec = 3600  # Sleep long if over budget
+                self._next_wakeup_sec = self._policy_wakeup_sec()
                 continue
 
             try:
@@ -153,7 +170,7 @@ class BackgroundConsciousness:
                     "traceback": traceback.format_exc()[:1500],
                 })
                 self._next_wakeup_sec = min(
-                    self._next_wakeup_sec * 2, 1800
+                    self._next_wakeup_sec * 2, self._policy_wakeup_sec()
                 )
 
     def _check_budget(self) -> bool:
@@ -386,16 +403,16 @@ class BackgroundConsciousness:
 
         # Register consciousness-specific tool (modifies self._next_wakeup_sec)
         def _set_next_wakeup(ctx: Any, seconds: int = 300) -> str:
-            self._next_wakeup_sec = max(60, min(3600, int(seconds)))
+            self._next_wakeup_sec = max(60, min(10800, int(seconds)))
             return f"OK: next wakeup in {self._next_wakeup_sec}s"
 
         registry.register(ToolEntry("set_next_wakeup", {
             "name": "set_next_wakeup",
             "description": "Set how many seconds until your next thinking cycle. "
-                           "Default 300. Range: 60-3600.",
+                           "Default 300. Range: 60-10800.",
             "parameters": {"type": "object", "properties": {
                 "seconds": {"type": "integer",
-                            "description": "Seconds until next wakeup (60-3600)"},
+                            "description": "Seconds until next wakeup (60-10800)"},
             }, "required": ["seconds"]},
         }, _set_next_wakeup))
 
