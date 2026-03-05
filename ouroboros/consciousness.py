@@ -25,6 +25,7 @@ import queue
 import threading
 import time
 import traceback
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros.utils import (
@@ -34,6 +35,61 @@ from ouroboros.utils import (
 from ouroboros.llm import LLMClient, DEFAULT_LIGHT_MODEL
 
 log = logging.getLogger(__name__)
+
+
+_DEFAULT_MONITOR_STATE = {
+    "wakeup_count": 0,
+    "known_issue_numbers": [],
+    "last_issues_check": "1970-01-01T00:00:00Z",
+    "last_budget_alert": "1970-01-01T00:00:00Z",
+    "last_budget_alert_level": "none",
+}
+
+
+def _normalize_monitor_state(raw: Any) -> Dict[str, Any]:
+    base = dict(_DEFAULT_MONITOR_STATE)
+    if isinstance(raw, dict):
+        base.update(raw)
+    try:
+        base["wakeup_count"] = max(0, int(base.get("wakeup_count", 0)))
+    except Exception:
+        base["wakeup_count"] = 0
+    known = base.get("known_issue_numbers")
+    if not isinstance(known, list):
+        base["known_issue_numbers"] = []
+    return base
+
+
+def _calc_next_wakeup_at(seconds: float) -> str:
+    dt = datetime.now(timezone.utc).timestamp() + float(max(0.0, seconds))
+    return datetime.fromtimestamp(dt, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _build_thought_preview(
+    final_content: str,
+    *,
+    rounds: int,
+    tool_calls: int,
+    end_reason: str,
+) -> str:
+    content = (final_content or "").strip()
+    if content:
+        return content[:300]
+
+    reason_map = {
+        "paused": "cycle paused due to active foreground task",
+        "max_rounds_reached": "cycle reached max background rounds",
+        "empty_response": "model returned empty response",
+        "budget_exceeded": "cycle stopped due to background budget guard",
+        "error": "cycle stopped on internal error",
+        "stopped": "cycle interrupted by stop signal",
+    }
+    reason_text = reason_map.get(end_reason, end_reason or "no-final-content")
+    fallback = (
+        "background cycle finished without final text; "
+        f"reason={reason_text}; rounds={rounds}; tool_calls={tool_calls}"
+    )
+    return fallback[:300]
 
 
 class BackgroundConsciousness:
@@ -69,6 +125,8 @@ class BackgroundConsciousness:
         self._bg_budget_pct: float = float(
             os.environ.get("OUROBOROS_BG_BUDGET_PCT", "10")
         )
+
+        self._monitor_state: Dict[str, Any] = _normalize_monitor_state(self._load_monitor_state())
 
     # -------------------------------------------------------------------
     # Lifecycle
@@ -148,6 +206,9 @@ class BackgroundConsciousness:
         while not self._stop_event.is_set():
             # Owner policy: wake every 600s with tasks, otherwise every 3h
             self._next_wakeup_sec = self._policy_wakeup_sec()
+            self._monitor_state["next_wakeup_interval_seconds"] = int(self._next_wakeup_sec)
+            self._monitor_state["next_wakeup_at"] = _calc_next_wakeup_at(self._next_wakeup_sec)
+            self._save_monitor_state()
 
             # Wait for next wakeup
             self._wakeup_event.clear()
@@ -190,6 +251,29 @@ class BackgroundConsciousness:
             log.warning("Failed to check background consciousness budget", exc_info=True)
             return True
 
+    def _monitor_state_path(self) -> pathlib.Path:
+        return self._drive_root / "memory" / "monitor_state.json"
+
+    def _load_monitor_state(self) -> Dict[str, Any]:
+        path = self._monitor_state_path()
+        try:
+            if path.exists():
+                return _normalize_monitor_state(json.loads(read_text(path)))
+        except Exception as e:
+            log.debug("Failed to load monitor_state.json: %s", e)
+        return _normalize_monitor_state({})
+
+    def _save_monitor_state(self) -> None:
+        path = self._monitor_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(self._monitor_state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            log.debug("Failed to save monitor_state.json: %s", e)
+
     # -------------------------------------------------------------------
     # Think cycle
     # -------------------------------------------------------------------
@@ -208,11 +292,14 @@ class BackgroundConsciousness:
         total_cost = 0.0
         final_content = ""
         round_idx = 0
+        tool_call_count = 0
+        end_reason = "stopped"
         all_pending_events = []  # Accumulate events across all tool calls
 
         try:
             for round_idx in range(1, self._MAX_BG_ROUNDS + 1):
                 if self._paused:
+                    end_reason = "paused"
                     break
                 msg, usage = self._llm.chat(
                     messages=messages,
@@ -244,6 +331,7 @@ class BackgroundConsciousness:
                         "type": "bg_budget_exceeded_mid_cycle",
                         "round": round_idx,
                     })
+                    end_reason = "budget_exceeded"
                     break
 
                 # Report usage to supervisor
@@ -261,15 +349,19 @@ class BackgroundConsciousness:
                 tool_calls = msg.get("tool_calls") or []
 
                 if self._paused:
+                    end_reason = "paused"
                     break
 
                 # If we have content but no tool calls, we're done
                 if content and not tool_calls:
                     final_content = content
+                    end_reason = "finalized"
                     break
 
                 # If we have tool calls, execute them and continue loop
                 if tool_calls:
+                    tool_call_count += len(tool_calls)
+                    end_reason = "tool_calls"
                     messages.append(msg)
                     for tc in tool_calls:
                         result = self._execute_tool(tc, all_pending_events)
@@ -281,7 +373,11 @@ class BackgroundConsciousness:
                     continue
 
                 # If neither content nor tool_calls, stop
+                end_reason = "empty_response"
                 break
+
+            if round_idx >= self._MAX_BG_ROUNDS and not final_content and end_reason == "tool_calls":
+                end_reason = "max_rounds_reached"
 
             # Forward or defer accumulated events
             if all_pending_events and self._event_queue is not None:
@@ -291,15 +387,33 @@ class BackgroundConsciousness:
                     for evt in all_pending_events:
                         self._event_queue.put(evt)
 
+            thought_preview = _build_thought_preview(
+                final_content,
+                rounds=round_idx,
+                tool_calls=tool_call_count,
+                end_reason=end_reason,
+            )
+
             # Log the thought with round count
             append_jsonl(self._drive_root / "logs" / "events.jsonl", {
                 "ts": utc_now_iso(),
                 "type": "consciousness_thought",
-                "thought_preview": (final_content or "")[:300],
+                "thought_preview": thought_preview,
                 "cost_usd": total_cost,
                 "rounds": round_idx,
                 "model": model,
             })
+
+            now_iso = utc_now_iso()
+            self._monitor_state["wakeup_count"] = int(self._monitor_state.get("wakeup_count", 0)) + 1
+            self._monitor_state["last_issues_check"] = self._monitor_state.get("last_issues_check") or now_iso
+            self._monitor_state["last_thought_at"] = now_iso
+            self._monitor_state["last_thought_preview"] = thought_preview
+            self._monitor_state["last_model"] = model
+            self._monitor_state["last_rounds"] = round_idx
+            self._monitor_state["next_wakeup_interval_seconds"] = int(self._next_wakeup_sec)
+            self._monitor_state["next_wakeup_at"] = _calc_next_wakeup_at(self._next_wakeup_sec)
+            self._save_monitor_state()
 
         except Exception as e:
             append_jsonl(self._drive_root / "logs" / "events.jsonl", {
@@ -307,6 +421,11 @@ class BackgroundConsciousness:
                 "type": "consciousness_llm_error",
                 "error": repr(e),
             })
+            self._monitor_state["last_thought_at"] = utc_now_iso()
+            self._monitor_state["last_thought_preview"] = _build_thought_preview(
+                "", rounds=round_idx, tool_calls=tool_call_count, end_reason="error"
+            )
+            self._save_monitor_state()
 
     # -------------------------------------------------------------------
     # Context building (lightweight)
