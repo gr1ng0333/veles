@@ -437,6 +437,11 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         save_state(st2)
         if not turn_on:
             PENDING[:] = [t for t in PENDING if str(t.get("type")) != "evolution"]
+            # Cancel running evolution tasks
+            for task_id, meta in list(RUNNING.items()):
+                task = meta.get("task") if isinstance(meta, dict) else {}
+                if isinstance(task, dict) and str(task.get("type")) == "evolution":
+                    cancel_task_by_id(task_id)
             sort_pending()
             persist_queue_snapshot(reason="evolve_off")
         state_str = "ON" if turn_on else "OFF"
@@ -481,6 +486,46 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         current = os.environ.get("OUROBOROS_MODEL", "unknown")
         light = os.environ.get("OUROBOROS_MODEL_LIGHT", "unknown")
         send_with_budget(chat_id, f"🔧 Current models:\n• Main: {current}\n• Light: {light}")
+        return True
+
+    if lowered.startswith("/accounts"):
+        import json as _json_accounts
+        accounts_state_path = DRIVE_ROOT / "state" / "codex_accounts_state.json"
+        raw = os.environ.get("CODEX_ACCOUNTS", "[]")
+        try:
+            accounts = _json_accounts.loads(raw)
+        except Exception:
+            accounts = []
+        state_data = []
+        if accounts_state_path.exists():
+            try:
+                state_data = _json_accounts.loads(accounts_state_path.read_text())
+                if not isinstance(state_data, list):
+                    state_data = []
+            except Exception:
+                state_data = []
+        lines = [f"📊 Codex Accounts: {len(accounts)} шт.\n"]
+        now_ts = time.time()
+        for i, acc in enumerate(accounts):
+            st_acc = state_data[i] if i < len(state_data) and isinstance(state_data[i], dict) else {}
+            dead = bool(st_acc.get("dead", False))
+            cooldown = float(st_acc.get("cooldown_until", 0))
+            in_cooldown = cooldown > now_ts
+            has_access = bool(st_acc.get("access") or acc.get("access"))
+            has_refresh = bool(acc.get("refresh"))
+            if dead:
+                icon, status = "💀", "dead"
+            elif in_cooldown:
+                remaining = int(cooldown - now_ts)
+                icon, status = "⏳", f"cooldown ({remaining}s)"
+            elif has_access:
+                icon, status = "✅", "active"
+            else:
+                icon, status = "⚠️", "no access token"
+            lines.append(f"{icon} #{i}: {status}")
+            if has_refresh:
+                lines.append(f"   refresh: ...{acc.get('refresh', '')[-8:]}")
+        send_with_budget(chat_id, "\n".join(lines))
         return True
 
     return ""
