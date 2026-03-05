@@ -904,6 +904,7 @@ def _call_llm_with_retry(
                 "cached_tokens": int(usage.get("cached_tokens") or 0),
                 "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
                 "cost_usd": cost,
+                "shadow_cost": float(usage.get("shadow_cost") or 0),
             }
             append_jsonl(drive_logs / "events.jsonl", _round_event)
             return msg, cost
