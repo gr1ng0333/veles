@@ -972,11 +972,24 @@ def call_codex(
 
     msg = _output_to_chat_message(output)
 
+    prompt_tokens = int(usage_raw.get("input_tokens", 0))
+    completion_tokens = int(usage_raw.get("output_tokens", 0))
+    cached_tokens = int(usage_raw.get("cached_tokens", 0))
+
+    # Shadow cost — what this would cost at GPT-5.3 Codex API prices
+    shadow_cost = (
+        (prompt_tokens / 1_000_000) * 1.75
+        + (completion_tokens / 1_000_000) * 14.00
+        + (cached_tokens / 1_000_000) * 0.175
+    )
+
     usage = {
-        "prompt_tokens": int(usage_raw.get("input_tokens", 0)),
-        "completion_tokens": int(usage_raw.get("output_tokens", 0)),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cached_tokens": cached_tokens,
         "total_tokens": int(usage_raw.get("total_tokens", 0)),
         "cost": 0.0,  # Free via OAuth
+        "shadow_cost": round(shadow_cost, 6),
     }
 
     return msg, usage
