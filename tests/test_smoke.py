@@ -116,6 +116,7 @@ EXPECTED_TOOLS = [
     "enable_tools",
     "vps_health_check",
     "doctor",
+    "monitor_snapshot",
     "time_status",
 ]
 

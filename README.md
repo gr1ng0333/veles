@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.5.1 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.5.2 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,10 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.5.2 -- Quiet Watchdog + Monitor Snapshot
+- Removed Telegram soft-timeout spam from direct chat watchdog; soft timeouts are now logged to supervisor events.
+- Added `monitor_snapshot` health tool that aggregates runtime state (`state`, `doctor`, `health_check`, `queue_snapshot`, `codex_accounts`) into one report.
 
 ### v6.5.1 -- Budget Sync + Quiet Progress Reporting
 - Fixed `spent_usd` drift by one-way syncing tracked spend to OpenRouter total when higher (init and periodic checks).
