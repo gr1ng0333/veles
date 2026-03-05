@@ -303,6 +303,152 @@ def _doctor(
     lines.append(f"- **Report written:** `{output_path}`")
     return '\n'.join(lines)
 
+
+def _safe_read_json(path: pathlib.Path) -> tuple[str, Dict[str, Any]]:
+    if not path.exists():
+        return 'missing', {}
+    try:
+        return 'ok', json.loads(path.read_text(encoding='utf-8'))
+    except Exception as e:
+        return 'error', {'error': str(e)}
+
+
+def _monitor_snapshot(
+    ctx: ToolContext,
+    output_path: str = '/opt/veles-data/state/monitor_snapshot.json',
+) -> str:
+    """Build a consolidated runtime snapshot from state/doctor/health/queue/codex files."""
+    state_dir = pathlib.Path('/opt/veles-data/state')
+    ts = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    source_paths = {
+        'state': state_dir / 'state.json',
+        'doctor_report': state_dir / 'doctor_report.json',
+        'health_check': state_dir / 'health_check.json',
+        'codex_accounts_state': state_dir / 'codex_accounts_state.json',
+        'queue_snapshot': state_dir / 'queue_snapshot.json',
+    }
+
+    report: Dict[str, Any] = {
+        'timestamp_utc': ts,
+        'overall_healthy': True,
+        'sources': {},
+    }
+
+    state_data: Dict[str, Any] = {}
+    doctor_data: Dict[str, Any] = {}
+    health_data: Dict[str, Any] = {}
+    codex_data: Dict[str, Any] = {}
+    queue_data: Dict[str, Any] = {}
+
+    for name, path in source_paths.items():
+        status, data = _safe_read_json(path)
+        entry: Dict[str, Any] = {'status': status, 'path': str(path)}
+
+        if status == 'ok':
+            if name == 'state':
+                state_data = data
+                total = float(data.get('total_usd') or data.get('budget_total_usd') or 0.0)
+                spent = float(data.get('spent_usd') or 0.0)
+                remaining = (total - spent) if total > 0 else None
+                entry['summary'] = {
+                    'current_branch': data.get('current_branch'),
+                    'current_sha': data.get('current_sha'),
+                    'spent_usd': spent,
+                    'remaining_usd': round(remaining, 6) if remaining is not None else None,
+                    'evolution_mode_enabled': bool(data.get('evolution_mode_enabled', False)),
+                    'evolution_cycle': int(data.get('evolution_cycle') or 0),
+                    'evolution_consecutive_failures': int(data.get('evolution_consecutive_failures') or 0),
+                }
+            elif name == 'doctor_report':
+                doctor_data = data
+                checks = data.get('checks') if isinstance(data.get('checks'), dict) else {}
+                entry['summary'] = {
+                    'overall_healthy': bool(data.get('overall_healthy', False)),
+                    'checks': {k: bool(v.get('ok')) for k, v in checks.items() if isinstance(v, dict)},
+                }
+            elif name == 'health_check':
+                health_data = data
+                disk = data.get('disk') if isinstance(data.get('disk'), dict) else {}
+                ram = data.get('ram') if isinstance(data.get('ram'), dict) else {}
+                searx = data.get('searxng') if isinstance(data.get('searxng'), dict) else {}
+                entry['summary'] = {
+                    'overall_healthy': bool(data.get('overall_healthy', False)),
+                    'disk_used_percent': disk.get('used_percent'),
+                    'ram_used_percent': ram.get('used_percent'),
+                    'searxng_healthy': bool(searx.get('healthy', False)),
+                }
+            elif name == 'codex_accounts_state':
+                codex_data = data
+                accounts = data.get('accounts') if isinstance(data.get('accounts'), list) else []
+                dead_count = sum(1 for a in accounts if isinstance(a, dict) and a.get('dead'))
+                entry['summary'] = {
+                    'accounts_count': len(accounts),
+                    'active_idx': data.get('active_idx'),
+                    'dead_count': dead_count,
+                }
+            elif name == 'queue_snapshot':
+                queue_data = data
+                pending = data.get('pending') if isinstance(data.get('pending'), list) else []
+                running = data.get('running') if isinstance(data.get('running'), list) else []
+                entry['summary'] = {
+                    'pending_count': len(pending),
+                    'running_count': len(running),
+                    'reason': data.get('reason'),
+                    'ts': data.get('ts'),
+                }
+        elif status == 'error':
+            entry['error'] = data.get('error')
+
+        report['sources'][name] = entry
+
+    if report['sources'].get('doctor_report', {}).get('status') == 'ok':
+        report['overall_healthy'] = report['overall_healthy'] and bool(doctor_data.get('overall_healthy', False))
+    if report['sources'].get('health_check', {}).get('status') == 'ok':
+        report['overall_healthy'] = report['overall_healthy'] and bool(health_data.get('overall_healthy', False))
+    if report['sources'].get('state', {}).get('status') == 'ok':
+        report['overall_healthy'] = report['overall_healthy'] and int(state_data.get('evolution_consecutive_failures') or 0) < 3
+
+    out = pathlib.Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    def _icon(src_name: str) -> str:
+        st = report['sources'].get(src_name, {}).get('status')
+        return '✅' if st == 'ok' else ('⚪' if st == 'missing' else '⚠️')
+
+    spent = None
+    failures = None
+    if report['sources'].get('state', {}).get('status') == 'ok':
+        spent = state_data.get('spent_usd')
+        failures = state_data.get('evolution_consecutive_failures')
+
+    pending_count = None
+    running_count = None
+    if report['sources'].get('queue_snapshot', {}).get('status') == 'ok':
+        pending_count = len(queue_data.get('pending') or [])
+        running_count = len(queue_data.get('running') or [])
+
+    codex_accounts = None
+    if report['sources'].get('codex_accounts_state', {}).get('status') == 'ok':
+        codex_accounts = len(codex_data.get('accounts') or [])
+
+    overall_icon = '✅' if report['overall_healthy'] else '⚠️'
+    lines = [
+        '## Monitor Snapshot',
+        f'- **Timestamp (UTC):** {ts}',
+        f'- **Overall:** {overall_icon} {"healthy" if report["overall_healthy"] else "attention needed"}',
+        '- **Sources:**',
+        f'  - {_icon("state")} state: {report["sources"].get("state", {}).get("status")}',
+        f'  - {_icon("doctor_report")} doctor_report: {report["sources"].get("doctor_report", {}).get("status")}',
+        f'  - {_icon("health_check")} health_check: {report["sources"].get("health_check", {}).get("status")}',
+        f'  - {_icon("codex_accounts_state")} codex_accounts_state: {report["sources"].get("codex_accounts_state", {}).get("status")}',
+        f'  - {_icon("queue_snapshot")} queue_snapshot: {report["sources"].get("queue_snapshot", {}).get("status")}',
+        f'- **Key metrics:** spent=${spent if spent is not None else "n/a"}, pending={pending_count if pending_count is not None else "n/a"}, running={running_count if running_count is not None else "n/a"}, evolution_failures={failures if failures is not None else "n/a"}, codex_accounts={codex_accounts if codex_accounts is not None else "n/a"}',
+        f'- **Report written:** `{output_path}`',
+    ]
+    return '\n'.join(lines)
+
 def get_tools():
     return [
         ToolEntry('codebase_health', {
@@ -323,6 +469,17 @@ def get_tools():
                 'required': [],
             },
         }, _vps_health_check),
+        ToolEntry('monitor_snapshot', {
+            'name': 'monitor_snapshot',
+            'description': 'Consolidated runtime snapshot from state/doctor/health/queue/codex files.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'output_path': {'type': 'string'},
+                },
+                'required': [],
+            },
+        }, _monitor_snapshot),
         ToolEntry('doctor', {
             'name': 'doctor',
             'description': 'Run consolidated diagnostics (version sync, gh CLI availability, identity freshness, budget drift) and persist JSON report.',

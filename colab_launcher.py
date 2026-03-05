@@ -304,13 +304,17 @@ def _chat_watchdog_loop():
 
             if idle_sec >= SOFT_TIMEOUT_SEC and not soft_warned:
                 soft_warned = True
-                st = load_state()
-                if st.get("owner_chat_id"):
-                    send_with_budget(
-                        int(st["owner_chat_id"]),
-                        f"⏱️ Task running for {int(total_sec)}s, "
-                        f"last progress {int(idle_sec)}s ago. Continuing.",
-                    )
+                append_jsonl(
+                    DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                    {
+                        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "type": "chat_soft_timeout",
+                        "runtime_sec": round(total_sec, 2),
+                        "idle_sec": round(idle_sec, 2),
+                        "soft_timeout_sec": SOFT_TIMEOUT_SEC,
+                        "hard_timeout_sec": HARD_TIMEOUT_SEC,
+                    },
+                )
         except Exception:
             log.debug("Failed to check/notify chat watchdog", exc_info=True)
             pass
