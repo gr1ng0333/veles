@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.6.1 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.6.2 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,18 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.6.2 -- Anti-Stagnation + Task Round Cap
+- Added configurable anti-stagnation detector in `ouroboros/loop.py` with env thresholds:
+  - `OUROBOROS_STAGNATION_ROUNDS` (default `8`)
+  - `OUROBOROS_STAGNATION_GRACE` (default `4`)
+- After stagnation threshold, loop injects mandatory self-check decision (`tool_needed` / `finalize_now` / `ask_owner`).
+- After grace window, loop performs forced concise finalize to prevent long no-progress runs.
+- Added task round cap controls:
+  - `OUROBOROS_TASK_ROUND_WARN` (default `15`)
+  - `OUROBOROS_TASK_ROUND_CAP` (default `30`)
+  - Extension to `50` rounds only when there is recent progress in last 5 rounds.
+- Added unit tests in `tests/test_loop_antistagnation.py` for stagnation and cap decision logic.
 
 ### v6.6.1 -- send_document base64 fix
 - Fixed NameError in `send_document` tool (`base64` import missing in `ouroboros/tools/core.py`).
