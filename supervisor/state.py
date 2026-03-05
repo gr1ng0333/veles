@@ -352,10 +352,17 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> None:
     lock_fd = acquire_file_lock(STATE_LOCK_PATH)
     try:
         st = _load_state_unlocked()
-        cost = usage.get("cost") if isinstance(usage, dict) else None
-        if cost is None:
-            cost = 0.0
-        st["spent_usd"] = _to_float(st.get("spent_usd") or 0.0) + _to_float(cost)
+        raw_cost = usage.get("cost") if isinstance(usage, dict) else None
+        cost = _to_float(raw_cost if raw_cost is not None else 0.0)
+        shadow = _to_float(usage.get("shadow_cost") if isinstance(usage, dict) else 0)
+
+        # Effective billing for local budget visibility:
+        # - If provider cost is available (>0), use it.
+        # - If provider reports $0 (Codex OAuth path), fall back to shadow_cost.
+        # This keeps spent_usd moving even when upstream billing is hidden/zero.
+        effective_cost = cost if cost > 0 else max(0.0, shadow)
+        st["spent_usd"] = _to_float(st.get("spent_usd") or 0.0) + effective_cost
+
         rounds = _to_int(usage.get("rounds") if isinstance(usage, dict) else 0, default=1)
         st["spent_calls"] = int(st.get("spent_calls") or 0) + rounds
         st["spent_tokens_prompt"] = _to_int(st.get("spent_tokens_prompt") or 0) + _to_int(
@@ -364,9 +371,10 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> None:
             usage.get("completion_tokens") if isinstance(usage, dict) else 0)
         st["spent_tokens_cached"] = _to_int(st.get("spent_tokens_cached") or 0) + _to_int(
             usage.get("cached_tokens") if isinstance(usage, dict) else 0)
-        shadow = _to_float(usage.get("shadow_cost") if isinstance(usage, dict) else 0)
+
         if shadow > 0:
             st["codex_shadow_cost_total"] = _to_float(st.get("codex_shadow_cost_total") or 0) + shadow
+
         should_check_ground_truth = (st["spent_calls"] % 50 == 0)
         _save_state_unlocked(st)
     finally:
