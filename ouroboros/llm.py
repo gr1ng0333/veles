@@ -34,6 +34,8 @@ def add_usage(total: Dict[str, Any], usage: Dict[str, Any]) -> None:
         total[k] = int(total.get(k) or 0) + int(usage.get(k) or 0)
     if usage.get("cost"):
         total["cost"] = float(total.get("cost") or 0) + float(usage["cost"])
+    if usage.get("shadow_cost"):
+        total["shadow_cost"] = float(total.get("shadow_cost") or 0) + float(usage["shadow_cost"])
 
 
 def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
