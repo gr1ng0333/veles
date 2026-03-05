@@ -428,6 +428,8 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         turn_on = action not in ("off", "stop", "0")
         st2 = load_state()
         st2["evolution_mode_enabled"] = bool(turn_on)
+        if turn_on:
+            st2["evolution_consecutive_failures"] = 0
         save_state(st2)
         if not turn_on:
             PENDING[:] = [t for t in PENDING if str(t.get("type")) != "evolution"]

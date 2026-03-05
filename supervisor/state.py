@@ -364,6 +364,9 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> None:
             usage.get("completion_tokens") if isinstance(usage, dict) else 0)
         st["spent_tokens_cached"] = _to_int(st.get("spent_tokens_cached") or 0) + _to_int(
             usage.get("cached_tokens") if isinstance(usage, dict) else 0)
+        shadow = _to_float(usage.get("shadow_cost") if isinstance(usage, dict) else 0)
+        if shadow > 0:
+            st["codex_shadow_cost_total"] = _to_float(st.get("codex_shadow_cost_total") or 0) + shadow
         should_check_ground_truth = (st["spent_calls"] % 50 == 0)
         _save_state_unlocked(st)
     finally:
@@ -666,6 +669,9 @@ def status_text(workers_dict: Dict[int, Any], pending_list: list, running_dict: 
                 ct = int(stats["completion_tokens"])
                 lines.append(f"  {model_name}: ${cost:.2f} ({calls} calls, {pt:,}p/{ct:,}c tok)")
 
+    codex_shadow = float(st.get("codex_shadow_cost_total") or 0)
+    if codex_shadow > 0:
+        lines.append(f"codex_shadow_cost: ${codex_shadow:.2f} (saved via Codex OAuth)")
     lines.append(
         "evolution: "
         + f"enabled={int(bool(st.get('evolution_mode_enabled')))}, "
