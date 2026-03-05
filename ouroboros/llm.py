@@ -169,6 +169,13 @@ class LLMClient:
             actual_model = model[len("codex/"):]
             return call_codex(messages, tools=tools, model=actual_model)
 
+        # Consciousness Codex: separate account tokens
+        if model.startswith("codex-consciousness/"):
+            from ouroboros.codex_proxy import call_codex
+            actual_model = model.split("/", 1)[1]
+            return call_codex(messages, tools=tools, model=actual_model,
+                              token_prefix="CODEX_CONSCIOUSNESS")
+
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
 

@@ -596,12 +596,85 @@ while True:
         elif msg.get("document"):
             doc = msg["document"]
             mime_type = str(doc.get("mime_type") or "")
-            if mime_type.startswith("image/"):
+            file_name = str(doc.get("file_name") or "file")
+            file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+
+            _TEXT_EXTENSIONS = {
+                "py", "txt", "md", "json", "csv", "yaml", "yml", "toml",
+                "cfg", "ini", "sh", "bash", "js", "ts", "html", "css",
+                "xml", "sql", "log", "env", "gitignore", "dockerfile",
+            }
+            _IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp"}
+
+            if mime_type.startswith("image/") or file_ext in _IMAGE_EXTENSIONS:
+                # Image sent as document — handle like a photo
                 file_id = doc.get("file_id")
                 if file_id:
                     b64, mime = TG.download_file_base64(file_id)
                     if b64:
                         image_data = (b64, mime, caption)
+
+            elif file_ext in _TEXT_EXTENSIONS or mime_type.startswith("text/"):
+                # Text file — read content and inject into message text
+                file_id = doc.get("file_id")
+                if file_id:
+                    _raw_b64, _ = TG.download_file_base64(file_id)
+                    if _raw_b64:
+                        import base64 as _b64mod
+                        _file_bytes = _b64mod.b64decode(_raw_b64)
+                        try:
+                            _text_content = _file_bytes.decode("utf-8")
+                        except UnicodeDecodeError:
+                            _text_content = _file_bytes.decode("latin-1")
+                        _user_text = caption or ""
+                        text = f"{_user_text}\n\n📎 Файл: {file_name}\n```{file_ext}\n{_text_content}\n```"
+
+            elif file_ext == "pdf":
+                # PDF — extract text
+                file_id = doc.get("file_id")
+                if file_id:
+                    _raw_b64, _ = TG.download_file_base64(file_id)
+                    if _raw_b64:
+                        import base64 as _b64mod
+                        import tempfile as _tmpmod
+                        _file_bytes = _b64mod.b64decode(_raw_b64)
+                        _pdf_text = None
+                        _tmp_path = None
+                        try:
+                            with _tmpmod.NamedTemporaryFile(suffix=".pdf", delete=False) as _tmp:
+                                _tmp.write(_file_bytes)
+                                _tmp_path = _tmp.name
+                            try:
+                                import pdfplumber
+                                with pdfplumber.open(_tmp_path) as _pdf:
+                                    _pdf_text = "\n\n".join(
+                                        page.extract_text() or "" for page in _pdf.pages
+                                    )
+                            except ImportError:
+                                try:
+                                    from PyPDF2 import PdfReader
+                                    _reader = PdfReader(_tmp_path)
+                                    _pdf_text = "\n\n".join(
+                                        page.extract_text() or "" for page in _reader.pages
+                                    )
+                                except ImportError:
+                                    _pdf_text = None
+                        finally:
+                            if _tmp_path:
+                                try:
+                                    os.unlink(_tmp_path)
+                                except OSError:
+                                    pass
+                        if _pdf_text:
+                            _user_text = caption or ""
+                            text = f"{_user_text}\n\n📎 PDF: {file_name}\n{_pdf_text[:10000]}"
+                        else:
+                            send_with_budget(chat_id, f"⚠️ Не удалось извлечь текст из PDF. Установите pdfplumber или PyPDF2.")
+                            continue
+
+            else:
+                send_with_budget(chat_id, f"⚠️ Формат .{file_ext} не поддерживается. Поддерживаются: текст, PDF, картинки.")
+                continue
 
         st = load_state()
         if st.get("owner_id") is None:
