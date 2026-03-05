@@ -415,7 +415,8 @@ def _output_to_chat_message(output: List[Dict[str, Any]]) -> Dict[str, Any]:
     content_text = "\n".join(str(p) for p in text_parts) if text_parts else None
 
     # Recovery: if Codex returned tool calls as text instead of function_call items
-    if not tool_calls and content_text:
+    _recovery_enabled = os.environ.get("CODEX_TOOL_RECOVERY_ENABLED", "false").lower() in ("1", "true", "yes")
+    if _recovery_enabled and not tool_calls and content_text:
         recovered, cleaned = _try_extract_tool_calls_from_text(content_text)
         if recovered:
             tool_calls = recovered
@@ -568,8 +569,10 @@ def call_codex(
     else:
         payload["instructions"] = "You are a helpful assistant."
 
-    # Codex needs explicit encouragement to use tools with large system prompts
-    if tools:
+    # Codex tool hint — disabled by default; was causing model to force tool calls
+    # even when it already had the answer, contributing to infinite loops.
+    # Enable with CODEX_TOOL_HINT_ENABLED=true if Codex stops using tools.
+    if tools and os.environ.get("CODEX_TOOL_HINT_ENABLED", "false").lower() in ("1", "true", "yes"):
         codex_tool_hint = (
             "\n\nIMPORTANT: You have tools available. When the user asks to search, "
             "look up information, read/write files, or perform any action — you MUST "
@@ -579,7 +582,7 @@ def call_codex(
         )
         payload["instructions"] += codex_tool_hint
 
-    payload["reasoning"] = {"effort": "high" if tools else "medium"}
+    payload["reasoning"] = {"effort": "medium"}
 
     converted_tools = _tools_to_responses_format(tools)
     if converted_tools:
