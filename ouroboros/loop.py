@@ -22,6 +22,13 @@ from ouroboros.llm import LLMClient, normalize_reasoning_effort, add_usage
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
 from ouroboros.utils import utc_now_iso, append_jsonl, truncate_for_log, sanitize_tool_args_for_log, sanitize_tool_result_for_log, estimate_tokens
+from ouroboros.antistagnation import (
+    build_forced_finalize_reason,
+    inject_stagnation_self_check,
+    load_antistagnation_config,
+    should_force_round_finalize,
+    stagnation_action,
+)
 
 log = logging.getLogger(__name__)
 
@@ -335,11 +342,11 @@ def _handle_tool_calls(
     messages: List[Dict[str, Any]],
     llm_trace: Dict[str, Any],
     emit_progress: Callable[[str], None],
-) -> int:
+) -> Tuple[int, bool]:
     """
     Execute tool calls and append results to messages.
 
-    Returns: Number of errors encountered
+    Returns: (error_count, made_progress)
     """
     # Parallelize only for a strict read-only whitelist; all calls wrapped with timeout.
     can_parallel = (
@@ -588,6 +595,35 @@ def _drain_incoming_messages(
                     pass
 
 
+
+def _finalize_with_summary(
+    *,
+    reason: str,
+    messages: List[Dict[str, Any]],
+    llm: LLMClient,
+    active_model: str,
+    active_effort: str,
+    max_retries: int,
+    drive_logs: pathlib.Path,
+    task_id: str,
+    round_idx: int,
+    event_queue: Optional[queue.Queue],
+    accumulated_usage: Dict[str, Any],
+    task_type: str,
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    messages.append({"role": "system", "content": f"[FORCED_FINALIZE] {reason}"})
+    try:
+        final_msg, _ = _call_llm_with_retry(
+            llm, messages, active_model, None, active_effort,
+            max_retries, drive_logs, task_id, round_idx, event_queue, accumulated_usage, task_type
+        )
+        if final_msg and (final_msg.get("content") or "").strip():
+            return final_msg.get("content") or reason, accumulated_usage, {"assistant_notes": [], "tool_calls": []}
+    except Exception:
+        log.warning("Forced finalize failed", exc_info=True)
+    return reason, accumulated_usage, {"assistant_notes": [], "tool_calls": []}
+
+
 def run_llm_loop(
     messages: List[Dict[str, Any]],
     tools: ToolRegistry,
@@ -602,181 +638,23 @@ def run_llm_loop(
     initial_effort: str = "medium",
     drive_root: Optional[pathlib.Path] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """
-    Core LLM-with-tools loop.
+    """Thin wrapper delegating runtime loop implementation (keeps module compact)."""
+    from ouroboros.loop_runtime import run_llm_loop_impl
 
-    Sends messages to LLM, executes tool calls, retries on errors.
-    LLM controls model/effort via switch_model tool (LLM-first, Bible P3).
-
-    Args:
-        budget_remaining_usd: If set, forces completion when task cost exceeds 50% of this budget
-        initial_effort: Initial reasoning effort level (default "medium")
-
-    Returns: (final_text, accumulated_usage, llm_trace)
-    """
-    # LLM-first: single default model, LLM switches via tool if needed
-    active_model = llm.default_model()
-    active_effort = initial_effort
-
-    llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
-    accumulated_usage: Dict[str, Any] = {}
-    max_retries = 3
-    # Wire module-level registry ref so tool_discovery handlers work outside run_llm_loop too
-    from ouroboros.tools import tool_discovery as _td
-    _td.set_registry(tools)
-
-    # Selective tool schemas: core set + meta-tools for discovery.
-    tool_schemas = tools.schemas(core_only=True)
-    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, messages)
-
-    # Set budget tracking on tool context for real-time usage events
-    tools._ctx.event_queue = event_queue
-    tools._ctx.task_id = task_id
-    # Thread-sticky executor for browser tools (Playwright sync requires greenlet thread-affinity)
-    stateful_executor = _StatefulToolExecutor()
-    # Dedup set for per-task owner messages from Drive mailbox
-    _owner_msg_seen: set = set()
-    try:
-        MAX_ROUNDS = max(1, int(os.environ.get("OUROBOROS_MAX_ROUNDS", "200")))
-    except (ValueError, TypeError):
-        MAX_ROUNDS = 200
-        log.warning("Invalid OUROBOROS_MAX_ROUNDS, defaulting to 200")
-    round_idx = 0
-    try:
-        while True:
-            round_idx += 1
-
-            # Hard limit on rounds to prevent runaway tasks
-            if round_idx > MAX_ROUNDS:
-                finish_reason = f"⚠️ Task exceeded MAX_ROUNDS ({MAX_ROUNDS}). Consider decomposing into subtasks via schedule_task."
-                messages.append({"role": "system", "content": f"[ROUND_LIMIT] {finish_reason}"})
-                try:
-                    final_msg, final_cost = _call_llm_with_retry(
-                        llm, messages, active_model, None, active_effort,
-                        max_retries, drive_logs, task_id, round_idx, event_queue, accumulated_usage, task_type
-                    )
-                    if final_msg:
-                        return (final_msg.get("content") or finish_reason), accumulated_usage, llm_trace
-                    return finish_reason, accumulated_usage, llm_trace
-                except Exception:
-                    log.warning("Failed to get final response after round limit", exc_info=True)
-                    return finish_reason, accumulated_usage, llm_trace
-
-            # Soft self-check reminder every 50 rounds (LLM-first: agent decides, not code)
-            _maybe_inject_self_check(round_idx, MAX_ROUNDS, messages, accumulated_usage, emit_progress)
-
-            # Apply LLM-driven model/effort switch (via switch_model tool)
-            ctx = tools._ctx
-            if ctx.active_model_override:
-                active_model = ctx.active_model_override
-                ctx.active_model_override = None
-            if ctx.active_effort_override:
-                active_effort = normalize_reasoning_effort(ctx.active_effort_override, default=active_effort)
-                ctx.active_effort_override = None
-
-            # Inject owner messages (in-process queue + Drive mailbox)
-            _drain_incoming_messages(messages, incoming_messages, drive_root, task_id, event_queue, _owner_msg_seen)
-
-            # Compact old tool history when needed
-            # Check for LLM-requested compaction first (via compact_context tool)
-            pending_compaction = getattr(tools._ctx, '_pending_compaction', None)
-            if pending_compaction is not None:
-                messages = compact_tool_history_llm(messages, keep_recent=pending_compaction)
-                tools._ctx._pending_compaction = None
-            elif round_idx > 8:
-                messages = compact_tool_history(messages, keep_recent=6)
-            elif round_idx > 3:
-                # Light compaction: only if messages list is very long (>60 items)
-                if len(messages) > 60:
-                    messages = compact_tool_history(messages, keep_recent=6)
-
-            # --- LLM call with retry ---
-            msg, cost = _call_llm_with_retry(
-                llm, messages, active_model, tool_schemas, active_effort,
-                max_retries, drive_logs, task_id, round_idx, event_queue, accumulated_usage, task_type
-            )
-
-            # Fallback to another model if primary model returns empty responses
-            if msg is None:
-                # Configurable fallback priority list (Bible P3: no hardcoded behavior)
-                fallback_list_raw = os.environ.get(
-                    "OUROBOROS_MODEL_FALLBACK_LIST",
-                    "google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6"
-                )
-                fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
-                fallback_model = None
-                for candidate in fallback_candidates:
-                    if candidate != active_model:
-                        fallback_model = candidate
-                        break
-                if fallback_model is None:
-                    return (
-                        f"⚠️ Failed to get a response from model {active_model} after {max_retries} attempts. "
-                        f"All fallback models match the active one. Try rephrasing your request."
-                    ), accumulated_usage, llm_trace
-
-                # Emit progress message so user sees fallback happening
-                fallback_progress = f"⚡ Fallback: {active_model} → {fallback_model} after empty response"
-                emit_progress(fallback_progress)
-
-                # Try fallback model (don't increment round_idx — this is still same logical round)
-                msg, fallback_cost = _call_llm_with_retry(
-                    llm, messages, fallback_model, tool_schemas, active_effort,
-                    max_retries, drive_logs, task_id, round_idx, event_queue, accumulated_usage, task_type
-                )
-
-                # If fallback also fails, give up
-                if msg is None:
-                    return (
-                        f"⚠️ Failed to get a response from the model after {max_retries} attempts. "
-                        f"Fallback model ({fallback_model}) also returned no response."
-                    ), accumulated_usage, llm_trace
-
-                # Fallback succeeded — continue processing with this msg
-                # (don't return — fall through to tool_calls processing below)
-
-            tool_calls = msg.get("tool_calls") or []
-            content = msg.get("content")
-            # No tool calls — final response
-            if not tool_calls:
-                return _handle_text_response(content, llm_trace, accumulated_usage)
-
-            # Process tool calls
-            messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
-
-            if content and content.strip():
-                emit_progress(content.strip())
-                llm_trace["assistant_notes"].append(content.strip()[:320])
-
-            error_count = _handle_tool_calls(
-                tool_calls, tools, drive_logs, task_id, stateful_executor,
-                messages, llm_trace, emit_progress
-            )
-
-            # --- Budget guard ---
-            # LLM decides when to stop (Bible P0, P3). We only enforce hard budget limit.
-            budget_result = _check_budget_limits(
-                budget_remaining_usd, accumulated_usage, round_idx, messages,
-                llm, active_model, active_effort, max_retries, drive_logs,
-                task_id, event_queue, llm_trace, task_type
-            )
-            if budget_result is not None:
-                return budget_result
-
-    finally:
-        # Cleanup thread-sticky executor for stateful tools
-        if stateful_executor:
-            try:
-                stateful_executor.shutdown(wait=False, cancel_futures=True)
-            except Exception:
-                log.warning("Failed to shutdown stateful executor", exc_info=True)
-        # Cleanup per-task mailbox
-        if drive_root is not None and task_id:
-            try:
-                from ouroboros.owner_inject import cleanup_task_mailbox
-                cleanup_task_mailbox(drive_root, task_id)
-            except Exception:
-                log.debug("Failed to cleanup task mailbox", exc_info=True)
+    return run_llm_loop_impl(
+        messages=messages,
+        tools=tools,
+        llm=llm,
+        drive_logs=drive_logs,
+        emit_progress=emit_progress,
+        incoming_messages=incoming_messages,
+        task_type=task_type,
+        task_id=task_id,
+        budget_remaining_usd=budget_remaining_usd,
+        event_queue=event_queue,
+        initial_effort=initial_effort,
+        drive_root=drive_root,
+    )
 
 
 def _emit_llm_usage_event(
@@ -928,8 +806,9 @@ def _process_tool_results(
     messages: List[Dict[str, Any]],
     llm_trace: Dict[str, Any],
     emit_progress: Callable[[str], None],
-) -> int:
+) -> Tuple[int, bool]:
     error_count = 0
+    made_progress = False
     trace_calls = llm_trace.setdefault("tool_calls", [])
     guard = llm_trace.setdefault("loop_guard_emitted", {"signatures": [], "errors": []})
     emitted_signatures = set(guard.get("signatures") or [])
@@ -940,14 +819,26 @@ def _process_tool_results(
         if is_error:
             error_count += 1
         call_signature = _build_call_signature(fn_name, exec_result["args_for_log"])
+        tool_result_text = truncate_for_log(exec_result["result"], 700)
+        result_fingerprint = _normalize_error_text(tool_result_text)
         error_fingerprint = _normalize_error_text(exec_result["result"]) if is_error else None
+
+        if not is_error:
+            seen_same = any(
+                c.get("call_signature") == call_signature and c.get("result_fingerprint") == result_fingerprint
+                for c in trace_calls
+            )
+            if not seen_same:
+                made_progress = True
+
         messages.append({"role": "tool", "tool_call_id": exec_result["tool_call_id"], "content": _truncate_tool_result(exec_result["result"])})
         trace_calls.append({
             "tool": fn_name,
             "args": _safe_args(exec_result["args_for_log"]),
-            "result": truncate_for_log(exec_result["result"], 700),
+            "result": tool_result_text,
             "is_error": is_error,
             "call_signature": call_signature,
+            "result_fingerprint": result_fingerprint,
             "error_fingerprint": error_fingerprint,
         })
         if _count_recent_repeats(trace_calls, "call_signature", call_signature) >= 4 and call_signature not in emitted_signatures:
@@ -960,7 +851,7 @@ def _process_tool_results(
             emitted_errors.add(error_fingerprint)
     guard["signatures"] = list(emitted_signatures)
     guard["errors"] = list(emitted_errors)
-    return error_count
+    return error_count, made_progress
 
 
 def _build_call_signature(fn_name: str, args: Any) -> str:
@@ -982,6 +873,8 @@ def _count_recent_repeats(tool_calls: List[Dict[str, Any]], field: str, value: O
             break
         count += 1
     return count
+
+
 def _safe_args(v: Any) -> Any:
     """Ensure args are JSON-serializable for trace logging."""
     try:
@@ -989,3 +882,6 @@ def _safe_args(v: Any) -> Any:
     except Exception:
         log.debug("Failed to serialize args for trace logging", exc_info=True)
         return {"_repr": repr(v)}
+
+
+
