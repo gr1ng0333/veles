@@ -81,7 +81,7 @@ class BackgroundConsciousness:
     @property
     def _model(self) -> str:
         # If a separate Codex token for consciousness is configured, use it
-        if os.environ.get("CODEX_CONSCIOUSNESS_ACCESS"):
+        if os.environ.get("CODEX_CONSCIOUSNESS_ACCESS") or os.environ.get("CODEX_CONSCIOUSNESS_REFRESH"):
             model_name = os.environ.get("CODEX_CONSCIOUSNESS_MODEL", "gpt-5.1-codex-mini")
             return f"codex-consciousness/{model_name}"
         # Otherwise fall back to the standard light model via OpenRouter

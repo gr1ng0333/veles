@@ -635,6 +635,9 @@ while True:
                             _text_content = _file_bytes.decode("utf-8")
                         except UnicodeDecodeError:
                             _text_content = _file_bytes.decode("latin-1")
+                        _MAX_FILE_CONTENT = 80000
+                        if len(_text_content) > _MAX_FILE_CONTENT:
+                            _text_content = _text_content[:_MAX_FILE_CONTENT] + f"\n\n... (обрезано, всего {len(_text_content)} символов)"
                         _user_text = caption or ""
                         text = f"{_user_text}\n\n📎 Файл: {file_name}\n```{file_ext}\n{_text_content}\n```"
 
@@ -675,8 +678,11 @@ while True:
                                 except OSError:
                                     pass
                         if _pdf_text:
+                            _MAX_FILE_CONTENT = 80000
+                            if len(_pdf_text) > _MAX_FILE_CONTENT:
+                                _pdf_text = _pdf_text[:_MAX_FILE_CONTENT] + "\n\n... (обрезано)"
                             _user_text = caption or ""
-                            text = f"{_user_text}\n\n📎 PDF: {file_name}\n{_pdf_text[:10000]}"
+                            text = f"{_user_text}\n\n📎 PDF: {file_name}\n{_pdf_text}"
                         else:
                             send_with_budget(chat_id, f"⚠️ Не удалось извлечь текст из PDF. Установите pdfplumber или PyPDF2.")
                             continue
