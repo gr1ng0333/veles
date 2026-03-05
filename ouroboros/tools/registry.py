@@ -84,7 +84,7 @@ CORE_TOOL_NAMES = {
     "schedule_task", "wait_for_task", "get_task_result",
     "update_scratchpad", "update_identity",
     "chat_history", "web_search",
-    "send_owner_message", "switch_model",
+    "send_owner_message", "send_file", "switch_model",
     "request_restart", "promote_to_stable",
     "knowledge_read", "knowledge_write",
     "browse_page", "browser_action", "analyze_screenshot",
