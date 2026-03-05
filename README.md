@@ -226,6 +226,13 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
+### v6.6.3 -- Background consciousness monitor-state + non-empty thought preview
+- Added monitor-state normalization in `ouroboros/consciousness.py` with safe defaults and type coercion.
+- Background loop now persists `next_wakeup_interval_seconds` and `next_wakeup_at` into `memory/monitor_state.json`.
+- Added robust `thought_preview` fallback when final content is empty (with reason/rounds/tool_calls).
+- Monitor state now stores last thought metadata (`last_thought_at`, `last_thought_preview`, `last_model`, `last_rounds`).
+- Added unit tests in `tests/test_consciousness_monitor_state.py` for normalization, preview fallback, and wakeup timestamp generation.
+
 ### v6.6.2 -- Anti-Stagnation + Task Round Cap
 - Added configurable anti-stagnation detector in `ouroboros/loop.py` with env thresholds:
   - `OUROBOROS_STAGNATION_ROUNDS` (default `8`)
