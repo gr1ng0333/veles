@@ -977,10 +977,12 @@ def call_codex(
     cached_tokens = int(usage_raw.get("cached_tokens", 0))
 
     # Shadow cost — what this would cost at GPT-5.3 Codex API prices
+    # Non-cached input tokens charged at full price, cached at discount
+    non_cached_input = max(0, prompt_tokens - cached_tokens)
     shadow_cost = (
-        (prompt_tokens / 1_000_000) * 1.75
-        + (completion_tokens / 1_000_000) * 14.00
+        (non_cached_input / 1_000_000) * 1.75
         + (cached_tokens / 1_000_000) * 0.175
+        + (completion_tokens / 1_000_000) * 14.00
     )
 
     usage = {
