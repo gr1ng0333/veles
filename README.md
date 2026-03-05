@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.5.2 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.5.4 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,14 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.5.4 -- Release Invariant Sync
+- Synced VERSION, pyproject.toml, and README displayed version to 6.5.4.
+- No runtime behavior changes; patch release for metadata/version consistency.
+
+### v6.5.3 -- Shadow Cost in Local Billing
+- `spent_usd` now uses effective cost: provider `cost` when available, otherwise `shadow_cost` (Codex OAuth path).
+- Keeps local budget moving even when upstream reports `$0.00`, while preserving `codex_shadow_cost_total`.
 
 ### v6.5.2 -- Quiet Watchdog + Monitor Snapshot
 - Removed Telegram soft-timeout spam from direct chat watchdog; soft timeouts are now logged to supervisor events.
