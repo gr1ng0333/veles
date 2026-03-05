@@ -36,15 +36,32 @@ RATE_LIMIT_COOLDOWN_SEC = 600  # 10 minutes cooldown on 429
 # Token management (single-account, backward-compatible)
 # ---------------------------------------------------------------------------
 
-def _load_tokens() -> Dict[str, str]:
-    """Load tokens from env vars, falling back to token file."""
+def _load_tokens(prefix: str = "CODEX") -> Dict[str, str]:
+    """Load tokens from env vars, falling back to token file.
+
+    Args:
+        prefix: Environment variable prefix (e.g. "CODEX" or "CODEX_CONSCIOUSNESS").
+    """
+    # Map env var names based on prefix
+    if prefix == "CODEX":
+        # Backward-compatible: original env var names
+        access_key, refresh_key, expires_key, account_key = (
+            "CODEX_ACCESS_TOKEN", "CODEX_REFRESH_TOKEN",
+            "CODEX_TOKEN_EXPIRES", "CODEX_ACCOUNT_ID",
+        )
+    else:
+        access_key = f"{prefix}_ACCESS"
+        refresh_key = f"{prefix}_REFRESH"
+        expires_key = f"{prefix}_EXPIRES"
+        account_key = f"{prefix}_ACCOUNT_ID"
+
     tokens = {
-        "access_token": os.environ.get("CODEX_ACCESS_TOKEN", ""),
-        "refresh_token": os.environ.get("CODEX_REFRESH_TOKEN", ""),
-        "expires": os.environ.get("CODEX_TOKEN_EXPIRES", "0"),
-        "account_id": os.environ.get("CODEX_ACCOUNT_ID", ""),
+        "access_token": os.environ.get(access_key, ""),
+        "refresh_token": os.environ.get(refresh_key, ""),
+        "expires": os.environ.get(expires_key, "0"),
+        "account_id": os.environ.get(account_key, ""),
     }
-    if not tokens["access_token"] and TOKEN_FILE.exists():
+    if prefix == "CODEX" and not tokens["access_token"] and TOKEN_FILE.exists():
         try:
             stored = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
             tokens["access_token"] = stored.get("access_token", "")
@@ -56,18 +73,31 @@ def _load_tokens() -> Dict[str, str]:
     return tokens
 
 
-def _save_tokens(tokens: Dict[str, str]) -> None:
+def _save_tokens(tokens: Dict[str, str], prefix: str = "CODEX") -> None:
     """Persist tokens to env vars and to disk."""
-    os.environ["CODEX_ACCESS_TOKEN"] = tokens["access_token"]
-    os.environ["CODEX_REFRESH_TOKEN"] = tokens["refresh_token"]
-    os.environ["CODEX_TOKEN_EXPIRES"] = str(tokens["expires"])
+    if prefix == "CODEX":
+        access_key, refresh_key, expires_key, account_key = (
+            "CODEX_ACCESS_TOKEN", "CODEX_REFRESH_TOKEN",
+            "CODEX_TOKEN_EXPIRES", "CODEX_ACCOUNT_ID",
+        )
+    else:
+        access_key = f"{prefix}_ACCESS"
+        refresh_key = f"{prefix}_REFRESH"
+        expires_key = f"{prefix}_EXPIRES"
+        account_key = f"{prefix}_ACCOUNT_ID"
+
+    os.environ[access_key] = tokens["access_token"]
+    os.environ[refresh_key] = tokens["refresh_token"]
+    os.environ[expires_key] = str(tokens["expires"])
     if tokens.get("account_id"):
-        os.environ["CODEX_ACCOUNT_ID"] = tokens["account_id"]
-    try:
-        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_FILE.write_text(json.dumps(tokens, indent=2), encoding="utf-8")
-    except Exception as e:
-        log.warning("Failed to save codex tokens to file: %s", e)
+        os.environ[account_key] = tokens["account_id"]
+    # Only persist to disk for the default CODEX prefix
+    if prefix == "CODEX":
+        try:
+            TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            TOKEN_FILE.write_text(json.dumps(tokens, indent=2), encoding="utf-8")
+        except Exception as e:
+            log.warning("Failed to save codex tokens to file: %s", e)
 
 
 def _do_refresh(refresh_token: str) -> Optional[Dict[str, str]]:
@@ -97,9 +127,9 @@ def _do_refresh(refresh_token: str) -> Optional[Dict[str, str]]:
         return None
 
 
-def refresh_token_if_needed() -> str:
+def refresh_token_if_needed(prefix: str = "CODEX") -> str:
     """Check token expiry and refresh if needed. Returns current access token."""
-    tokens = _load_tokens()
+    tokens = _load_tokens(prefix)
     expires = float(tokens.get("expires") or 0)
     now = time.time()
 
@@ -107,15 +137,15 @@ def refresh_token_if_needed() -> str:
         return tokens["access_token"]
 
     if not tokens["refresh_token"]:
-        log.warning("Codex token expired and no refresh token available")
+        log.warning("Codex token expired and no refresh token available (prefix=%s)", prefix)
         return tokens["access_token"]
 
-    log.info("Refreshing Codex OAuth token (expires in %.0fs)", max(0, expires - now))
+    log.info("Refreshing Codex OAuth token (prefix=%s, expires in %.0fs)", prefix, max(0, expires - now))
     result = _do_refresh(tokens["refresh_token"])
     if result:
         tokens.update(result)
-        _save_tokens(tokens)
-        log.info("Codex OAuth token refreshed successfully")
+        _save_tokens(tokens, prefix)
+        log.info("Codex OAuth token refreshed successfully (prefix=%s)", prefix)
         return tokens["access_token"]
     return tokens["access_token"]
 
@@ -824,6 +854,7 @@ def call_codex(
     tools: Optional[List[Dict[str, Any]]] = None,
     system_prompt: Optional[str] = None,
     model: str = "gpt-5.3-codex",
+    token_prefix: str = "CODEX",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Call Codex via ChatGPT OAuth endpoint.
@@ -833,6 +864,7 @@ def call_codex(
         tools: OpenAI Chat Completions format tools (optional).
         system_prompt: Override system prompt (if None, extracted from messages).
         model: Codex model name.
+        token_prefix: Env var prefix for tokens ("CODEX" or "CODEX_CONSCIOUSNESS").
 
     Returns:
         (message_dict, usage_dict) — same contract as LLMClient.chat().
@@ -913,11 +945,12 @@ def call_codex(
     event_data: Dict[str, Any] = {}
 
     # Multi-account rotation or single-account fallback
-    if _is_multi_account():
+    # Multi-account rotation only used for default CODEX prefix
+    if token_prefix == "CODEX" and _is_multi_account():
         event_data = _call_with_rotation(payload)
     else:
         for attempt in range(MAX_RETRIES + 1):
-            access_token = refresh_token_if_needed()
+            access_token = refresh_token_if_needed(token_prefix)
             if not access_token:
                 raise RuntimeError("No Codex access token available")
 
