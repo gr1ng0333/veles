@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.5.4 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.6.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,12 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.6.0 -- Telegram Document Outbound Support
+- Added outbound file delivery pipeline for Telegram documents (`sendDocument`) end-to-end: tool -> supervisor event -> Telegram client.
+- New tool: `send_document` in `ouroboros/tools/core.py` with support for `file_base64` or plain `content` + `filename` + optional caption/mime type.
+- Added supervisor event handler `send_document` and Telegram transport method `send_document(...)`.
+- Updated smoke tests to include the new tool in the registry expectation.
 
 ### v6.5.4 -- Release Invariant Sync
 - Synced VERSION, pyproject.toml, and README displayed version to 6.5.4.
