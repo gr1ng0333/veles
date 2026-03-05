@@ -129,6 +129,37 @@ _accounts: List[Dict[str, Any]] = []  # loaded account list
 _active_idx: int = 0  # index of current account
 
 
+def _tolerant_json_loads(raw: str) -> Any:
+    """Parse JSON with tolerance for common .env / shell mangling.
+
+    Handles: single quotes, outer quoting, trailing commas, BOM,
+    backslash-escaped double quotes inside outer double quotes.
+    """
+    s = raw.strip()
+    # Strip BOM
+    if s.startswith("\ufeff"):
+        s = s[1:]
+    # Strip outer single or double quotes added by shell / .env parsers
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        inner = s[1:-1]
+        # Unescape backslash-escaped quotes: \" → "
+        if s[0] == '"':
+            inner = inner.replace('\\"', '"')
+        # Only strip if the inner part looks like a JSON array/object
+        if inner.lstrip().startswith(("[", "{")):
+            s = inner
+    # Try standard parse first
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    # Fix single quotes → double quotes (Python dict style)
+    fixed = s.replace("'", '"')
+    # Remove trailing commas before } or ]
+    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+    return json.loads(fixed)
+
+
 def _load_accounts() -> List[Dict[str, Any]]:
     """Load accounts from CODEX_ACCOUNTS env var or state file.
 
@@ -139,7 +170,7 @@ def _load_accounts() -> List[Dict[str, Any]]:
     accounts: List[Dict[str, Any]] = []
     if raw:
         try:
-            parsed = json.loads(raw)
+            parsed = _tolerant_json_loads(raw)
             if isinstance(parsed, list):
                 for item in parsed:
                     if isinstance(item, dict) and item.get("refresh"):
@@ -150,8 +181,12 @@ def _load_accounts() -> List[Dict[str, Any]]:
                             "cooldown_until": 0.0,
                             "dead": False,
                         })
+            if accounts:
+                log.info("Loaded %d Codex accounts from CODEX_ACCOUNTS", len(accounts))
+            else:
+                log.warning("CODEX_ACCOUNTS parsed but contained 0 valid accounts (need 'refresh' key)")
         except (json.JSONDecodeError, ValueError) as e:
-            log.error("Failed to parse CODEX_ACCOUNTS: %s", e)
+            log.error("Failed to parse CODEX_ACCOUNTS: %s  |  raw[:200]=%s", e, raw[:200])
 
     # Merge persisted state (cooldowns, updated tokens)
     if ACCOUNTS_STATE_FILE.exists():
