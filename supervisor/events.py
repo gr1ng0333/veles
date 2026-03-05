@@ -454,6 +454,7 @@ def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
             },
         )
 
+
 def _handle_owner_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
     """Log owner_message_injected to events.jsonl for health invariant #5 (duplicate processing)."""
     from ouroboros.utils import utc_now_iso

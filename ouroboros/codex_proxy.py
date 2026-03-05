@@ -29,7 +29,7 @@ ACCOUNTS_STATE_FILE = Path("/opt/veles-data/state/codex_accounts_state.json")
 TIMEOUT_SEC = 120
 MAX_RETRIES = 2
 REFRESH_THRESHOLD_SEC = 3600  # refresh if < 1 hour until expiry
-RATE_LIMIT_COOLDOWN_SEC = 600  # 10 minutes cooldown on 429
+RATE_LIMIT_COOLDOWN_SEC = 300  # 5 minutes cooldown on 429
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +235,8 @@ def _load_accounts() -> List[Dict[str, Any]]:
                         if s.get("expires"):
                             accounts[i]["expires"] = float(s["expires"])
                         accounts[i]["cooldown_until"] = float(s.get("cooldown_until", 0))
-                        accounts[i]["dead"] = bool(s.get("dead", False))
+                        # dead is NOT restored — give accounts a second chance on restart.
+                        # If the subscription is truly dead, refresh will fail again → re-marked dead.
         except Exception as e:
             log.warning("Failed to load accounts state: %s", e)
 
@@ -262,10 +263,10 @@ def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
         log.warning("Failed to save accounts state: %s", e)
 
 
-def _init_accounts() -> None:
-    """Initialize account list once (idempotent)."""
+def _init_accounts(force: bool = False) -> None:
+    """Initialize account list (idempotent unless *force* is True)."""
     global _accounts, _active_idx
-    if _accounts:
+    if _accounts and not force:
         return
     _accounts = _load_accounts()
     if _accounts:
@@ -281,8 +282,8 @@ def _init_accounts() -> None:
         )
 
 
-def _get_active_account() -> Optional[Dict[str, Any]]:
-    """Return the active account dict, or None if all exhausted."""
+def _get_active_account() -> Optional[Tuple[Dict[str, Any], int]]:
+    """Return (active_account, index) atomically, or None if all exhausted."""
     global _active_idx
     with _accounts_lock:
         _init_accounts()
@@ -292,7 +293,7 @@ def _get_active_account() -> Optional[Dict[str, Any]]:
         # Try current first
         acc = _accounts[_active_idx]
         if not acc["dead"] and acc["cooldown_until"] < now:
-            return acc
+            return acc, _active_idx
         # Scan for a usable one
         for i in range(len(_accounts)):
             idx = (_active_idx + 1 + i) % len(_accounts)
@@ -300,7 +301,7 @@ def _get_active_account() -> Optional[Dict[str, Any]]:
             if not acc["dead"] and acc["cooldown_until"] < now:
                 _active_idx = idx
                 log.info("Codex account rotation: switched to #%d", idx)
-                return acc
+                return acc, idx
         log.error("All Codex accounts exhausted (dead or on cooldown)")
         return None
 
@@ -614,15 +615,13 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
     last_error: Optional[Exception] = None
 
     while True:
-        acc = _get_active_account()
-        if acc is None:
+        result = _get_active_account()
+        if result is None:
             raise RuntimeError(
                 "All Codex accounts exhausted (dead or on cooldown). "
                 f"Last error: {last_error}"
             )
-
-        with _accounts_lock:
-            idx = _active_idx
+        acc, idx = result
 
         if idx in tried:
             # We've cycled through all accounts
@@ -658,6 +657,17 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
                         continue
                     # All retries exhausted for this account
                     _on_dead_account(idx)
+                    break
+                if e.code in (500, 502, 503):
+                    last_error = e
+                    if attempt < MAX_RETRIES:
+                        log.warning(
+                            "Codex server error %d (account #%d, attempt %d), retrying",
+                            e.code, idx, attempt + 1,
+                        )
+                        time.sleep(2 ** attempt)
+                        continue
+                    # All retries exhausted — rotate to next account
                     break
                 # Other HTTP errors — don't rotate, raise immediately
                 body_preview = ""
