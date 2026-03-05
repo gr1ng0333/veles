@@ -66,6 +66,40 @@ def _drive_write(ctx: ToolContext, path: str, content: str, mode: str = "overwri
 # Send photo to owner
 # ---------------------------------------------------------------------------
 
+
+
+def _send_document(
+    ctx: ToolContext,
+    file_base64: str = "",
+    filename: str = "file.bin",
+    caption: str = "",
+    mime_type: str = "application/octet-stream",
+    content: str = "",
+) -> str:
+    """Send a document/file to Telegram owner chat."""
+    chat_id = int(ctx.current_chat_id or 0)
+    if not chat_id:
+        return "⚠️ No current chat available for send_document."
+
+    payload_b64 = (file_base64 or "").strip()
+    if content:
+        payload_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+
+    if not payload_b64:
+        return "⚠️ send_document requires file_base64 or content."
+
+    safe_filename = (filename or "").strip() or "file.bin"
+    event = {
+        "type": "send_document",
+        "chat_id": chat_id,
+        "file_base64": payload_b64,
+        "filename": safe_filename,
+        "caption": caption or "",
+        "mime_type": mime_type or "application/octet-stream",
+    }
+    ctx.pending_events.append(event)
+    return f"✅ Document queued for delivery: {safe_filename}"
+
 def _send_photo(ctx: ToolContext, image_base64: str, caption: str = "") -> str:
     """Send a base64-encoded image to the owner's Telegram chat."""
     if not ctx.current_chat_id:
@@ -361,6 +395,22 @@ def get_tools() -> List[ToolEntry]:
                 "mode": {"type": "string", "enum": ["overwrite", "append"], "default": "overwrite"},
             }, "required": ["path", "content"]},
         }, _drive_write),
+
+        ToolEntry("send_document", {
+            "name": "send_document",
+            "description": "Отправить файл (document) владельцу в Telegram.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_base64": {"type": "string", "description": "Содержимое файла в base64"},
+                    "filename": {"type": "string", "description": "Имя файла (например report.py)"},
+                    "caption": {"type": "string", "description": "Подпись к файлу"},
+                    "mime_type": {"type": "string", "description": "MIME-тип файла"},
+                    "content": {"type": "string", "description": "Текст файла; если передан, будет закодирован в base64 автоматически"},
+                },
+                "required": [],
+            },
+        }, _send_document),
         ToolEntry("send_photo", {
             "name": "send_photo",
             "description": (
