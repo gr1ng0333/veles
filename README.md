@@ -226,6 +226,10 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
+### v6.5.3 -- Shadow Cost in Local Billing
+- `spent_usd` now uses effective cost: provider `cost` when available, otherwise `shadow_cost` (Codex OAuth path).
+- Keeps local budget moving even when upstream reports `$0.00`, while preserving `codex_shadow_cost_total`.
+
 ### v6.5.2 -- Quiet Watchdog + Monitor Snapshot
 - Removed Telegram soft-timeout spam from direct chat watchdog; soft timeouts are now logged to supervisor events.
 - Added `monitor_snapshot` health tool that aggregates runtime state (`state`, `doctor`, `health_check`, `queue_snapshot`, `codex_accounts`) into one report.
