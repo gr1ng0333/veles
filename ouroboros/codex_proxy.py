@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -24,13 +25,15 @@ CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 AUTH_ENDPOINT = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 TOKEN_FILE = Path("/opt/veles-data/state/codex_tokens.json")
+ACCOUNTS_STATE_FILE = Path("/opt/veles-data/state/codex_accounts_state.json")
 TIMEOUT_SEC = 120
 MAX_RETRIES = 2
 REFRESH_THRESHOLD_SEC = 3600  # refresh if < 1 hour until expiry
+RATE_LIMIT_COOLDOWN_SEC = 600  # 10 minutes cooldown on 429
 
 
 # ---------------------------------------------------------------------------
-# Token management
+# Token management (single-account, backward-compatible)
 # ---------------------------------------------------------------------------
 
 def _load_tokens() -> Dict[str, str]:
@@ -67,6 +70,33 @@ def _save_tokens(tokens: Dict[str, str]) -> None:
         log.warning("Failed to save codex tokens to file: %s", e)
 
 
+def _do_refresh(refresh_token: str) -> Optional[Dict[str, str]]:
+    """Execute OAuth refresh and return new tokens dict, or None on failure."""
+    now = time.time()
+    try:
+        body = json.dumps({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": CLIENT_ID,
+        }).encode()
+        req = urllib.request.Request(
+            AUTH_ENDPOINT,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+        return {
+            "access_token": data.get("access_token", ""),
+            "refresh_token": data.get("refresh_token", refresh_token),
+            "expires": str(int(now + int(data.get("expires_in", 864000)))),
+        }
+    except Exception as e:
+        log.error("OAuth refresh failed: %s", e)
+        return None
+
+
 def refresh_token_if_needed() -> str:
     """Check token expiry and refresh if needed. Returns current access token."""
     tokens = _load_tokens()
@@ -81,34 +111,182 @@ def refresh_token_if_needed() -> str:
         return tokens["access_token"]
 
     log.info("Refreshing Codex OAuth token (expires in %.0fs)", max(0, expires - now))
-    try:
-        body = json.dumps({
-            "grant_type": "refresh_token",
-            "refresh_token": tokens["refresh_token"],
-            "client_id": CLIENT_ID,
-        }).encode()
-        req = urllib.request.Request(
-            AUTH_ENDPOINT,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-
-        new_access = data.get("access_token", "")
-        new_refresh = data.get("refresh_token", tokens["refresh_token"])
-        new_expires = str(int(now + int(data.get("expires_in", 864000))))
-
-        tokens["access_token"] = new_access
-        tokens["refresh_token"] = new_refresh
-        tokens["expires"] = new_expires
+    result = _do_refresh(tokens["refresh_token"])
+    if result:
+        tokens.update(result)
         _save_tokens(tokens)
         log.info("Codex OAuth token refreshed successfully")
-        return new_access
-    except Exception as e:
-        log.error("Failed to refresh Codex token: %s", e)
         return tokens["access_token"]
+    return tokens["access_token"]
+
+
+# ---------------------------------------------------------------------------
+# Multi-account rotation
+# ---------------------------------------------------------------------------
+
+_accounts_lock = threading.Lock()
+_accounts: List[Dict[str, Any]] = []  # loaded account list
+_active_idx: int = 0  # index of current account
+
+
+def _load_accounts() -> List[Dict[str, Any]]:
+    """Load accounts from CODEX_ACCOUNTS env var or state file.
+
+    Returns list of account dicts with keys:
+      access, refresh, expires, cooldown_until, dead
+    """
+    raw = os.environ.get("CODEX_ACCOUNTS", "")
+    accounts: List[Dict[str, Any]] = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict) and item.get("refresh"):
+                        accounts.append({
+                            "access": item.get("access", ""),
+                            "refresh": item["refresh"],
+                            "expires": float(item.get("expires", 0)),
+                            "cooldown_until": 0.0,
+                            "dead": False,
+                        })
+        except (json.JSONDecodeError, ValueError) as e:
+            log.error("Failed to parse CODEX_ACCOUNTS: %s", e)
+
+    # Merge persisted state (cooldowns, updated tokens)
+    if ACCOUNTS_STATE_FILE.exists():
+        try:
+            state = json.loads(ACCOUNTS_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(state, list):
+                for i, s in enumerate(state):
+                    if i < len(accounts) and isinstance(s, dict):
+                        # Restore runtime fields from state
+                        if s.get("access"):
+                            accounts[i]["access"] = s["access"]
+                        if s.get("refresh"):
+                            accounts[i]["refresh"] = s["refresh"]
+                        if s.get("expires"):
+                            accounts[i]["expires"] = float(s["expires"])
+                        accounts[i]["cooldown_until"] = float(s.get("cooldown_until", 0))
+                        accounts[i]["dead"] = bool(s.get("dead", False))
+        except Exception as e:
+            log.warning("Failed to load accounts state: %s", e)
+
+    return accounts
+
+
+def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
+    """Persist account state (tokens, cooldowns) to disk."""
+    try:
+        ACCOUNTS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        serializable = []
+        for acc in accounts:
+            serializable.append({
+                "access": acc.get("access", ""),
+                "refresh": acc.get("refresh", ""),
+                "expires": acc.get("expires", 0),
+                "cooldown_until": acc.get("cooldown_until", 0),
+                "dead": acc.get("dead", False),
+            })
+        ACCOUNTS_STATE_FILE.write_text(
+            json.dumps(serializable, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        log.warning("Failed to save accounts state: %s", e)
+
+
+def _init_accounts() -> None:
+    """Initialize account list once (idempotent)."""
+    global _accounts, _active_idx
+    if _accounts:
+        return
+    _accounts = _load_accounts()
+    if _accounts:
+        # Pick first non-dead, non-cooldown account
+        now = time.time()
+        for i, acc in enumerate(_accounts):
+            if not acc["dead"] and acc["cooldown_until"] < now:
+                _active_idx = i
+                break
+        log.info(
+            "Codex multi-account: %d accounts loaded, active=#%d",
+            len(_accounts), _active_idx,
+        )
+
+
+def _get_active_account() -> Optional[Dict[str, Any]]:
+    """Return the active account dict, or None if all exhausted."""
+    global _active_idx
+    with _accounts_lock:
+        _init_accounts()
+        if not _accounts:
+            return None
+        now = time.time()
+        # Try current first
+        acc = _accounts[_active_idx]
+        if not acc["dead"] and acc["cooldown_until"] < now:
+            return acc
+        # Scan for a usable one
+        for i in range(len(_accounts)):
+            idx = (_active_idx + 1 + i) % len(_accounts)
+            acc = _accounts[idx]
+            if not acc["dead"] and acc["cooldown_until"] < now:
+                _active_idx = idx
+                log.info("Codex account rotation: switched to #%d", idx)
+                return acc
+        log.error("All Codex accounts exhausted (dead or on cooldown)")
+        return None
+
+
+def _on_rate_limit(account_idx: int) -> None:
+    """Put account on cooldown after HTTP 429."""
+    with _accounts_lock:
+        if account_idx < len(_accounts):
+            _accounts[account_idx]["cooldown_until"] = time.time() + RATE_LIMIT_COOLDOWN_SEC
+            log.warning(
+                "Codex account #%d rate-limited, cooldown %ds",
+                account_idx, RATE_LIMIT_COOLDOWN_SEC,
+            )
+            _save_accounts_state(_accounts)
+
+
+def _on_dead_account(account_idx: int) -> None:
+    """Mark account as dead after unrecoverable auth failure."""
+    with _accounts_lock:
+        if account_idx < len(_accounts):
+            _accounts[account_idx]["dead"] = True
+            log.error("Codex account #%d marked dead", account_idx)
+            _save_accounts_state(_accounts)
+
+
+def _refresh_account(acc: Dict[str, Any], account_idx: int) -> str:
+    """Refresh a specific account's token. Returns access token."""
+    now = time.time()
+    if acc["access"] and (acc["expires"] - now) > REFRESH_THRESHOLD_SEC:
+        return acc["access"]
+
+    if not acc["refresh"]:
+        log.warning("Account #%d: no refresh token", account_idx)
+        return acc["access"]
+
+    log.info("Refreshing account #%d token (expires in %.0fs)", account_idx, max(0, acc["expires"] - now))
+    result = _do_refresh(acc["refresh"])
+    if result:
+        with _accounts_lock:
+            acc["access"] = result["access_token"]
+            acc["refresh"] = result["refresh_token"]
+            acc["expires"] = float(result["expires"])
+            _save_accounts_state(_accounts)
+        log.info("Account #%d token refreshed", account_idx)
+        return acc["access"]
+    return acc["access"]
+
+
+def _is_multi_account() -> bool:
+    """Check if multi-account rotation is configured."""
+    with _accounts_lock:
+        _init_accounts()
+        return len(_accounts) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +687,98 @@ def _do_request(access_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Multi-account request with rotation
+# ---------------------------------------------------------------------------
+
+def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute Codex request with multi-account rotation on errors.
+
+    Tries the active account first. On 429 → cooldown + rotate.
+    On 401/403 after failed refresh → mark dead + rotate.
+    """
+    tried: set = set()
+    last_error: Optional[Exception] = None
+
+    while True:
+        acc = _get_active_account()
+        if acc is None:
+            raise RuntimeError(
+                "All Codex accounts exhausted (dead or on cooldown). "
+                f"Last error: {last_error}"
+            )
+
+        with _accounts_lock:
+            idx = _active_idx
+
+        if idx in tried:
+            # We've cycled through all accounts
+            raise RuntimeError(
+                f"All Codex accounts tried. Last error: {last_error}"
+            )
+        tried.add(idx)
+
+        # Refresh token for this account
+        access_token = _refresh_account(acc, idx)
+        if not access_token:
+            _on_dead_account(idx)
+            continue
+
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                result = _do_request(access_token, payload)
+                log.info("Codex request succeeded via account #%d", idx)
+                return result
+            except urllib.error.HTTPError as e:
+                last_error = e
+                if e.code == 429:
+                    _on_rate_limit(idx)
+                    break  # break retry loop → outer while picks next account
+                if e.code in (401, 403):
+                    if attempt < MAX_RETRIES:
+                        # Force refresh and retry
+                        acc["expires"] = 0
+                        access_token = _refresh_account(acc, idx)
+                        if not access_token:
+                            _on_dead_account(idx)
+                            break
+                        continue
+                    # All retries exhausted for this account
+                    _on_dead_account(idx)
+                    break
+                # Other HTTP errors — don't rotate, raise immediately
+                body_preview = ""
+                try:
+                    body_preview = e.read().decode(errors="replace")[:500]
+                except Exception:
+                    pass
+                log.error("Codex HTTP error %d: %s", e.code, body_preview)
+                raise
+            except (urllib.error.URLError, OSError, TimeoutError) as e:
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    log.warning(
+                        "Codex network error (account #%d, attempt %d): %s",
+                        idx, attempt + 1, e,
+                    )
+                    time.sleep(2 ** attempt)
+                    continue
+                # Network error on all retries — try next account
+                break
+            except ValueError as e:
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    log.warning(
+                        "Codex SSE parse error (account #%d, attempt %d): %s",
+                        idx, attempt + 1, e,
+                    )
+                    continue
+                break
+        else:
+            # retry loop completed without break → success already returned
+            pass  # pragma: no cover
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -605,54 +875,58 @@ def call_codex(
     last_error: Optional[Exception] = None
     event_data: Dict[str, Any] = {}
 
-    for attempt in range(MAX_RETRIES + 1):
-        access_token = refresh_token_if_needed()
-        if not access_token:
-            raise RuntimeError("No Codex access token available")
-
-        try:
-            event_data = _do_request(access_token, payload)
-            break
-        except urllib.error.HTTPError as e:
-            last_error = e
-            if e.code in (401, 403) and attempt < MAX_RETRIES:
-                log.warning(
-                    "Codex returned %d, forcing token refresh (attempt %d)",
-                    e.code, attempt + 1,
-                )
-                os.environ["CODEX_TOKEN_EXPIRES"] = "0"
-                continue
-            body_preview = ""
-            try:
-                body_preview = e.read().decode(errors="replace")[:500]
-            except Exception:
-                pass
-            log.error("Codex HTTP error %d: %s", e.code, body_preview)
-            raise
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
-            last_error = e
-            if attempt < MAX_RETRIES:
-                log.warning(
-                    "Codex network error, retrying (attempt %d): %s",
-                    attempt + 1, e,
-                )
-                time.sleep(2 ** attempt)
-                continue
-            raise
-        except ValueError as e:
-            # SSE parse error
-            last_error = e
-            if attempt < MAX_RETRIES:
-                log.warning(
-                    "Codex SSE parse error, retrying (attempt %d): %s",
-                    attempt + 1, e,
-                )
-                continue
-            raise
+    # Multi-account rotation or single-account fallback
+    if _is_multi_account():
+        event_data = _call_with_rotation(payload)
     else:
-        raise RuntimeError(
-            f"Codex request failed after {MAX_RETRIES + 1} attempts: {last_error}"
-        )
+        for attempt in range(MAX_RETRIES + 1):
+            access_token = refresh_token_if_needed()
+            if not access_token:
+                raise RuntimeError("No Codex access token available")
+
+            try:
+                event_data = _do_request(access_token, payload)
+                break
+            except urllib.error.HTTPError as e:
+                last_error = e
+                if e.code in (401, 403) and attempt < MAX_RETRIES:
+                    log.warning(
+                        "Codex returned %d, forcing token refresh (attempt %d)",
+                        e.code, attempt + 1,
+                    )
+                    os.environ["CODEX_TOKEN_EXPIRES"] = "0"
+                    continue
+                body_preview = ""
+                try:
+                    body_preview = e.read().decode(errors="replace")[:500]
+                except Exception:
+                    pass
+                log.error("Codex HTTP error %d: %s", e.code, body_preview)
+                raise
+            except (urllib.error.URLError, OSError, TimeoutError) as e:
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    log.warning(
+                        "Codex network error, retrying (attempt %d): %s",
+                        attempt + 1, e,
+                    )
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+            except ValueError as e:
+                # SSE parse error
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    log.warning(
+                        "Codex SSE parse error, retrying (attempt %d): %s",
+                        attempt + 1, e,
+                    )
+                    continue
+                raise
+        else:
+            raise RuntimeError(
+                f"Codex request failed after {MAX_RETRIES + 1} attempts: {last_error}"
+            )
 
     # Extract response from event data
     response = event_data.get("response", {})
