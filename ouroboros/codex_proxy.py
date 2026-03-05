@@ -133,7 +133,7 @@ def _tolerant_json_loads(raw: str) -> Any:
     """Parse JSON with tolerance for common .env / shell mangling.
 
     Handles: single quotes, outer quoting, trailing commas, BOM,
-    backslash-escaped double quotes inside outer double quotes.
+    backslash-escaped double quotes, bare (unquoted) keys.
     """
     s = raw.strip()
     # Strip BOM
@@ -155,6 +155,8 @@ def _tolerant_json_loads(raw: str) -> Any:
         pass
     # Fix single quotes → double quotes (Python dict style)
     fixed = s.replace("'", '"')
+    # Quote bare keys: {refresh: → {"refresh":
+    fixed = re.sub(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:', r' "\1":', fixed)
     # Remove trailing commas before } or ]
     fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
     return json.loads(fixed)
