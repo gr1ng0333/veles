@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.6.5 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.8.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,15 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.8.0
+- Added `browser_fill_login_form` to detect likely username/password fields, fill credentials, and submit common login forms.
+- Added `browser_check_login_state` to infer post-login state from selectors, visible password fields, URL/title/body signals, and common auth error text.
+- Added focused tests for login selector choice/state inference and registered both tools in smoke coverage.
+
+### v6.7.2
+- Split `codex_proxy.py` into helper modules and shrank loop-runtime structural hotspots so smoke constraints pass again.
+- Repaired release metadata trail and kept full pytest green after the refactor.
 
 ### v6.7.1
 - Improve evolution loop guards and finalize behavior under heavy contexts.
