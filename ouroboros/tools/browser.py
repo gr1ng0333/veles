@@ -36,156 +36,14 @@ _pw_instance = None
 _pw_thread_id = None  # Track which thread owns the Playwright instance
 
 
-_USERNAME_CANDIDATE_JS = r"""() => {
-    const toInfo = (el, index, source, score) => {
-        const form = el.form || el.closest('form');
-        const attrs = [el.id, el.name, el.getAttribute('placeholder'), el.getAttribute('aria-label'), el.getAttribute('autocomplete')]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase();
-        return {
-            selector: window.__veles_build_selector(el, index),
-            type: (el.type || '').toLowerCase(),
-            form_selector: form ? window.__veles_build_selector(form, 0) : '',
-            attrs,
-            source,
-            score,
-        };
-    };
-
-    const inputs = Array.from(document.querySelectorAll('input'));
-    return inputs
-        .filter((el) => {
-            const type = (el.type || 'text').toLowerCase();
-            return ['text', 'email', 'tel'].includes(type) || !type;
-        })
-        .map((el, index) => {
-            const attrs = [el.id, el.name, el.getAttribute('placeholder'), el.getAttribute('aria-label'), el.getAttribute('autocomplete')]
-                .filter(Boolean)
-                .join(' ')
-                .toLowerCase();
-            let score = 0;
-            if (attrs.includes('email')) score += 6;
-            if (attrs.includes('user')) score += 5;
-            if (attrs.includes('login')) score += 5;
-            if (attrs.includes('username')) score += 6;
-            if ((el.getAttribute('autocomplete') || '').toLowerCase() === 'username') score += 8;
-            if ((el.type || '').toLowerCase() === 'email') score += 7;
-            if (!attrs.includes('search')) score += 1;
-            return toInfo(el, index, 'heuristic', score);
-        })
-        .sort((a, b) => b.score - a.score);
-}"""
-
-_PASSWORD_CANDIDATE_JS = r"""() => {
-    const toInfo = (el, index, source, score) => {
-        const form = el.form || el.closest('form');
-        const attrs = [el.id, el.name, el.getAttribute('placeholder'), el.getAttribute('aria-label'), el.getAttribute('autocomplete')]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase();
-        return {
-            selector: window.__veles_build_selector(el, index),
-            type: (el.type || '').toLowerCase(),
-            form_selector: form ? window.__veles_build_selector(form, 0) : '',
-            attrs,
-            source,
-            score,
-        };
-    };
-
-    const inputs = Array.from(document.querySelectorAll('input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"]'));
-    return inputs
-        .map((el, index) => {
-            const attrs = [el.id, el.name, el.getAttribute('placeholder'), el.getAttribute('aria-label'), el.getAttribute('autocomplete')]
-                .filter(Boolean)
-                .join(' ')
-                .toLowerCase();
-            let score = 10;
-            if (attrs.includes('password')) score += 8;
-            if ((el.getAttribute('autocomplete') || '').toLowerCase() === 'current-password') score += 10;
-            return toInfo(el, index, 'heuristic', score);
-        })
-        .sort((a, b) => b.score - a.score);
-}"""
-
-_FILL_INPUT_JS = r"""({selector, value}) => {
-    const el = document.querySelector(selector);
-    if (!el) return {ok: false, reason: 'not_found', selector};
-    el.focus();
-    el.value = value;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    return {ok: true, selector, tag: el.tagName.toLowerCase(), type: (el.type || '').toLowerCase()};
-}"""
-
-_SUBMIT_LOGIN_FORM_JS = r"""({passwordSelector, submitSelector}) => {
-    const passwordEl = passwordSelector ? document.querySelector(passwordSelector) : null;
-    const explicitSubmit = submitSelector ? document.querySelector(submitSelector) : null;
-    const form = passwordEl ? (passwordEl.form || passwordEl.closest('form')) : null;
-
-    const clickAndDescribe = (el, selector, source) => {
-        el.click();
-        return {submitted: true, method: 'click', selector, source};
-    };
-
-    if (explicitSubmit) {
-        return clickAndDescribe(explicitSubmit, submitSelector, 'explicit_submit_selector');
-    }
-
-    if (form) {
-        const submitEl = form.querySelector('button[type="submit"], input[type="submit"], button:not([type]), [role="button"]');
-        if (submitEl) {
-            return clickAndDescribe(submitEl, window.__veles_build_selector(submitEl, 0), 'form_submit_control');
-        }
-        if (typeof form.requestSubmit === 'function') {
-            form.requestSubmit();
-            return {submitted: true, method: 'requestSubmit', selector: window.__veles_build_selector(form, 0), source: 'form_request_submit'};
-        }
-        form.submit();
-        return {submitted: true, method: 'form_submit', selector: window.__veles_build_selector(form, 0), source: 'form_submit'};
-    }
-
-    if (passwordEl) {
-        passwordEl.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
-        passwordEl.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
-        return {submitted: true, method: 'enter_key', selector: passwordSelector, source: 'password_enter'};
-    }
-
-    return {submitted: false, method: 'none', selector: '', source: 'no_submit_target'};
-}"""
-
-_LOGIN_SIGNALS_JS = r"""() => {
-    const visible = (el) => {
-        if (!el) return false;
-        const style = window.getComputedStyle(el);
-        const rect = el.getBoundingClientRect();
-        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-    };
-    const texts = Array.from(document.querySelectorAll('[role="alert"], .error, .alert, .alert-danger, .notification, .flash, [aria-live]'))
-        .map((el) => (el.textContent || '').trim())
-        .filter(Boolean)
-        .slice(0, 10);
-    const bodyText = (document.body.innerText || '').toLowerCase();
-    const passwordFields = Array.from(document.querySelectorAll('input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"]'));
-    const profileUi = Array.from(document.querySelectorAll('a, button, [role="button"], nav, header'))
-        .map((el) => (el.textContent || '').trim())
-        .filter(Boolean)
-        .slice(0, 50)
-        .join(' | ')
-        .toLowerCase();
-    return {
-        url: window.location.href,
-        title: document.title || '',
-        visible_password_fields: passwordFields.filter(visible).length,
-        total_password_fields: passwordFields.length,
-        error_texts: texts,
-        body_mentions_logout: /logout|log out|sign out/.test(bodyText),
-        body_mentions_profile: /profile|account|my account|dashboard/.test(bodyText),
-        body_mentions_login: /login|log in|sign in/.test(bodyText),
-        has_profile_ui: /logout|log out|sign out|profile|account|dashboard/.test(profileUi),
-    };
-}"""
+from ouroboros.tools.browser_login_helpers import (
+    _FILL_INPUT_JS,
+    _LOGIN_SIGNALS_JS,
+    _PASSWORD_CANDIDATE_JS,
+    _SUBMIT_LOGIN_FORM_JS,
+    _USERNAME_CANDIDATE_JS,
+    infer_login_state,
+)
 
 
 def _ensure_playwright_installed():
@@ -246,6 +104,44 @@ def _reset_playwright_greenlet():
     log.info("Playwright greenlet state reset complete")
 
 
+def _browser_context_options(storage_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    options: Dict[str, Any] = {
+        "viewport": {"width": 1920, "height": 1080},
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+    }
+    if storage_state:
+        options["storage_state"] = storage_state
+    return options
+
+
+def _apply_stealth(page: Any) -> None:
+    if _HAS_STEALTH:
+        stealth = Stealth()
+        stealth.apply_stealth_sync(page)
+
+
+def _replace_browser_context(ctx: ToolContext, storage_state: Optional[Dict[str, Any]] = None) -> Any:
+    try:
+        if ctx.browser_state.page is not None:
+            ctx.browser_state.page.close()
+    except Exception:
+        log.debug("Failed to close browser page during context replace", exc_info=True)
+    try:
+        if ctx.browser_state.context is not None:
+            ctx.browser_state.context.close()
+    except Exception:
+        log.debug("Failed to close browser context during context replace", exc_info=True)
+
+    ctx.browser_state.context = ctx.browser_state.browser.new_context(**_browser_context_options(storage_state))
+    ctx.browser_state.page = ctx.browser_state.context.new_page()
+    _apply_stealth(ctx.browser_state.page)
+    ctx.browser_state.page.set_default_timeout(30000)
+    return ctx.browser_state.page
+
+
 def _ensure_browser(ctx: ToolContext):
     """Create or reuse browser for this task. Browser state lives in ctx,
     but Playwright instance is module-level to avoid greenlet issues."""
@@ -258,11 +154,10 @@ def _ensure_browser(ctx: ToolContext):
 
     if ctx.browser_state.browser is not None:
         try:
-            if ctx.browser_state.browser.is_connected():
+            if ctx.browser_state.browser.is_connected() and ctx.browser_state.page is not None:
                 return ctx.browser_state.page
         except Exception:
             log.debug("Browser connection check failed in _ensure_browser", exc_info=True)
-            pass
         cleanup_browser(ctx)
 
     _ensure_playwright_installed()
@@ -285,7 +180,6 @@ def _ensure_browser(ctx: ToolContext):
                 raise
 
     ctx.browser_state.pw_instance = _pw_instance
-
     ctx.browser_state.browser = _pw_instance.chromium.launch(
         headless=True,
         args=[
@@ -296,27 +190,14 @@ def _ensure_browser(ctx: ToolContext):
             "--window-size=1920,1080",
         ],
     )
-    ctx.browser_state.page = ctx.browser_state.browser.new_page(
-        viewport={"width": 1920, "height": 1080},
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        ),
-    )
-
-    if _HAS_STEALTH:
-        stealth = Stealth()
-        stealth.apply_stealth_sync(ctx.browser_state.page)
-
-    ctx.browser_state.page.set_default_timeout(30000)
-    return ctx.browser_state.page
+    return _replace_browser_context(ctx)
 
 
 def cleanup_browser(ctx: ToolContext) -> None:
     """Close browser and playwright. Called by agent.py in finally block.
 
     Note: We DON'T stop the module-level _pw_instance here to allow reuse
-    across tasks. Only close the browser and page for this context.
+    across tasks. Only close the browser/page/context for this context.
     """
     global _pw_instance
 
@@ -325,7 +206,11 @@ def cleanup_browser(ctx: ToolContext) -> None:
             ctx.browser_state.page.close()
     except Exception:
         log.debug("Failed to close browser page during cleanup", exc_info=True)
-        pass
+    try:
+        if ctx.browser_state.context is not None:
+            ctx.browser_state.context.close()
+    except Exception:
+        log.debug("Failed to close browser context during cleanup", exc_info=True)
     try:
         if ctx.browser_state.browser is not None:
             ctx.browser_state.browser.close()
@@ -335,8 +220,10 @@ def cleanup_browser(ctx: ToolContext) -> None:
             _reset_playwright_greenlet()
 
     ctx.browser_state.page = None
+    ctx.browser_state.context = None
     ctx.browser_state.browser = None
     ctx.browser_state.pw_instance = None
+    ctx.browser_state.active_session_name = None
 
 
 _MARKDOWN_JS = """() => {
@@ -459,91 +346,6 @@ def choose_login_field_selectors(
     }
 
 
-def infer_login_state(signals: Dict[str, Any]) -> Dict[str, Any]:
-    """Infer coarse login state from page signals. Pure function for unit tests."""
-    matched = list(signals.get("matched") or [])
-    reason_parts: List[str] = []
-
-    if "success_selector" in matched:
-        return {
-            "state": "logged_in",
-            "reason": "explicit success selector matched",
-            "matched": matched,
-        }
-    if "failure_selector" in matched:
-        return {
-            "state": "login_failed",
-            "reason": "explicit failure selector matched",
-            "matched": matched,
-        }
-    if "logged_out_selector" in matched:
-        return {
-            "state": "logged_out",
-            "reason": "explicit logged_out selector matched",
-            "matched": matched,
-        }
-
-    error_text = " ".join(signals.get("error_texts") or []).lower()
-    if error_text:
-        failure_terms = ["invalid", "incorrect", "wrong", "try again", "error", "failed", "required"]
-        if any(term in error_text for term in failure_terms):
-            return {
-                "state": "login_failed",
-                "reason": "error or alert text suggests authentication failure",
-                "matched": matched,
-            }
-        reason_parts.append("alert text present but not clearly auth-related")
-
-    visible_password_fields = int(signals.get("visible_password_fields") or 0)
-    body_mentions_login = bool(signals.get("body_mentions_login"))
-    has_profile_ui = bool(signals.get("has_profile_ui"))
-    body_mentions_profile = bool(signals.get("body_mentions_profile"))
-    body_mentions_logout = bool(signals.get("body_mentions_logout"))
-
-    if has_profile_ui or body_mentions_logout or body_mentions_profile:
-        if visible_password_fields == 0:
-            return {
-                "state": "logged_in",
-                "reason": "profile/logout UI present and password form no longer visible",
-                "matched": matched,
-            }
-        reason_parts.append("profile-like UI present but password field still visible")
-
-    if visible_password_fields > 0 and body_mentions_login:
-        return {
-            "state": "logged_out",
-            "reason": "login/sign-in page still visible with password field",
-            "matched": matched,
-        }
-
-    if visible_password_fields > 0:
-        return {
-            "state": "unclear",
-            "reason": "password field still visible without explicit failure signal",
-            "matched": matched,
-        }
-
-    if has_profile_ui or body_mentions_profile or body_mentions_logout:
-        return {
-            "state": "logged_in",
-            "reason": "page suggests authenticated account UI",
-            "matched": matched,
-        }
-
-    if body_mentions_login:
-        return {
-            "state": "logged_out",
-            "reason": "page still looks like login screen",
-            "matched": matched,
-        }
-
-    return {
-        "state": "unclear",
-        "reason": "; ".join(reason_parts) if reason_parts else "insufficient signals",
-        "matched": matched,
-    }
-
-
 def _safe_selector_presence(page: Any, selector: str, timeout: int) -> bool:
     selector = _normalize_selector(selector)
     if not selector:
@@ -553,6 +355,57 @@ def _safe_selector_presence(page: Any, selector: str, timeout: int) -> bool:
         return handle is not None
     except Exception:
         return False
+
+
+def _session_snapshot(context: Any) -> Dict[str, Any]:
+    state = context.storage_state()
+    cookies = list(state.get("cookies") or [])
+    origins = list(state.get("origins") or [])
+    return {
+        "storage_state": state,
+        "cookies_count": len(cookies),
+        "origins_count": len(origins),
+    }
+
+
+def _browser_save_session(ctx: ToolContext, session_name: str) -> str:
+    name = (session_name or "").strip()
+    if not name:
+        return "Error: session_name is required"
+    page = _ensure_browser(ctx)
+    snapshot = _session_snapshot(ctx.browser_state.context)
+    ctx.browser_state.saved_sessions[name] = snapshot
+    ctx.browser_state.active_session_name = name
+    result = {
+        "session_name": name,
+        "cookies_count": snapshot["cookies_count"],
+        "origins_count": snapshot["origins_count"],
+        "current_url": page.url,
+    }
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _browser_restore_session(ctx: ToolContext, session_name: str, url: str = "") -> str:
+    name = (session_name or "").strip()
+    if not name:
+        return "Error: session_name is required"
+    saved = ctx.browser_state.saved_sessions.get(name)
+    if not saved:
+        return f"Error: session '{name}' not found in current task context"
+    _ensure_browser(ctx)
+    page = _replace_browser_context(ctx, storage_state=saved.get("storage_state") or {})
+    ctx.browser_state.active_session_name = name
+    target_url = (url or "").strip()
+    if target_url:
+        page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
+    result = {
+        "session_name": name,
+        "cookies_count": saved.get("cookies_count", 0),
+        "origins_count": saved.get("origins_count", 0),
+        "current_url": page.url,
+        "navigated": bool(target_url),
+    }
+    return json.dumps(result, ensure_ascii=False)
 
 
 def _browse_page(ctx: ToolContext, url: str, output: str = "text",
@@ -648,6 +501,9 @@ def _browser_check_login_state(
     success_selector: str = "",
     failure_selector: str = "",
     logged_out_selector: str = "",
+    expected_url_substring: str = "",
+    success_cookie_names: Optional[List[str]] = None,
+    failure_text_substrings: Optional[List[str]] = None,
     timeout: int = 5000,
 ) -> str:
     page = _ensure_browser(ctx)
@@ -662,7 +518,23 @@ def _browser_check_login_state(
         matched.append("logged_out_selector")
 
     signals = page.evaluate(_LOGIN_SIGNALS_JS)
-    signals["matched"] = matched
+    cookies = []
+    try:
+        cookies = ctx.browser_state.context.cookies() if ctx.browser_state.context is not None else []
+    except Exception:
+        log.debug("Failed to read browser cookies during login state check", exc_info=True)
+
+    expected_url = _normalize_selector(expected_url_substring).lower()
+    cookie_names = [str(cookie.get("name") or "") for cookie in cookies if cookie.get("name")]
+    signals.update({
+        "matched": matched,
+        "cookie_names": cookie_names,
+        "success_cookie_names": list(success_cookie_names or []),
+        "failure_text_substrings": list(failure_text_substrings or []),
+        "expected_url_substring": expected_url_substring or "",
+        "expected_url_matched": bool(expected_url and expected_url in str(signals.get("url") or page.url).lower()),
+        "body_text": str(signals.get("body_text") or signals.get("title") or ""),
+    })
 
     inferred = infer_login_state(signals)
     result = {
@@ -672,6 +544,7 @@ def _browser_check_login_state(
         "matched": matched,
         "signals": signals,
         "reason": inferred["reason"],
+        "active_session_name": ctx.browser_state.active_session_name,
     }
     return json.dumps(result, ensure_ascii=False)
 
@@ -835,6 +708,39 @@ def get_tools() -> List[ToolEntry]:
             timeout_sec=60,
         ),
         ToolEntry(
+            name="browser_save_session",
+            schema={
+                "name": "browser_save_session",
+                "description": "Save the current browser context storage state in task memory for later reuse.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "session_name": {"type": "string", "description": "Name for the saved in-memory browser session"},
+                    },
+                    "required": ["session_name"],
+                },
+            },
+            handler=_browser_save_session,
+            timeout_sec=60,
+        ),
+        ToolEntry(
+            name="browser_restore_session",
+            schema={
+                "name": "browser_restore_session",
+                "description": "Restore a previously saved in-memory browser session inside the current task and optionally open a URL.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "session_name": {"type": "string", "description": "Previously saved session name"},
+                        "url": {"type": "string", "description": "Optional URL to open after restoring session"},
+                    },
+                    "required": ["session_name"],
+                },
+            },
+            handler=_browser_restore_session,
+            timeout_sec=60,
+        ),
+        ToolEntry(
             name="browser_check_login_state",
             schema={
                 "name": "browser_check_login_state",
@@ -848,6 +754,9 @@ def get_tools() -> List[ToolEntry]:
                         "success_selector": {"type": "string", "description": "Optional CSS selector that indicates authenticated state"},
                         "failure_selector": {"type": "string", "description": "Optional CSS selector that indicates login failure/error"},
                         "logged_out_selector": {"type": "string", "description": "Optional CSS selector that indicates logged-out/login screen state"},
+                        "expected_url_substring": {"type": "string", "description": "Optional URL substring expected after successful login"},
+                        "success_cookie_names": {"type": "array", "items": {"type": "string"}, "description": "Optional cookie names that suggest authenticated state"},
+                        "failure_text_substrings": {"type": "array", "items": {"type": "string"}, "description": "Optional substrings that indicate login failure"},
                         "timeout": {"type": "integer", "description": "Selector wait timeout in ms (default: 5000)"},
                     },
                 },
