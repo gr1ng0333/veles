@@ -35,605 +35,83 @@ RATE_LIMIT_ESCALATED_SEC = 3600  # 1 hour cooldown on repeated 429
 
 
 # ---------------------------------------------------------------------------
-# Token management (single-account, backward-compatible)
+# Helper modules (accounts + format conversion)
 # ---------------------------------------------------------------------------
 
+from ouroboros import codex_proxy_accounts as _accounts_impl
+from ouroboros.codex_proxy_format import (
+    _messages_to_input,
+    _output_to_chat_message,
+    _tools_to_responses_format,
+)
+
+
 def _load_tokens(prefix: str = "CODEX") -> Dict[str, str]:
-    """Load tokens from env vars, falling back to token file.
-
-    Args:
-        prefix: Environment variable prefix (e.g. "CODEX" or "CODEX_CONSCIOUSNESS").
-    """
-    # Map env var names based on prefix
-    if prefix == "CODEX":
-        # Backward-compatible: original env var names
-        access_key, refresh_key, expires_key, account_key = (
-            "CODEX_ACCESS_TOKEN", "CODEX_REFRESH_TOKEN",
-            "CODEX_TOKEN_EXPIRES", "CODEX_ACCOUNT_ID",
-        )
-    else:
-        access_key = f"{prefix}_ACCESS"
-        refresh_key = f"{prefix}_REFRESH"
-        expires_key = f"{prefix}_EXPIRES"
-        account_key = f"{prefix}_ACCOUNT_ID"
-
-    tokens = {
-        "access_token": os.environ.get(access_key, ""),
-        "refresh_token": os.environ.get(refresh_key, ""),
-        "expires": os.environ.get(expires_key, "0"),
-        "account_id": os.environ.get(account_key, ""),
-    }
-    if prefix == "CODEX" and not tokens["access_token"] and TOKEN_FILE.exists():
-        try:
-            stored = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-            tokens["access_token"] = stored.get("access_token", "")
-            tokens["refresh_token"] = stored.get("refresh_token", "")
-            tokens["expires"] = str(stored.get("expires", "0"))
-            tokens["account_id"] = stored.get("account_id", tokens["account_id"])
-        except Exception as e:
-            log.warning("Failed to load codex tokens from file: %s", e)
-    return tokens
+    return _accounts_impl._load_tokens(prefix)
 
 
 def _save_tokens(tokens: Dict[str, str], prefix: str = "CODEX") -> None:
-    """Persist tokens to env vars and to disk."""
-    if prefix == "CODEX":
-        access_key, refresh_key, expires_key, account_key = (
-            "CODEX_ACCESS_TOKEN", "CODEX_REFRESH_TOKEN",
-            "CODEX_TOKEN_EXPIRES", "CODEX_ACCOUNT_ID",
-        )
-    else:
-        access_key = f"{prefix}_ACCESS"
-        refresh_key = f"{prefix}_REFRESH"
-        expires_key = f"{prefix}_EXPIRES"
-        account_key = f"{prefix}_ACCOUNT_ID"
-
-    os.environ[access_key] = tokens["access_token"]
-    os.environ[refresh_key] = tokens["refresh_token"]
-    os.environ[expires_key] = str(tokens["expires"])
-    if tokens.get("account_id"):
-        os.environ[account_key] = tokens["account_id"]
-    # Only persist to disk for the default CODEX prefix
-    if prefix == "CODEX":
-        try:
-            TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-            TOKEN_FILE.write_text(json.dumps(tokens, indent=2), encoding="utf-8")
-        except Exception as e:
-            log.warning("Failed to save codex tokens to file: %s", e)
+    _accounts_impl._save_tokens(tokens, prefix)
 
 
 def _do_refresh(refresh_token: str) -> Optional[Dict[str, str]]:
-    """Execute OAuth refresh and return new tokens dict, or None on failure."""
-    now = time.time()
-    try:
-        body = json.dumps({
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": CLIENT_ID,
-        }).encode()
-        req = urllib.request.Request(
-            AUTH_ENDPOINT,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-        return {
-            "access_token": data.get("access_token", ""),
-            "refresh_token": data.get("refresh_token", refresh_token),
-            "expires": str(int(now + int(data.get("expires_in", 864000)))),
-        }
-    except Exception as e:
-        log.error("OAuth refresh failed: %s", e)
-        return None
+    return _accounts_impl._do_refresh(refresh_token, AUTH_ENDPOINT, urllib.request.urlopen)
 
 
 def refresh_token_if_needed(prefix: str = "CODEX") -> str:
-    """Check token expiry and refresh if needed. Returns current access token."""
-    tokens = _load_tokens(prefix)
-    expires = float(tokens.get("expires") or 0)
-    now = time.time()
-
-    if tokens["access_token"] and (expires - now) > REFRESH_THRESHOLD_SEC:
-        return tokens["access_token"]
-
-    if not tokens["refresh_token"]:
-        log.warning("Codex token expired and no refresh token available (prefix=%s)", prefix)
-        return tokens["access_token"]
-
-    log.info("Refreshing Codex OAuth token (prefix=%s, expires in %.0fs)", prefix, max(0, expires - now))
-    result = _do_refresh(tokens["refresh_token"])
-    if result:
-        tokens.update(result)
-        _save_tokens(tokens, prefix)
-        log.info("Codex OAuth token refreshed successfully (prefix=%s)", prefix)
-        return tokens["access_token"]
-    return tokens["access_token"]
-
-
-# ---------------------------------------------------------------------------
-# Multi-account rotation
-# ---------------------------------------------------------------------------
-
-_accounts_lock = threading.Lock()
-_accounts: List[Dict[str, Any]] = []  # loaded account list
-_active_idx: int = 0  # index of current account
+    return _accounts_impl.refresh_token_if_needed(AUTH_ENDPOINT, urllib.request.urlopen, prefix)
 
 
 def _tolerant_json_loads(raw: str) -> Any:
-    """Parse JSON with tolerance for common .env / shell mangling.
-
-    Handles: single quotes, outer quoting, trailing commas, BOM,
-    backslash-escaped double quotes, bare (unquoted) keys.
-    """
-    s = raw.strip()
-    # Strip BOM
-    if s.startswith("\ufeff"):
-        s = s[1:]
-    # Strip outer single or double quotes added by shell / .env parsers
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
-        inner = s[1:-1]
-        # Unescape backslash-escaped quotes: \" → "
-        if s[0] == '"':
-            inner = inner.replace('\\"', '"')
-        # Only strip if the inner part looks like a JSON array/object
-        if inner.lstrip().startswith(("[", "{")):
-            s = inner
-    # Try standard parse first
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        pass
-    # Fix single quotes → double quotes (Python dict style)
-    fixed = s.replace("'", '"')
-    # Quote bare keys: {refresh: → {"refresh":
-    fixed = re.sub(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:', r' "\1":', fixed)
-    # Remove trailing commas before } or ]
-    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-    return json.loads(fixed)
+    return _accounts_impl._tolerant_json_loads(raw)
 
 
 def _load_accounts() -> List[Dict[str, Any]]:
-    """Load accounts from CODEX_ACCOUNTS env var or state file.
-
-    Returns list of account dicts with keys:
-      access, refresh, expires, cooldown_until, dead
-    """
-    raw = os.environ.get("CODEX_ACCOUNTS", "")
-    accounts: List[Dict[str, Any]] = []
-    if raw:
-        try:
-            parsed = _tolerant_json_loads(raw)
-            if isinstance(parsed, list):
-                for item in parsed:
-                    if isinstance(item, dict) and item.get("refresh"):
-                        accounts.append({
-                            "access": item.get("access", ""),
-                            "refresh": item["refresh"],
-                            "expires": float(item.get("expires", 0)),
-                            "cooldown_until": 0.0,
-                            "dead": False,
-                            "last_429_at": 0.0,
-                            "request_timestamps": [],
-                        })
-            if accounts:
-                log.info("Loaded %d Codex accounts from CODEX_ACCOUNTS", len(accounts))
-            else:
-                log.warning("CODEX_ACCOUNTS parsed but contained 0 valid accounts (need 'refresh' key)")
-        except (json.JSONDecodeError, ValueError) as e:
-            log.error("Failed to parse CODEX_ACCOUNTS: %s  |  raw[:200]=%s", e, raw[:200])
-
-    # Merge persisted state (cooldowns, updated tokens)
-    if ACCOUNTS_STATE_FILE.exists():
-        try:
-            raw_state = json.loads(ACCOUNTS_STATE_FILE.read_text(encoding="utf-8"))
-            # Support new format {"active_idx": N, "accounts": [...]} and legacy [...]
-            if isinstance(raw_state, dict):
-                state = raw_state.get("accounts", [])
-            elif isinstance(raw_state, list):
-                state = raw_state
-            else:
-                state = []
-            if isinstance(state, list):
-                for i, s in enumerate(state):
-                    if i < len(accounts) and isinstance(s, dict):
-                        # Restore runtime fields from state
-                        if s.get("access"):
-                            accounts[i]["access"] = s["access"]
-                        if s.get("refresh"):
-                            accounts[i]["refresh"] = s["refresh"]
-                        if s.get("expires"):
-                            accounts[i]["expires"] = float(s["expires"])
-                        accounts[i]["cooldown_until"] = float(s.get("cooldown_until", 0))
-                        accounts[i]["last_429_at"] = float(s.get("last_429_at", 0))
-                        # Restore request timestamps, drop entries older than 7 days
-                        raw_ts = s.get("request_timestamps", [])
-                        if isinstance(raw_ts, list):
-                            cutoff = time.time() - 604800
-                            accounts[i]["request_timestamps"] = [
-                                t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff
-                            ]
-                        # dead is NOT restored — give accounts a second chance on restart.
-                        # If the subscription is truly dead, refresh will fail again → re-marked dead.
-        except Exception as e:
-            log.warning("Failed to load accounts state: %s", e)
-
-    return accounts
+    return _accounts_impl._load_accounts()
 
 
 def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
-    """Persist account state (tokens, cooldowns, active_idx) to disk."""
-    try:
-        ACCOUNTS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        serializable = []
-        now = time.time()
-        cutoff_7d = now - 604800
-        for acc in accounts:
-            # Prune timestamps older than 7 days before persisting
-            raw_ts = acc.get("request_timestamps", [])
-            pruned = [t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff_7d]
-            acc["request_timestamps"] = pruned
-            serializable.append({
-                "access": acc.get("access", ""),
-                "refresh": acc.get("refresh", ""),
-                "expires": acc.get("expires", 0),
-                "cooldown_until": acc.get("cooldown_until", 0),
-                "dead": acc.get("dead", False),
-                "last_429_at": acc.get("last_429_at", 0),
-                "request_timestamps": pruned,
-            })
-        state_obj = {
-            "active_idx": _active_idx,
-            "accounts": serializable,
-        }
-        ACCOUNTS_STATE_FILE.write_text(
-            json.dumps(state_obj, indent=2), encoding="utf-8"
-        )
-    except Exception as e:
-        log.warning("Failed to save accounts state: %s", e)
+    _accounts_impl._save_accounts_state(accounts)
 
 
 def _init_accounts(force: bool = False) -> None:
-    """Initialize account list (idempotent unless *force* is True)."""
-    global _accounts, _active_idx
-    if _accounts and not force:
-        return
-    _accounts = _load_accounts()
-    if _accounts:
-        # Restore persisted active_idx if valid
-        restored_idx = -1
-        if ACCOUNTS_STATE_FILE.exists():
-            try:
-                raw_state = json.loads(ACCOUNTS_STATE_FILE.read_text(encoding="utf-8"))
-                if isinstance(raw_state, dict):
-                    restored_idx = int(raw_state.get("active_idx", -1))
-            except Exception:
-                pass
-        now = time.time()
-        if 0 <= restored_idx < len(_accounts):
-            acc = _accounts[restored_idx]
-            if not acc["dead"] and acc["cooldown_until"] < now:
-                _active_idx = restored_idx
-            else:
-                # Restored idx is unusable, find first usable
-                for i, acc in enumerate(_accounts):
-                    if not acc["dead"] and acc["cooldown_until"] < now:
-                        _active_idx = i
-                        break
-        else:
-            # No valid persisted idx, pick first usable
-            for i, acc in enumerate(_accounts):
-                if not acc["dead"] and acc["cooldown_until"] < now:
-                    _active_idx = i
-                    break
-        log.info(
-            "Codex multi-account: %d accounts loaded, active=#%d",
-            len(_accounts), _active_idx,
-        )
+    _accounts_impl._init_accounts(force)
 
 
 def _get_active_account() -> Optional[Tuple[Dict[str, Any], int]]:
-    """Return (active_account, index) atomically, or None if all exhausted."""
-    global _active_idx
-    with _accounts_lock:
-        _init_accounts()
-        if not _accounts:
-            return None
-        now = time.time()
-        # Try current first
-        acc = _accounts[_active_idx]
-        if not acc["dead"] and acc["cooldown_until"] < now:
-            return acc, _active_idx
-        # Scan for a usable one
-        for i in range(len(_accounts)):
-            idx = (_active_idx + 1 + i) % len(_accounts)
-            acc = _accounts[idx]
-            if not acc["dead"] and acc["cooldown_until"] < now:
-                _active_idx = idx
-                log.info("Codex account rotation: switched to #%d", idx)
-                return acc, idx
-        log.error("All Codex accounts exhausted (dead or on cooldown)")
-        return None
+    return _accounts_impl._get_active_account()
 
 
 def _on_rate_limit(account_idx: int, retry_after: int = 0) -> None:
-    """Put account on cooldown after HTTP 429.
-
-    Args:
-        retry_after: Value from Retry-After header (seconds), 0 if absent.
-    """
-    with _accounts_lock:
-        if account_idx < len(_accounts):
-            acc = _accounts[account_idx]
-            now = time.time()
-            last_429 = acc.get("last_429_at", 0)
-            acc["last_429_at"] = now
-
-            # Determine cooldown duration
-            if retry_after > 0:
-                cooldown = retry_after
-            elif (now - last_429) < RATE_LIMIT_REPEAT_WINDOW:
-                # Repeated 429 within 30 min → escalate to 1 hour
-                cooldown = RATE_LIMIT_ESCALATED_SEC
-            else:
-                cooldown = RATE_LIMIT_COOLDOWN_SEC
-
-            acc["cooldown_until"] = now + cooldown
-            log.warning(
-                "Codex account #%d rate-limited, cooldown %ds (retry_after=%d, repeated=%s)",
-                account_idx, cooldown, retry_after,
-                (now - last_429) < RATE_LIMIT_REPEAT_WINDOW if last_429 else False,
-            )
-            _save_accounts_state(_accounts)
+    _accounts_impl._on_rate_limit(account_idx, retry_after)
 
 
 def _on_dead_account(account_idx: int) -> None:
-    """Mark account as dead after unrecoverable auth failure."""
-    with _accounts_lock:
-        if account_idx < len(_accounts):
-            _accounts[account_idx]["dead"] = True
-            log.error("Codex account #%d marked dead", account_idx)
-            _save_accounts_state(_accounts)
+    _accounts_impl._on_dead_account(account_idx)
 
 
 def _refresh_account(acc: Dict[str, Any], account_idx: int) -> str:
-    """Refresh a specific account's token. Returns access token."""
-    now = time.time()
-    if acc["access"] and (acc["expires"] - now) > REFRESH_THRESHOLD_SEC:
-        return acc["access"]
-
-    if not acc["refresh"]:
-        log.warning("Account #%d: no refresh token", account_idx)
-        return acc["access"]
-
-    log.info("Refreshing account #%d token (expires in %.0fs)", account_idx, max(0, acc["expires"] - now))
-    result = _do_refresh(acc["refresh"])
-    if result:
-        with _accounts_lock:
-            acc["access"] = result["access_token"]
-            acc["refresh"] = result["refresh_token"]
-            acc["expires"] = float(result["expires"])
-            _save_accounts_state(_accounts)
-        log.info("Account #%d token refreshed", account_idx)
-        return acc["access"]
-    return acc["access"]
+    return _accounts_impl._refresh_account(acc, account_idx)
 
 
 def _is_multi_account() -> bool:
-    """Check if multi-account rotation is configured."""
-    with _accounts_lock:
-        _init_accounts()
-        return len(_accounts) > 0
+    return _accounts_impl._is_multi_account()
 
 
 def get_account_usage(acc: Dict[str, Any]) -> Dict[str, int]:
-    """Return request counts in the 5h and 7d sliding windows."""
-    now = time.time()
-    timestamps = acc.get("request_timestamps", [])
-    last_5h = sum(1 for t in timestamps if now - t < 18000)
-    last_7d = sum(1 for t in timestamps if now - t < 604800)
-    return {"5h": last_5h, "7d": last_7d}
+    return _accounts_impl.get_account_usage(acc)
 
 
 def _record_successful_request(account_idx: int) -> None:
-    """Record a successful request timestamp for usage tracking."""
-    with _accounts_lock:
-        if account_idx < len(_accounts):
-            _accounts[account_idx].setdefault("request_timestamps", []).append(time.time())
-            _save_accounts_state(_accounts)
+    _accounts_impl._record_successful_request(account_idx)
 
 
 def force_switch_account(target_idx: int = -1) -> Dict[str, Any]:
-    """Force-switch active Codex account.
-
-    Args:
-        target_idx: Account index to switch to. -1 = next usable account.
-
-    Returns:
-        {"ok": bool, "active_idx": int, "total": int, "message": str}
-    """
-    global _active_idx
-    with _accounts_lock:
-        _init_accounts()
-        if not _accounts:
-            return {"ok": False, "active_idx": -1, "total": 0,
-                    "message": "No Codex accounts configured"}
-
-        now = time.time()
-        if target_idx >= 0:
-            # Explicit target
-            if target_idx >= len(_accounts):
-                return {"ok": False, "active_idx": _active_idx,
-                        "total": len(_accounts),
-                        "message": f"Index {target_idx} out of range (0-{len(_accounts)-1})"}
-            acc = _accounts[target_idx]
-            if acc["dead"]:
-                return {"ok": False, "active_idx": _active_idx,
-                        "total": len(_accounts),
-                        "message": f"Account #{target_idx} is dead"}
-            # Force switch even if on cooldown — user explicitly asked
-            _active_idx = target_idx
-            _save_accounts_state(_accounts)
-            log.info("Force-switched to Codex account #%d", target_idx)
-            return {"ok": True, "active_idx": target_idx,
-                    "total": len(_accounts),
-                    "message": f"Switched to account #{target_idx}"}
-        else:
-            # Next usable account (skip current)
-            for i in range(len(_accounts)):
-                idx = (_active_idx + 1 + i) % len(_accounts)
-                acc = _accounts[idx]
-                if not acc["dead"] and acc["cooldown_until"] < now:
-                    _active_idx = idx
-                    _save_accounts_state(_accounts)
-                    log.info("Force-rotated to Codex account #%d", idx)
-                    return {"ok": True, "active_idx": idx,
-                            "total": len(_accounts),
-                            "message": f"Rotated to account #{idx}"}
-            return {"ok": False, "active_idx": _active_idx,
-                    "total": len(_accounts),
-                    "message": "All other accounts dead or on cooldown"}
+    return _accounts_impl.force_switch_account(target_idx)
 
 
 def get_accounts_status() -> List[Dict[str, Any]]:
-    """Return status of all accounts (for /accounts command and tools)."""
-    with _accounts_lock:
-        _init_accounts()
-        now = time.time()
-        result = []
-        for i, acc in enumerate(_accounts):
-            usage = get_account_usage(acc)
-            result.append({
-                "index": i,
-                "active": i == _active_idx,
-                "dead": acc.get("dead", False),
-                "cooldown_until": acc.get("cooldown_until", 0),
-                "in_cooldown": acc.get("cooldown_until", 0) > now,
-                "cooldown_remaining": max(0, int(acc.get("cooldown_until", 0) - now)),
-                "has_access": bool(acc.get("access")),
-                "has_refresh": bool(acc.get("refresh")),
-                "requests_5h": usage["5h"],
-                "requests_7d": usage["7d"],
-                "last_429_at": acc.get("last_429_at", 0),
-            })
-        return result
-
-
-# ---------------------------------------------------------------------------
-# Format converters: Chat Completions <-> Responses API
-# ---------------------------------------------------------------------------
-
-def _messages_to_input(
-    messages: List[Dict[str, Any]],
-) -> Tuple[List[Dict[str, Any]], str]:
-    """
-    Convert OpenAI Chat Completions messages -> Responses API input items.
-
-    Returns (input_items, system_instructions).
-    """
-    items: List[Dict[str, Any]] = []
-    system_parts: List[str] = []
-
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-
-        if role == "system":
-            if content:
-                if isinstance(content, str):
-                    system_parts.append(content)
-                elif isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("text"):
-                            system_parts.append(part["text"])
-                        elif isinstance(part, str):
-                            system_parts.append(part)
-                else:
-                    system_parts.append(str(content))
-            continue
-
-        if role == "user":
-            if isinstance(content, list):
-                converted = []
-                for part in content:
-                    if isinstance(part, dict):
-                        p = dict(part)
-                        if p.get("type") == "text":
-                            p["type"] = "input_text"
-                        elif p.get("type") == "image_url":
-                            # Flatten nested {"image_url": {"url": "..."}} → {"image_url": "..."}
-                            img = p.get("image_url", {})
-                            if isinstance(img, dict):
-                                p = {"type": "input_image", "image_url": img.get("url", "")}
-                            else:
-                                p = {"type": "input_image", "image_url": str(img)}
-                        converted.append(p)
-                    else:
-                        converted.append(part)
-                items.append({"role": "user", "content": converted})
-            elif content:
-                items.append({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": str(content)}],
-                })
-            continue
-
-        if role == "assistant":
-            tool_calls = msg.get("tool_calls")
-            if tool_calls:
-                if content:
-                    text = content if isinstance(content, str) else json.dumps(content)
-                    items.append({
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": text}],
-                    })
-                for tc in tool_calls:
-                    fn = tc.get("function", {})
-                    items.append({
-                        "type": "function_call",
-                        "name": fn.get("name", ""),
-                        "arguments": fn.get("arguments", "{}"),
-                        "call_id": tc.get("id", ""),
-                    })
-            elif content:
-                text = content if isinstance(content, str) else json.dumps(content)
-                items.append({
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": text}],
-                })
-            continue
-
-        if role == "tool":
-            items.append({
-                "type": "function_call_output",
-                "call_id": msg.get("tool_call_id", ""),
-                "output": content if isinstance(content, str) else json.dumps(content),
-            })
-            continue
-
-    return items, "\n\n".join(system_parts)
-
-
-def _tools_to_responses_format(
-    tools: Optional[List[Dict[str, Any]]],
-) -> Optional[List[Dict[str, Any]]]:
-    """Convert Chat Completions tools -> Responses API format."""
-    if not tools:
-        return None
-    converted = []
-    for t in tools:
-        if t.get("type") == "function":
-            fn = t.get("function", {})
-            converted.append({
-                "type": "function",
-                "name": fn.get("name", ""),
-                "description": fn.get("description", ""),
-                "parameters": fn.get("parameters", {}),
-            })
-        else:
-            converted.append(t)
-    return converted
+    return _accounts_impl.get_accounts_status()
 
 
 # Tool-call recovery moved to ouroboros/codex_recovery.py

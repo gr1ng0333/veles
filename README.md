@@ -226,6 +226,11 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
+### v6.7.1
+- Improve evolution loop guards and finalize behavior under heavy contexts.
+- Tighten round-limit handling for evolution cycles.
+
+
 ### v6.6.4 -- Background monitor heartbeat consistency fix
 - Fixed `monitor_state.last_issues_check` heartbeat update in `ouroboros/consciousness.py`: now refreshed on every wake cycle (not only when empty).
 - On consciousness LLM error path, monitor state now also updates `last_issues_check` together with `last_thought_at`/`last_thought_preview`.

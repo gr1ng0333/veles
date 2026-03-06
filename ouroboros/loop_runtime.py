@@ -314,9 +314,9 @@ def _get_evolution_round_limit(task_type: str, default_task_max_rounds: int) -> 
     if task_type != "evolution":
         return default_task_max_rounds
     try:
-        return max(1, int(os.environ.get("OUROBOROS_EVOLUTION_MAX_ROUNDS", "12")))
+        return max(1, int(os.environ.get("OUROBOROS_EVOLUTION_MAX_ROUNDS", "8")))
     except (ValueError, TypeError):
-        log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS, falling back to 12")
+        log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS, falling back to 8")
         return 8
 
 
@@ -371,6 +371,359 @@ def _extract_original_task(messages: List[Dict[str, Any]]) -> str:
     return "(unknown task)"
 
 
+
+def _finalize_due_to_reason(
+    *,
+    reason: str,
+    messages: List[Dict[str, Any]],
+    llm: LLMClient,
+    active_model: str,
+    active_effort: str,
+    max_retries: int,
+    drive_logs: pathlib.Path,
+    task_id: str,
+    round_idx: int,
+    event_queue: Optional[queue.Queue],
+    accumulated_usage: Dict[str, Any],
+    llm_trace: Dict[str, Any],
+    task_type: str,
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    final_text, accumulated_usage, _ = _finalize_with_summary(
+        reason=reason,
+        messages=messages,
+        llm=llm,
+        active_model=active_model,
+        active_effort=active_effort,
+        max_retries=max_retries,
+        drive_logs=drive_logs,
+        task_id=task_id,
+        round_idx=round_idx,
+        event_queue=event_queue,
+        accumulated_usage=accumulated_usage,
+        task_type=task_type,
+    )
+    llm_trace["assistant_notes"].append(reason[:320])
+    return final_text, accumulated_usage, llm_trace
+
+
+
+
+def _prepare_round_or_finalize(
+    *,
+    state: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+    tools: ToolRegistry,
+    llm: LLMClient,
+    drive_logs: pathlib.Path,
+    emit_progress: Callable[[str], None],
+    incoming_messages: queue.Queue,
+    task_type: str,
+    task_id: str,
+    event_queue: Optional[queue.Queue],
+    drive_root: Optional[pathlib.Path],
+    owner_msg_seen: set,
+) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    round_idx = state["round_idx"]
+    hard_limit = _maybe_handle_hard_round_limit(
+        round_idx=round_idx,
+        max_rounds=state["max_rounds"],
+        messages=messages,
+        llm=llm,
+        active_model=state["active_model"],
+        active_effort=state["active_effort"],
+        max_retries=state["max_retries"],
+        drive_logs=drive_logs,
+        task_id=task_id,
+        event_queue=event_queue,
+        accumulated_usage=state["accumulated_usage"],
+        llm_trace=state["llm_trace"],
+        task_type=task_type,
+    )
+    if hard_limit is not None:
+        return hard_limit
+
+    if task_type != "consciousness" and round_idx > state["task_round_limit"]:
+        limit_name = "OUROBOROS_EVOLUTION_MAX_ROUNDS" if task_type == "evolution" else "TASK_MAX_ROUNDS"
+        reason = (
+            f"⚠️ Task exceeded {limit_name} ({state['task_round_limit']}). "
+            "Формирую финальный ответ из собранных данных."
+        )
+        return _finalize_due_to_reason(
+            reason=reason,
+            messages=messages,
+            llm=llm,
+            active_model=state["active_model"],
+            active_effort=state["active_effort"],
+            max_retries=state["max_retries"],
+            drive_logs=drive_logs,
+            task_id=task_id,
+            round_idx=round_idx,
+            event_queue=event_queue,
+            accumulated_usage=state["accumulated_usage"],
+            llm_trace=state["llm_trace"],
+            task_type=task_type,
+        )
+
+    _maybe_inject_self_check(round_idx, state["max_rounds"], messages, state["accumulated_usage"], emit_progress)
+    state["task_round_warn_emitted"] = _maybe_emit_round_warning(
+        round_idx=round_idx,
+        anti=state["anti"],
+        task_round_warn_emitted=state["task_round_warn_emitted"],
+        messages=messages,
+        llm_trace=state["llm_trace"],
+    )
+
+    if _should_finalize_by_round_cap(round_idx, state["recent_progress"], state["anti"]):
+        round_cap_finalize = _maybe_force_finalize_by_round_cap(
+            round_idx=round_idx,
+            recent_progress=state["recent_progress"],
+            anti=state["anti"],
+            no_progress_rounds=state["no_progress_rounds"],
+            messages=messages,
+            llm=llm,
+            active_model=state["active_model"],
+            active_effort=state["active_effort"],
+            max_retries=state["max_retries"],
+            drive_logs=drive_logs,
+            task_id=task_id,
+            event_queue=event_queue,
+            accumulated_usage=state["accumulated_usage"],
+            llm_trace=state["llm_trace"],
+            task_type=task_type,
+        )
+        if round_cap_finalize is not None:
+            return round_cap_finalize
+
+    _drain_incoming_messages(messages, incoming_messages, drive_root, task_id, event_queue, owner_msg_seen)
+    messages[:], state["active_model"], state["active_effort"] = _apply_context_overrides_and_compaction(
+        tools=tools,
+        messages=messages,
+        round_idx=round_idx,
+        active_model=state["active_model"],
+        active_effort=state["active_effort"],
+    )
+    return None
+
+
+def _process_llm_response_or_continue(
+    *,
+    state: Dict[str, Any],
+    msg: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+    tools: ToolRegistry,
+    llm: LLMClient,
+    drive_logs: pathlib.Path,
+    emit_progress: Callable[[str], None],
+    task_type: str,
+    task_id: str,
+    budget_remaining_usd: Optional[float],
+    event_queue: Optional[queue.Queue],
+    stateful_executor,
+) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    round_idx = state["round_idx"]
+    round_completion_tokens = int(state["accumulated_usage"].get("_last_round_completion_tokens") or 0)
+    round_prompt_tokens = int(state["accumulated_usage"].get("_last_round_prompt_tokens") or 0)
+    state["recent_completion_tokens"].append(round_completion_tokens)
+    if len(state["recent_completion_tokens"]) > 16:
+        state["recent_completion_tokens"] = state["recent_completion_tokens"][-16:]
+
+    if state["prev_prompt_tokens"] > 0 and detect_context_overflow(round_prompt_tokens, state["prev_prompt_tokens"], state["anti"]):
+        append_jsonl(drive_logs / "events.jsonl", {
+            "ts": utc_now_iso(), "type": "context_truncated",
+            "task_id": task_id, "round": round_idx,
+            "prev_prompt_tokens": state["prev_prompt_tokens"],
+            "current_prompt_tokens": round_prompt_tokens,
+            "drop_pct": round((1.0 - round_prompt_tokens / state["prev_prompt_tokens"]) * 100, 1),
+        })
+        reminder = (
+            f"Контекст был обрезан. Задача пользователя: {state['original_task_text']}. "
+            "Сформируй финальный ответ из собранных данных."
+        )
+        messages.append({"role": "system", "content": f"[CONTEXT_TRUNCATED] {reminder}"})
+        emit_progress(f"⚠️ Context truncated at round {round_idx}: {state['prev_prompt_tokens']} → {round_prompt_tokens} tokens")
+    state["prev_prompt_tokens"] = round_prompt_tokens
+
+    state["evolution_large_prompt_streak"] = _update_large_prompt_streak(task_type, state["evolution_large_prompt_streak"], round_prompt_tokens)
+    if _should_finalize_evolution_for_prompt_tokens(task_type, state["evolution_large_prompt_streak"]):
+        reason = (
+            "⚠️ Evolution prompt_tokens guard triggered: prompt_tokens > "
+            f"{PROMPT_TOKEN_GUARD_THRESHOLD} for 2 consecutive rounds. Формирую финальный ответ."
+        )
+        return _finalize_due_to_reason(
+            reason=reason,
+            messages=messages,
+            llm=llm,
+            active_model=state["active_model"],
+            active_effort=state["active_effort"],
+            max_retries=state["max_retries"],
+            drive_logs=drive_logs,
+            task_id=task_id,
+            round_idx=round_idx,
+            event_queue=event_queue,
+            accumulated_usage=state["accumulated_usage"],
+            llm_trace=state["llm_trace"],
+            task_type=task_type,
+        )
+
+    if is_small_completion_stagnation(state["recent_completion_tokens"], state["anti"]):
+        reason = (
+            f"⚠️ Small completion stagnation: {state['anti'].small_completion_max_rounds} rounds "
+            f"in a row with completion_tokens < {state['anti'].small_completion_threshold}. "
+            "Формирую финальный ответ."
+        )
+        return _finalize_due_to_reason(
+            reason=reason,
+            messages=messages,
+            llm=llm,
+            active_model=state["active_model"],
+            active_effort=state["active_effort"],
+            max_retries=state["max_retries"],
+            drive_logs=drive_logs,
+            task_id=task_id,
+            round_idx=round_idx,
+            event_queue=event_queue,
+            accumulated_usage=state["accumulated_usage"],
+            llm_trace=state["llm_trace"],
+            task_type=task_type,
+        )
+
+    tool_calls = msg.get("tool_calls") or []
+    content = msg.get("content")
+    if not tool_calls:
+        final_text, final_usage, final_trace, state["recent_progress"], state["no_progress_rounds"] = _handle_no_tool_call_finalize(
+            content, state["llm_trace"], state["accumulated_usage"], state["recent_progress"]
+        )
+        return final_text, final_usage, final_trace
+
+    _append_assistant_with_tool_calls(messages, content, tool_calls, emit_progress, state["llm_trace"])
+    _, tool_progress = _handle_tool_calls(
+        tool_calls,
+        tools,
+        drive_logs,
+        task_id,
+        stateful_executor,
+        messages,
+        state["llm_trace"],
+        emit_progress,
+    )
+    state["recent_progress"], state["no_progress_rounds"] = _update_progress_windows(
+        recent_progress=state["recent_progress"],
+        no_progress_rounds=state["no_progress_rounds"],
+        tool_progress=tool_progress,
+    )
+    if tool_progress:
+        state["stagnation_check_injected"] = False
+
+    stagnation_result, state["stagnation_check_injected"] = _maybe_force_finalize_by_stagnation(
+        no_progress_rounds=state["no_progress_rounds"],
+        anti=state["anti"],
+        stagnation_check_injected=state["stagnation_check_injected"],
+        messages=messages,
+        round_idx=round_idx,
+        llm=llm,
+        active_model=state["active_model"],
+        active_effort=state["active_effort"],
+        max_retries=state["max_retries"],
+        drive_logs=drive_logs,
+        task_id=task_id,
+        event_queue=event_queue,
+        accumulated_usage=state["accumulated_usage"],
+        llm_trace=state["llm_trace"],
+        task_type=task_type,
+    )
+    if stagnation_result is not None:
+        return stagnation_result
+
+    return _check_budget_limits(
+        budget_remaining_usd,
+        state["accumulated_usage"],
+        round_idx,
+        messages,
+        llm,
+        state["active_model"],
+        state["active_effort"],
+        state["max_retries"],
+        drive_logs,
+        task_id,
+        event_queue,
+        state["llm_trace"],
+        task_type,
+    )
+
+
+def _run_single_round(
+    *,
+    state: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+    tools: ToolRegistry,
+    llm: LLMClient,
+    drive_logs: pathlib.Path,
+    emit_progress: Callable[[str], None],
+    incoming_messages: queue.Queue,
+    task_type: str,
+    task_id: str,
+    budget_remaining_usd: Optional[float],
+    event_queue: Optional[queue.Queue],
+    drive_root: Optional[pathlib.Path],
+    tool_schemas: List[Dict[str, Any]],
+    stateful_executor,
+    owner_msg_seen: set,
+) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    state["round_idx"] += 1
+    prepared = _prepare_round_or_finalize(
+        state=state,
+        messages=messages,
+        tools=tools,
+        llm=llm,
+        drive_logs=drive_logs,
+        emit_progress=emit_progress,
+        incoming_messages=incoming_messages,
+        task_type=task_type,
+        task_id=task_id,
+        event_queue=event_queue,
+        drive_root=drive_root,
+        owner_msg_seen=owner_msg_seen,
+    )
+    if prepared is not None:
+        return prepared
+
+    round_idx = state["round_idx"]
+    msg = _call_llm_with_fallback(
+        llm=llm,
+        messages=messages,
+        active_model=state["active_model"],
+        tool_schemas=tool_schemas,
+        active_effort=state["active_effort"],
+        max_retries=state["max_retries"],
+        drive_logs=drive_logs,
+        task_id=task_id,
+        round_idx=round_idx,
+        event_queue=event_queue,
+        accumulated_usage=state["accumulated_usage"],
+        task_type=task_type,
+        emit_progress=emit_progress,
+    )
+    if msg is None:
+        return (
+            "⚠️ Failed to get a response from the model after retries/fallback. Try rephrasing your request.",
+            state["accumulated_usage"],
+            state["llm_trace"],
+        )
+
+    return _process_llm_response_or_continue(
+        state=state,
+        msg=msg,
+        messages=messages,
+        tools=tools,
+        llm=llm,
+        drive_logs=drive_logs,
+        emit_progress=emit_progress,
+        task_type=task_type,
+        task_id=task_id,
+        budget_remaining_usd=budget_remaining_usd,
+        event_queue=event_queue,
+        stateful_executor=stateful_executor,
+    )
 def run_llm_loop_impl(
     messages: List[Dict[str, Any]],
     tools: ToolRegistry,
@@ -387,278 +740,61 @@ def run_llm_loop_impl(
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Core LLM-with-tools loop runtime implementation."""
     active_model = llm.default_model()
-    active_effort = initial_effort
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
-    max_retries = 3
+    max_rounds, anti, round_idx, no_progress_rounds, recent_progress, stagnation_check_injected, task_round_warn_emitted = _init_antistagnation_state()
 
     from ouroboros.tools import tool_discovery as _td
 
     _td.set_registry(tools)
     tool_schemas = tools.schemas(core_only=True)
     tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, messages)
-
     tools._ctx.event_queue = event_queue
     tools._ctx.task_id = task_id
+
+    state = {
+        "active_model": active_model,
+        "active_effort": initial_effort,
+        "llm_trace": llm_trace,
+        "accumulated_usage": accumulated_usage,
+        "max_retries": 3,
+        "max_rounds": max_rounds,
+        "anti": anti,
+        "round_idx": round_idx,
+        "no_progress_rounds": no_progress_rounds,
+        "recent_progress": recent_progress,
+        "stagnation_check_injected": stagnation_check_injected,
+        "task_round_warn_emitted": task_round_warn_emitted,
+        "task_round_limit": _get_evolution_round_limit(task_type, anti.task_max_rounds),
+        "recent_completion_tokens": [],
+        "prev_prompt_tokens": 0,
+        "evolution_large_prompt_streak": 0,
+        "original_task_text": _extract_original_task(messages),
+    }
     stateful_executor = _StatefulToolExecutor()
-    _owner_msg_seen: set = set()
-
-    MAX_ROUNDS, anti, round_idx, no_progress_rounds, recent_progress, stagnation_check_injected, task_round_warn_emitted = _init_antistagnation_state()
-    task_round_limit = _get_evolution_round_limit(task_type, anti.task_max_rounds)
-
-    # New tracking state for small-completion stagnation and context overflow
-    recent_completion_tokens: List[int] = []
-    prev_prompt_tokens: int = 0
-    evolution_large_prompt_streak: int = 0
-    original_task_text: str = _extract_original_task(messages)
+    owner_msg_seen: set = set()
 
     try:
         while True:
-            round_idx += 1
-
-            hard_limit = _maybe_handle_hard_round_limit(
-                round_idx=round_idx,
-                max_rounds=MAX_ROUNDS,
+            result = _run_single_round(
+                state=state,
                 messages=messages,
-                llm=llm,
-                active_model=active_model,
-                active_effort=active_effort,
-                max_retries=max_retries,
-                drive_logs=drive_logs,
-                task_id=task_id,
-                event_queue=event_queue,
-                accumulated_usage=accumulated_usage,
-                llm_trace=llm_trace,
-                task_type=task_type,
-            )
-            if hard_limit is not None:
-                return hard_limit
-
-            # --- Task-specific max rounds ---
-            if task_type != "consciousness" and round_idx > task_round_limit:
-                limit_name = "OUROBOROS_EVOLUTION_MAX_ROUNDS" if task_type == "evolution" else "TASK_MAX_ROUNDS"
-                reason = (
-                    f"⚠️ Task exceeded {limit_name} ({task_round_limit}). "
-                    "Формирую финальный ответ из собранных данных."
-                )
-                final_text, accumulated_usage, _ = _finalize_with_summary(
-                    reason=reason,
-                    messages=messages,
-                    llm=llm,
-                    active_model=active_model,
-                    active_effort=active_effort,
-                    max_retries=max_retries,
-                    drive_logs=drive_logs,
-                    task_id=task_id,
-                    round_idx=round_idx,
-                    event_queue=event_queue,
-                    accumulated_usage=accumulated_usage,
-                    task_type=task_type,
-                )
-                llm_trace["assistant_notes"].append(reason[:320])
-                return final_text, accumulated_usage, llm_trace
-
-            _maybe_inject_self_check(round_idx, MAX_ROUNDS, messages, accumulated_usage, emit_progress)
-            task_round_warn_emitted = _maybe_emit_round_warning(
-                round_idx=round_idx,
-                anti=anti,
-                task_round_warn_emitted=task_round_warn_emitted,
-                messages=messages,
-                llm_trace=llm_trace,
-            )
-
-            if _should_finalize_by_round_cap(round_idx, recent_progress, anti):
-                round_cap_finalize = _maybe_force_finalize_by_round_cap(
-                    round_idx=round_idx,
-                    recent_progress=recent_progress,
-                    anti=anti,
-                    no_progress_rounds=no_progress_rounds,
-                    messages=messages,
-                    llm=llm,
-                    active_model=active_model,
-                    active_effort=active_effort,
-                    max_retries=max_retries,
-                    drive_logs=drive_logs,
-                    task_id=task_id,
-                    event_queue=event_queue,
-                    accumulated_usage=accumulated_usage,
-                    llm_trace=llm_trace,
-                    task_type=task_type,
-                )
-                if round_cap_finalize is not None:
-                    return round_cap_finalize
-
-            _drain_incoming_messages(messages, incoming_messages, drive_root, task_id, event_queue, _owner_msg_seen)
-            messages, active_model, active_effort = _apply_context_overrides_and_compaction(
                 tools=tools,
-                messages=messages,
-                round_idx=round_idx,
-                active_model=active_model,
-                active_effort=active_effort,
-            )
-
-            msg = _call_llm_with_fallback(
                 llm=llm,
-                messages=messages,
-                active_model=active_model,
-                tool_schemas=tool_schemas,
-                active_effort=active_effort,
-                max_retries=max_retries,
                 drive_logs=drive_logs,
-                task_id=task_id,
-                round_idx=round_idx,
-                event_queue=event_queue,
-                accumulated_usage=accumulated_usage,
-                task_type=task_type,
                 emit_progress=emit_progress,
-            )
-            if msg is None:
-                return (
-                    "⚠️ Failed to get a response from the model after retries/fallback. Try rephrasing your request."
-                ), accumulated_usage, llm_trace
-
-            # --- Per-round token tracking for stagnation/overflow detection ---
-            round_completion_tokens = int(accumulated_usage.get("_last_round_completion_tokens") or 0)
-            round_prompt_tokens = int(accumulated_usage.get("_last_round_prompt_tokens") or 0)
-            recent_completion_tokens.append(round_completion_tokens)
-            if len(recent_completion_tokens) > 16:
-                recent_completion_tokens = recent_completion_tokens[-16:]
-
-            # --- Context overflow recovery ---
-            if prev_prompt_tokens > 0 and detect_context_overflow(round_prompt_tokens, prev_prompt_tokens, anti):
-                append_jsonl(drive_logs / "events.jsonl", {
-                    "ts": utc_now_iso(), "type": "context_truncated",
-                    "task_id": task_id, "round": round_idx,
-                    "prev_prompt_tokens": prev_prompt_tokens,
-                    "current_prompt_tokens": round_prompt_tokens,
-                    "drop_pct": round((1.0 - round_prompt_tokens / prev_prompt_tokens) * 100, 1),
-                })
-                reminder = (
-                    f"Контекст был обрезан. Задача пользователя: {original_task_text}. "
-                    "Сформируй финальный ответ из собранных данных."
-                )
-                messages.append({"role": "system", "content": f"[CONTEXT_TRUNCATED] {reminder}"})
-                emit_progress(f"⚠️ Context truncated at round {round_idx}: {prev_prompt_tokens} → {round_prompt_tokens} tokens")
-            prev_prompt_tokens = round_prompt_tokens
-
-            evolution_large_prompt_streak = _update_large_prompt_streak(
-                task_type,
-                evolution_large_prompt_streak,
-                round_prompt_tokens,
-            )
-            if _should_finalize_evolution_for_prompt_tokens(task_type, evolution_large_prompt_streak):
-                reason = (
-                    "⚠️ Evolution prompt_tokens guard triggered: prompt_tokens > "
-                    f"{PROMPT_TOKEN_GUARD_THRESHOLD} for 2 consecutive rounds. Формирую финальный ответ."
-                )
-                final_text, accumulated_usage, _ = _finalize_with_summary(
-                    reason=reason,
-                    messages=messages,
-                    llm=llm,
-                    active_model=active_model,
-                    active_effort=active_effort,
-                    max_retries=max_retries,
-                    drive_logs=drive_logs,
-                    task_id=task_id,
-                    round_idx=round_idx,
-                    event_queue=event_queue,
-                    accumulated_usage=accumulated_usage,
-                    task_type=task_type,
-                )
-                llm_trace["assistant_notes"].append(reason[:320])
-                return final_text, accumulated_usage, llm_trace
-
-            # --- Small-completion stagnation detection ---
-            if is_small_completion_stagnation(recent_completion_tokens, anti):
-                reason = (
-                    f"⚠️ Small completion stagnation: {anti.small_completion_max_rounds} rounds "
-                    f"in a row with completion_tokens < {anti.small_completion_threshold}. "
-                    "Формирую финальный ответ."
-                )
-                final_text, accumulated_usage, _ = _finalize_with_summary(
-                    reason=reason,
-                    messages=messages,
-                    llm=llm,
-                    active_model=active_model,
-                    active_effort=active_effort,
-                    max_retries=max_retries,
-                    drive_logs=drive_logs,
-                    task_id=task_id,
-                    round_idx=round_idx,
-                    event_queue=event_queue,
-                    accumulated_usage=accumulated_usage,
-                    task_type=task_type,
-                )
-                llm_trace["assistant_notes"].append(reason[:320])
-                return final_text, accumulated_usage, llm_trace
-
-            tool_calls = msg.get("tool_calls") or []
-            content = msg.get("content")
-            if not tool_calls:
-                final_text, final_usage, final_trace, recent_progress, no_progress_rounds = _handle_no_tool_call_finalize(
-                    content, llm_trace, accumulated_usage, recent_progress
-                )
-                return final_text, final_usage, final_trace
-
-            _append_assistant_with_tool_calls(messages, content, tool_calls, emit_progress, llm_trace)
-
-            _, tool_progress = _handle_tool_calls(
-                tool_calls,
-                tools,
-                drive_logs,
-                task_id,
-                stateful_executor,
-                messages,
-                llm_trace,
-                emit_progress,
-            )
-
-            recent_progress, no_progress_rounds = _update_progress_windows(
-                recent_progress=recent_progress,
-                no_progress_rounds=no_progress_rounds,
-                tool_progress=tool_progress,
-            )
-            if tool_progress:
-                stagnation_check_injected = False
-
-            stagnation_result, stagnation_check_injected = _maybe_force_finalize_by_stagnation(
-                no_progress_rounds=no_progress_rounds,
-                anti=anti,
-                stagnation_check_injected=stagnation_check_injected,
-                messages=messages,
-                round_idx=round_idx,
-                llm=llm,
-                active_model=active_model,
-                active_effort=active_effort,
-                max_retries=max_retries,
-                drive_logs=drive_logs,
-                task_id=task_id,
-                event_queue=event_queue,
-                accumulated_usage=accumulated_usage,
-                llm_trace=llm_trace,
+                incoming_messages=incoming_messages,
                 task_type=task_type,
+                task_id=task_id,
+                budget_remaining_usd=budget_remaining_usd,
+                event_queue=event_queue,
+                drive_root=drive_root,
+                tool_schemas=tool_schemas,
+                stateful_executor=stateful_executor,
+                owner_msg_seen=owner_msg_seen,
             )
-            if stagnation_result is not None:
-                return stagnation_result
-
-            budget_result = _check_budget_limits(
-                budget_remaining_usd,
-                accumulated_usage,
-                round_idx,
-                messages,
-                llm,
-                active_model,
-                active_effort,
-                max_retries,
-                drive_logs,
-                task_id,
-                event_queue,
-                llm_trace,
-                task_type,
-            )
-            if budget_result is not None:
-                return budget_result
-
+            if result is not None:
+                return result
     finally:
         try:
             stateful_executor.shutdown(wait=False, cancel_futures=True)
