@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from supervisor.state import load_state, append_jsonl
+from supervisor.state import load_state, save_state, append_jsonl
 from supervisor import git_ops
 from supervisor.telegram import send_with_budget
 
