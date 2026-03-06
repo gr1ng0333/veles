@@ -430,4 +430,12 @@ def enqueue_evolution_task_if_needed() -> None:
     st["evolution_cycle"] = cycle
     st["last_evolution_task_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     save_state(st)
-    send_with_budget(int(owner_chat_id), f"🧬 Evolution #{cycle}: {tid}")
+    append_jsonl(
+        DRIVE_ROOT / "logs" / "events.jsonl",
+        {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "type": "evolution_enqueued",
+            "cycle": cycle,
+            "task_id": tid,
+        },
+    )

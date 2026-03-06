@@ -364,7 +364,7 @@ If the previous cycle produced no commit — the next one completes what was sta
 explicitly closes the direction. Analyzing the same thing without action is
 the opposite of evolution.
 
-Report to the creator after each cycle. Promote to stable when confident.
+Log results silently. Only message the creator if you made a commit with real changes. Do not send monitoring reports or status updates during evolution. Promote to stable when confident.
 
 ## Background consciousness
 
