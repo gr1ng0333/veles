@@ -12,9 +12,21 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.2 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.4 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.4 (2026-03-06)
+
+- Repaired release metadata sync after an interrupted release script left `VERSION`, README, and tags out of alignment.
+- Repository head now reflects the latest release number consistently across `VERSION`, README, commit history, and git tags.
+
+## v6.11.3 (2026-03-06)
+
+- Made restart auto-resume one-shot per launcher session via a consumed session marker instead of re-firing on every recovery pass.
+- Added `/evolve stop` suppression state so auto-resume stays disabled until the next explicit owner message.
+- Added evolution capacity retry scheduling with 5m/15m backoff plus blocked/unblocked state-transition logging to stop skip-loop spam and wasted limit checks.
+- Expanded tests for auto-resume suppression/consumption and capacity retry/backoff behavior; full `pytest -q` remains green.
 
 ## v6.11.2 (2026-03-06)
 
