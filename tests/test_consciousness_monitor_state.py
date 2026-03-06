@@ -40,3 +40,9 @@ def test_calc_next_wakeup_at_returns_utc_iso_future():
     now = datetime.now(timezone.utc)
     delta = (dt - now).total_seconds()
     assert 30 <= delta <= 180
+
+
+def test_normalize_monitor_state_preserves_existing_last_issues_check():
+    ts = "2026-03-06T05:00:00Z"
+    data = _normalize_monitor_state({"last_issues_check": ts})
+    assert data["last_issues_check"] == ts
