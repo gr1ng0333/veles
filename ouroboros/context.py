@@ -376,6 +376,13 @@ def build_llm_messages(
 
     dynamic_text = "\n\n".join(dynamic_parts)
 
+    # Language reminder at end of prompt (recency bias)
+    _lang_rule_reminder = (
+        "\n\n---\nНАПОМИНАНИЕ: отвечай на русском языке. "
+        "Код и tool calls — на английском, всё остальное — русский.\n"
+    )
+    dynamic_text += _lang_rule_reminder
+
     # System message with 3 content blocks for optimal caching
     messages: List[Dict[str, Any]] = [
         {
