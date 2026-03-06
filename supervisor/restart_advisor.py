@@ -18,6 +18,50 @@ _ALLOWED_VERDICTS = {
 }
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _recent_restart_count(state: Dict[str, Any]) -> int:
+    history = state.get("recent_restart_history")
+    if isinstance(history, list):
+        return len(history)
+    return _safe_int(state.get("recent_restart_count"), 0)
+
+
+def _build_restart_signals(
+    *,
+    reason: str,
+    state: Dict[str, Any],
+    pending_count: int,
+    running_count: int,
+) -> Dict[str, Any]:
+    interrupted_work = bool(state.get("resume_needed")) or _safe_int(state.get("resume_snapshot_pending_count"), 0) > 0 or _safe_int(state.get("resume_snapshot_running_count"), 0) > 0
+    no_progress = _safe_int(state.get("no_commit_streak"), 0) > 0 or _safe_int(state.get("evolution_consecutive_failures"), 0) > 0
+    queue_backlog = int(pending_count) + int(running_count)
+    return {
+        "reason": str(reason or "").strip(),
+        "interrupted_work": interrupted_work,
+        "pending_count": int(pending_count),
+        "running_count": int(running_count),
+        "queue_backlog": queue_backlog,
+        "resume_snapshot_pending_count": _safe_int(state.get("resume_snapshot_pending_count"), 0),
+        "resume_snapshot_running_count": _safe_int(state.get("resume_snapshot_running_count"), 0),
+        "recent_restart_count": _recent_restart_count(state),
+        "evolution_mode_enabled": bool(state.get("evolution_mode_enabled")),
+        "evolution_consecutive_failures": _safe_int(state.get("evolution_consecutive_failures"), 0),
+        "no_commit_streak": _safe_int(state.get("no_commit_streak"), 0),
+        "no_progress": no_progress,
+        "suppress_auto_resume_until_owner_message": bool(state.get("suppress_auto_resume_until_owner_message")),
+        "launcher_session_id": str(state.get("launcher_session_id") or ""),
+        "last_owner_message_at": str(state.get("last_owner_message_at") or ""),
+        "last_evolution_task_at": str(state.get("last_evolution_task_at") or ""),
+    }
+
+
 def build_restart_advisor_payload(
     *,
     reason: str,
@@ -25,28 +69,72 @@ def build_restart_advisor_payload(
     pending_count: int,
     running_count: int,
 ) -> Dict[str, Any]:
+    signals = _build_restart_signals(
+        reason=reason,
+        state=state,
+        pending_count=pending_count,
+        running_count=running_count,
+    )
     return {
-        "reason": str(reason or "").strip(),
+        "reason": signals["reason"],
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "state": {
-            "current_branch": state.get("current_branch"),
-            "current_sha": state.get("current_sha"),
-            "resume_needed": bool(state.get("resume_needed")),
-            "resume_reason": str(state.get("resume_reason") or ""),
-            "resume_snapshot_pending_count": int(state.get("resume_snapshot_pending_count") or 0),
-            "resume_snapshot_running_count": int(state.get("resume_snapshot_running_count") or 0),
-            "evolution_mode_enabled": bool(state.get("evolution_mode_enabled")),
-            "evolution_consecutive_failures": int(state.get("evolution_consecutive_failures") or 0),
-            "no_commit_streak": int(state.get("no_commit_streak") or 0),
-            "suppress_auto_resume_until_owner_message": bool(state.get("suppress_auto_resume_until_owner_message")),
-            "last_owner_message_at": str(state.get("last_owner_message_at") or ""),
-            "last_evolution_task_at": str(state.get("last_evolution_task_at") or ""),
-            "launcher_session_id": str(state.get("launcher_session_id") or ""),
-        },
-        "queue": {
-            "pending_count": int(pending_count),
-            "running_count": int(running_count),
-        },
+        "contract_version": 2,
+        "signals": signals,
+    }
+
+
+def evaluate_restart_policy(
+    *,
+    reason: str,
+    state: Dict[str, Any],
+    pending_count: int,
+    running_count: int,
+    advisor_result: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    signals = _build_restart_signals(
+        reason=reason,
+        state=state,
+        pending_count=pending_count,
+        running_count=running_count,
+    )
+    requested_verdict = str((advisor_result or {}).get("verdict") or "escalate_to_main_model").strip().lower()
+    confidence = advisor_result.get("confidence") if isinstance(advisor_result, dict) else 0.0
+    try:
+        confidence = float(confidence)
+    except Exception:
+        confidence = 0.0
+
+    hard_restart_allowed = signals["interrupted_work"] or signals["recent_restart_count"] >= 2 or (signals["running_count"] > 0 and signals["no_progress"])
+    blocked_by_active_work = signals["running_count"] > 0 and not signals["interrupted_work"] and not signals["no_progress"]
+
+    if requested_verdict == "no_restart":
+        supervisor_action = "skip_restart"
+        policy = "advisor_veto"
+    elif blocked_by_active_work:
+        supervisor_action = "skip_restart"
+        policy = "active_work_guard"
+    elif requested_verdict == "hard_restart_recommended":
+        if hard_restart_allowed:
+            supervisor_action = "restart_now"
+            policy = "hard_restart_guard_pass"
+        else:
+            supervisor_action = "restart_now"
+            policy = "downgraded_to_soft_restart"
+    elif requested_verdict in {"soft_restart_recommended", "escalate_to_main_model"}:
+        supervisor_action = "restart_now"
+        policy = requested_verdict
+    else:
+        supervisor_action = "restart_now"
+        policy = "fail_open_unknown_verdict"
+
+    return {
+        "requested_verdict": requested_verdict,
+        "advisor_confidence": max(0.0, min(1.0, confidence)),
+        "supervisor_action": supervisor_action,
+        "policy": policy,
+        "hard_restart_allowed": hard_restart_allowed,
+        "blocked_by_active_work": blocked_by_active_work,
+        "signals": signals,
     }
 
 
@@ -113,9 +201,9 @@ def advise_restart(
     model = os.environ.get("OUROBOROS_RESTART_ADVISOR_MODEL", "codex/gpt-5.4").strip() or "codex/gpt-5.4"
     prompt = (
         "You are a narrow restart advisor for a self-modifying agent supervisor. "
-        "Decide only whether a restart request looks justified from the provided signals. "
-        "Do not invent missing facts. Return JSON only with fields: "
-        "verdict, confidence, summary, signals, risks. "
+        "Decide only whether a restart request looks justified from the provided restart signals. "
+        "Do not invent missing facts and do not assume authority over the supervisor. "
+        "Return JSON only with fields: verdict, confidence, summary, signals, risks. "
         "Allowed verdict values: no_restart, soft_restart_recommended, hard_restart_recommended, escalate_to_main_model.\n\n"
         f"Input:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
