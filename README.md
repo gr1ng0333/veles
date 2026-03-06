@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.10.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.0 (2026-03-06)
+
+- Hardened `browser_check_login_state` to return `success` / `failure` / `unclear` with explicit failure-priority semantics.
+- Added one controlled post-submit wait and an internal protected-URL session-alive probe as extra success evidence when provided.
+- Expanded login-tool tests around conflicting signals, inline errors, same-URL failures, and protected-session checks.
 
 ## v6.10.0 (2026-03-06)
 
