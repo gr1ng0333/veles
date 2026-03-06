@@ -106,35 +106,78 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     # Track evolution task success/failure for circuit breaker
     if task_type == "evolution":
         st = ctx.load_state()
-        ok = bool(evt.get("ok", False))
-        response_len = int(evt.get("response_len") or 0)
-        rounds = int(evt.get("total_rounds") or 0)
+        raw_ok = evt.get("ok")
+        raw_response_len = evt.get("response_len")
+        raw_rounds = evt.get("total_rounds")
 
-        # Success = task actually ran and produced meaningful output.
-        # Cost-based check removed: Codex OAuth has cost=0 but works fine.
-        is_success = ok and rounds >= 1 and response_len > 50
-
-        if is_success:
-            # Success: reset failure counter
-            st["evolution_consecutive_failures"] = 0
-            ctx.save_state(st)
-        else:
-            # Likely failure (empty response or minimal work)
-            failures = int(st.get("evolution_consecutive_failures") or 0) + 1
-            st["evolution_consecutive_failures"] = failures
-            ctx.save_state(st)
+        # Validate payload: all three fields must be present for counting
+        payload_complete = (
+            raw_ok is not None
+            and raw_response_len is not None
+            and raw_rounds is not None
+        )
+        if not payload_complete:
             ctx.append_jsonl(
                 ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
                 {
                     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "type": "evolution_task_failure_tracked",
+                    "type": "evolution_task_done_incomplete",
                     "task_id": task_id,
-                    "consecutive_failures": failures,
-                    "ok": ok,
-                    "response_len": response_len,
-                    "rounds": rounds,
+                    "has_ok": raw_ok is not None,
+                    "has_response_len": raw_response_len is not None,
+                    "has_total_rounds": raw_rounds is not None,
                 },
             )
+        else:
+            ok = bool(raw_ok)
+            response_len = int(raw_response_len or 0)
+            rounds = int(raw_rounds or 0)
+
+            if ok and response_len > 50:
+                # Confirmed success: reset failure counter
+                st["evolution_consecutive_failures"] = 0
+                ctx.save_state(st)
+                ctx.append_jsonl(
+                    ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                    {
+                        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "type": "evolution_success_counted",
+                        "task_id": task_id,
+                        "reason": "ok=True, response_len > 50",
+                        "response_len": response_len,
+                        "rounds": rounds,
+                    },
+                )
+            elif not ok:
+                # Explicit failure: ok=False
+                failures = int(st.get("evolution_consecutive_failures") or 0) + 1
+                st["evolution_consecutive_failures"] = failures
+                ctx.save_state(st)
+                ctx.append_jsonl(
+                    ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                    {
+                        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "type": "evolution_failure_counted",
+                        "task_id": task_id,
+                        "reason": "ok=False",
+                        "consecutive_failures": failures,
+                        "response_len": response_len,
+                        "rounds": rounds,
+                    },
+                )
+            else:
+                # ok=True but response too short — ambiguous, do NOT count as failure
+                ctx.append_jsonl(
+                    ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                    {
+                        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "type": "evolution_task_done_incomplete",
+                        "task_id": task_id,
+                        "reason": "ok=True but response_len <= 50, not counting",
+                        "response_len": response_len,
+                        "rounds": rounds,
+                    },
+                )
 
     if task_id:
         ctx.RUNNING.pop(str(task_id), None)
