@@ -262,6 +262,10 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
+### v6.11.6
+- Added advisory-only Codex restart advisor in supervisor restart flow: structured verdict logging, fail-open behavior, no autonomous restart authority.
+
+
 ### v6.9.0
 - Added `browser_fill_login_form` to detect likely username/password fields, fill credentials, and submit common login forms.
 - Added `browser_check_login_state` to infer post-login state from selectors, visible password fields, URL/title/body signals, and common auth error text.
