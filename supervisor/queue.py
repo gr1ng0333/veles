@@ -396,32 +396,24 @@ def queue_review_task(reason: str, force: bool = False) -> Optional[str]:
     return tid
 
 
-def _evolution_blocked_by_codex_capacity(now_iso: str) -> bool:
-    """Return True when Codex 5h usage is above the configured threshold.
+def _evolution_blocked_by_codex_capacity(now_iso: str) -> Tuple[bool, Dict[str, Any]]:
+    """Return (blocked, details) for Codex 5h capacity gate.
 
-    This isolates live Codex account state from evolution throttling policy so
-    tests can monkeypatch one narrow function instead of depending on runtime
-    account usage.
+    The helper is intentionally isolated so throttling tests can monkeypatch one
+    narrow function instead of depending on live account usage.
     """
     try:
         from ouroboros.codex_proxy import get_accounts_status
+
         statuses = get_accounts_status()
         if not statuses:
-            return False
+            return False, {"reason": "no_statuses"}
         total_5h = sum(int(s.get("requests_5h", 0) or 0) for s in statuses)
         threshold = CODEX_5H_CAPACITY_LIMIT * CODEX_5H_CAPACITY_THRESHOLD
-        if total_5h > threshold:
-            append_jsonl(
-                DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": now_iso,
-                    "type": "evolution_skipped_rate_limit",
-                    "total_5h": total_5h,
-                    "threshold": threshold,
-                },
-            )
-            return True
-        return False
+        return total_5h > threshold, {
+            "total_5h": total_5h,
+            "threshold": threshold,
+        }
     except Exception as exc:
         append_jsonl(
             DRIVE_ROOT / "logs" / "supervisor.jsonl",
@@ -431,8 +423,7 @@ def _evolution_blocked_by_codex_capacity(now_iso: str) -> bool:
                 "error": repr(exc),
             },
         )
-        return False
-
+        return False, {"reason": "check_failed", "error": repr(exc)}
 
 def enqueue_evolution_task_if_needed() -> None:
     """Enqueue evolution task if queue is empty and evolution mode is enabled.
@@ -440,7 +431,7 @@ def enqueue_evolution_task_if_needed() -> None:
     Throttling:
     - Cooldown: waits EVOLUTION_COOLDOWN_SEC between cycles (backoff on no-commit streak).
     - Hourly cap: max EVOLUTION_MAX_CYCLES_PER_HOUR per hour.
-    - Codex 5h usage: skips if usage > 70% of capacity.
+    - Codex 5h usage: retry-backed gate with deduped state transition logs.
     - Circuit breaker: pauses after 3 consecutive explicit failures.
     """
     if PENDING or RUNNING:
@@ -453,15 +444,13 @@ def enqueue_evolution_task_if_needed() -> None:
         return
 
     now = time.time()
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    now_iso = now_dt.isoformat()
 
-    # --- Cooldown with no-commit backoff ---
     last_at = str(st.get("last_evolution_task_at") or "").strip()
     if last_at:
         try:
-            last_ts = datetime.datetime.fromisoformat(
-                last_at.replace("Z", "+00:00")
-            ).timestamp()
+            last_ts = datetime.datetime.fromisoformat(last_at.replace("Z", "+00:00")).timestamp()
         except (ValueError, TypeError):
             last_ts = 0.0
         no_commit_streak = int(st.get("no_commit_streak") or 0)
@@ -469,28 +458,71 @@ def enqueue_evolution_task_if_needed() -> None:
             effective_cooldown = EVOLUTION_COOLDOWN_SEC * (2 ** min(no_commit_streak - 2, 4))
         else:
             effective_cooldown = EVOLUTION_COOLDOWN_SEC
-        elapsed = now - last_ts
-        if elapsed < effective_cooldown:
+        if (now - last_ts) < effective_cooldown:
             return
 
-    # --- Hourly cap ---
     cycles_1h = st.get("evolution_cycles_1h") or []
     cycles_1h = [t for t in cycles_1h if isinstance(t, (int, float)) and (now - t) < 3600]
     if len(cycles_1h) >= EVOLUTION_MAX_CYCLES_PER_HOUR:
         append_jsonl(
             DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {"ts": now_iso, "type": "evolution_skipped_hourly_cap",
-             "cycles_1h": len(cycles_1h), "cap": EVOLUTION_MAX_CYCLES_PER_HOUR},
+            {"ts": now_iso, "type": "evolution_skipped_hourly_cap", "cycles_1h": len(cycles_1h), "cap": EVOLUTION_MAX_CYCLES_PER_HOUR},
         )
         st["evolution_cycles_1h"] = cycles_1h
         save_state(st)
         return
 
-    # --- Codex 5h usage check ---
-    if _evolution_blocked_by_codex_capacity(now_iso):
+    retry_at_raw = str(st.get("next_evolution_retry_at") or "").strip()
+    if retry_at_raw:
+        try:
+            retry_ts = datetime.datetime.fromisoformat(retry_at_raw.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            retry_ts = 0.0
+        if retry_ts > now:
+            return
+
+    blocked, capacity_info = _evolution_blocked_by_codex_capacity(now_iso)
+    was_blocked = bool(st.get("evolution_capacity_blocked"))
+    if blocked:
+        prev_step = int(st.get("evolution_capacity_backoff_step") or 0)
+        step = prev_step + 1
+        backoff_sec = 300 if step == 1 else 900
+        retry_at_iso = (now_dt + datetime.timedelta(seconds=backoff_sec)).isoformat()
+        st["next_evolution_retry_at"] = retry_at_iso
+        st["evolution_capacity_backoff_step"] = step
+        st["evolution_capacity_blocked"] = True
+        if not was_blocked:
+            append_jsonl(
+                DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    "ts": now_iso,
+                    "type": "evolution_blocked",
+                    "reason": "codex_capacity",
+                    "total_5h": capacity_info.get("total_5h"),
+                    "threshold": capacity_info.get("threshold"),
+                    "retry_at": retry_at_iso,
+                    "backoff_sec": backoff_sec,
+                    "backoff_step": step,
+                },
+            )
+        save_state(st)
         return
 
-    # --- Circuit breaker: consecutive failures ---
+    if was_blocked:
+        append_jsonl(
+            DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                "ts": now_iso,
+                "type": "evolution_unblocked",
+                "reason": "codex_capacity",
+                "total_5h": capacity_info.get("total_5h"),
+                "threshold": capacity_info.get("threshold"),
+            },
+        )
+    st["evolution_capacity_blocked"] = False
+    st["evolution_capacity_backoff_step"] = 0
+    st["next_evolution_retry_at"] = ""
+
     consecutive_failures = int(st.get("evolution_consecutive_failures") or 0)
     if consecutive_failures >= 3:
         st["evolution_mode_enabled"] = False
@@ -502,7 +534,6 @@ def enqueue_evolution_task_if_needed() -> None:
         )
         return
 
-    # --- Budget reserve ---
     remaining = budget_remaining(st)
     if remaining < EVOLUTION_BUDGET_RESERVE:
         st["evolution_mode_enabled"] = False
@@ -510,7 +541,6 @@ def enqueue_evolution_task_if_needed() -> None:
         send_with_budget(int(owner_chat_id), f"💸 Evolution stopped: ${remaining:.2f} remaining (reserve ${EVOLUTION_BUDGET_RESERVE:.0f} for conversations).")
         return
 
-    # --- Enqueue ---
     cycle = int(st.get("evolution_cycle") or 0) + 1
     tid = uuid.uuid4().hex[:8]
     enqueue_task({
@@ -527,3 +557,4 @@ def enqueue_evolution_task_if_needed() -> None:
         DRIVE_ROOT / "logs" / "events.jsonl",
         {"ts": now_iso, "type": "evolution_enqueued", "cycle": cycle, "task_id": tid},
     )
+
