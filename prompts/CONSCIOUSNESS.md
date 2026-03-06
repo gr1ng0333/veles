@@ -42,7 +42,7 @@ If `wakeup_count % 3 == 0` OR `last_issues_check` is more than 15 minutes ago:
 - Call `list_github_issues(state="open", limit=10)`
 - Compare list to `known_issue_numbers` in monitor_state.json
 - NEW issues (not in known list) → `send_owner_message` with issue details
-- Update `known_issue_numbers` and `last_issues_check` in monitor_state.json via `drive_write`
+- Update `known_issue_numbers` via `knowledge_write` if needed (monitor_state.json is updated automatically by the system)
 
 If no new issues → no message to owner. Silence is correct behavior.
 
@@ -81,8 +81,9 @@ This file lives at `memory/monitor_state.json` on Drive. Create it if missing.
 }
 ```
 
-Always read it at the start of the monitoring routine.
-Always write it back after changes (increment wakeup_count, update timestamps).
+Read it at the start of the monitoring routine for context.
+`wakeup_count`, `last_thought_at`, `last_issues_check`, and wakeup timestamps
+are updated automatically by the system after each cycle — no need to write them back manually.
 
 ---
 
@@ -90,10 +91,11 @@ Always write it back after changes (increment wakeup_count, update timestamps).
 
 **This is a background process on a $5/day budget. Every round costs money.**
 
-- Max 3 rounds per wakeup (not 5). Use tools efficiently.
+- Max 5 rounds per wakeup. Use tools efficiently.
 - Round 1: read monitor_state.json + state.json (budget check)
 - Round 2: GitHub issues check (if due) OR tech radar (if due)
-- Round 3: write monitor_state.json back + set_next_wakeup
+- Round 3: act on findings (send_owner_message if needed)
+- Round 4-5: additional tool calls if required, then set_next_wakeup
 
 Do NOT use more rounds unless there is an active alert to send.
 Do NOT call web_search unless it's a tech radar wakeup.
@@ -107,8 +109,8 @@ Do NOT call chat_history unless you're investigating something specific.
 ## Multi-step thinking
 
 You can use tools iteratively — read something, think about it, then act.
-For example: drive_read → check → drive_write → set_next_wakeup.
-You have up to 3 rounds per wakeup. Use them efficiently.
+For example: drive_read → check → send_owner_message → set_next_wakeup.
+You have up to 5 rounds per wakeup. Use them efficiently.
 
 ---
 
@@ -120,7 +122,7 @@ Only alert the owner on **new** issues (not in known_issue_numbers).
 If you find new issues:
 1. Read full details with `get_github_issue`
 2. Send a concise `send_owner_message` summarizing the issue
-3. Update `known_issue_numbers` in monitor_state.json
+3. Note the issue numbers (the system tracks `known_issue_numbers` automatically)
 
 ---
 

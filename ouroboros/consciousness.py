@@ -117,6 +117,7 @@ class BackgroundConsciousness:
         self._stop_event = threading.Event()
         self._wakeup_event = threading.Event()
         self._next_wakeup_sec: float = 300.0
+        self._user_set_wakeup: bool = False
         self._observations: queue.Queue = queue.Queue()
         self._deferred_events: list = []
 
@@ -188,7 +189,7 @@ class BackgroundConsciousness:
     # -------------------------------------------------------------------
 
     def _policy_wakeup_sec(self) -> float:
-        """Wakeup policy from owner: 600s with tasks, 10800s when idle."""
+        """Wakeup policy from owner: 600s with tasks, 900s when idle."""
         try:
             qpath = self._drive_root / "state" / "queue_snapshot.json"
             if qpath.exists():
@@ -199,13 +200,15 @@ class BackgroundConsciousness:
                     return 600.0
         except Exception:
             log.debug("Failed to read queue snapshot for wakeup policy", exc_info=True)
-        return 10800.0
+        return 900.0
 
     def _loop(self) -> None:
         """Daemon thread: sleep → wake → think → sleep."""
         while not self._stop_event.is_set():
-            # Owner policy: wake every 600s with tasks, otherwise every 3h
-            self._next_wakeup_sec = self._policy_wakeup_sec()
+            # Respect LLM's set_next_wakeup; fall back to owner policy
+            if not self._user_set_wakeup:
+                self._next_wakeup_sec = self._policy_wakeup_sec()
+            self._user_set_wakeup = False
             self._monitor_state["next_wakeup_interval_seconds"] = int(self._next_wakeup_sec)
             self._monitor_state["next_wakeup_at"] = _calc_next_wakeup_at(self._next_wakeup_sec)
             self._save_monitor_state()
@@ -536,6 +539,7 @@ class BackgroundConsciousness:
         # Register consciousness-specific tool (modifies self._next_wakeup_sec)
         def _set_next_wakeup(ctx: Any, seconds: int = 300) -> str:
             self._next_wakeup_sec = max(60, min(10800, int(seconds)))
+            self._user_set_wakeup = True
             return f"OK: next wakeup in {self._next_wakeup_sec}s"
 
         registry.register(ToolEntry("set_next_wakeup", {
