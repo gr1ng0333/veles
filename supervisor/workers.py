@@ -77,7 +77,8 @@ def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, max_workers: int,
 
     # Initialize queue module
     from supervisor import queue
-    queue.init(drive_root, soft_timeout, hard_timeout)
+    evolution_hard_timeout = int(os.environ.get("OUROBOROS_EVOLUTION_HARD_TIMEOUT_SEC") or "3600")
+    queue.init(drive_root, soft_timeout, hard_timeout, evolution_hard_timeout)
     queue.init_queue_refs(PENDING, RUNNING, QUEUE_SEQ_COUNTER_REF)
 
 

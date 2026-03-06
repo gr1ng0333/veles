@@ -505,18 +505,21 @@ class OuroborosAgent:
             "task_id": task.get("id"), "task_type": task.get("type"),
             "duration_sec": duration_sec,
             "tool_calls": n_tool_calls, "tool_errors": n_tool_errors,
-            "cost_usd": round(float(usage.get("cost") or 0), 6),
+            "cost_usd": round(float(usage.get("cost") or usage.get("shadow_cost") or 0), 6),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
             "completion_tokens": int(usage.get("completion_tokens") or 0),
             "total_rounds": int(usage.get("rounds") or 0),
             "ts": utc_now_iso(),
         })
 
+        effective_cost = round(float(usage.get("cost") or usage.get("shadow_cost") or 0), 6)
         self._pending_events.append({
             "type": "task_done",
             "task_id": task.get("id"),
             "task_type": task.get("type"),
-            "cost_usd": round(float(usage.get("cost") or 0), 6),
+            "ok": True,
+            "response_len": len(text),
+            "cost_usd": effective_cost,
             "total_rounds": int(usage.get("rounds") or 0),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
             "completion_tokens": int(usage.get("completion_tokens") or 0),
@@ -527,7 +530,9 @@ class OuroborosAgent:
             "type": "task_done",
             "task_id": task.get("id"),
             "task_type": task.get("type"),
-            "cost_usd": round(float(usage.get("cost") or 0), 6),
+            "ok": True,
+            "response_len": len(text),
+            "cost_usd": effective_cost,
             "total_rounds": int(usage.get("rounds") or 0),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
             "completion_tokens": int(usage.get("completion_tokens") or 0),
@@ -542,7 +547,7 @@ class OuroborosAgent:
                 "parent_task_id": task.get("parent_task_id"),
                 "status": "completed",
                 "result": text[:4000] if text else "",  # Truncate to avoid huge files
-                "cost_usd": round(float(usage.get("cost") or 0), 6),
+                "cost_usd": effective_cost,
                 "total_rounds": int(usage.get("rounds") or 0),
                 "ts": utc_now_iso(),
             }
