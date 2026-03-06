@@ -771,6 +771,10 @@ def _call_llm_with_retry(
             # Count only successful rounds
             accumulated_usage["rounds"] = accumulated_usage.get("rounds", 0) + 1
 
+            # Store per-round token counts for stagnation/overflow detection
+            accumulated_usage["_last_round_prompt_tokens"] = int(usage.get("prompt_tokens") or 0)
+            accumulated_usage["_last_round_completion_tokens"] = int(usage.get("completion_tokens") or 0)
+
             # Log per-round metrics
             _round_event = {
                 "ts": utc_now_iso(), "type": "llm_round",
