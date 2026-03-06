@@ -260,12 +260,17 @@ if restored_pending > 0:
         send_with_budget(int(st_boot["owner_chat_id"]),
                          f"♻️ Restored pending queue from snapshot: {restored_pending} tasks.")
 
+_launcher_session_id = uuid.uuid4().hex
+_st_launch = load_state()
+_st_launch["launcher_session_id"] = _launcher_session_id
+save_state(_st_launch)
 append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "type": "launcher_start",
     "branch": load_state().get("current_branch"),
     "sha": load_state().get("current_sha"),
     "max_workers": MAX_WORKERS,
+    "launcher_session_id": _launcher_session_id,
     "model_default": MODEL_MAIN, "model_code": MODEL_CODE, "model_light": MODEL_LIGHT,
     "soft_timeout_sec": SOFT_TIMEOUT_SEC, "hard_timeout_sec": HARD_TIMEOUT_SEC,
     "worker_start_method": str(os.environ.get("OUROBOROS_WORKER_START_METHOD") or ""),
@@ -442,6 +447,8 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             st2["evolution_consecutive_failures"] = 0
             st2["no_commit_streak"] = 0
             st2["evolution_cycles_1h"] = []
+        else:
+            st2["suppress_auto_resume_until_owner_message"] = True
         save_state(st2)
         if not turn_on:
             PENDING[:] = [t for t in PENDING if str(t.get("type")) != "evolution"]
@@ -705,6 +712,18 @@ while True:
 
         log_chat("in", chat_id, user_id, text)
         st["last_owner_message_at"] = now_iso
+        if bool(st.get("suppress_auto_resume_until_owner_message")):
+            lowered_text = text.strip().lower()
+            if lowered_text not in ("/evolve stop", "/evolve off", "/evolve 0"):
+                st["suppress_auto_resume_until_owner_message"] = False
+                append_jsonl(
+                    DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                    {
+                        "ts": now_iso,
+                        "type": "auto_resume_unsuppressed",
+                        "reason": "owner_message",
+                    },
+                )
         _last_message_ts = time.time()
         save_state(st)
 

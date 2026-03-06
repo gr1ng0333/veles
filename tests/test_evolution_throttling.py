@@ -39,7 +39,7 @@ def _patch_codex_capacity_gate(monkeypatch, request):
     """Keep throttling tests deterministic unless a test exercises the real helper."""
     if request.node.cls and request.node.cls.__name__ == "TestCodexCapacityGate":
         return
-    monkeypatch.setattr("supervisor.queue._evolution_blocked_by_codex_capacity", lambda now_iso: False)
+    monkeypatch.setattr("supervisor.queue._evolution_blocked_by_codex_capacity", lambda now_iso: (False, {"reason": "mocked_allow"}))
 
 
 @pytest.fixture
@@ -221,7 +221,9 @@ class TestCodexCapacityGate:
             lambda: statuses,
         )
 
-        assert q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00") is False
+        blocked, details = q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00")
+        assert blocked is False
+        assert details["total_5h"] == 110
 
     def test_capacity_gate_blocks_above_threshold(self, tmp_drive, monkeypatch):
         from supervisor import queue as q
@@ -232,7 +234,9 @@ class TestCodexCapacityGate:
             lambda: statuses,
         )
 
-        assert q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00") is True
+        blocked, details = q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00")
+        assert blocked is True
+        assert details["total_5h"] == 150
 
     def test_capacity_gate_fail_open_on_error_with_log(self, tmp_drive, monkeypatch):
         from supervisor import queue as q
@@ -242,7 +246,9 @@ class TestCodexCapacityGate:
 
         monkeypatch.setattr("ouroboros.codex_proxy.get_accounts_status", boom)
 
-        assert q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00") is False
+        blocked, details = q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00")
+        assert blocked is False
+        assert details["reason"] == "check_failed"
 
         log_path = tmp_drive / "logs" / "supervisor.jsonl"
         rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -460,3 +466,151 @@ class TestEvolutionMaxRounds:
         monkeypatch.setenv("OUROBOROS_EVOLUTION_MAX_ROUNDS", "5")
         from ouroboros.loop_runtime import _get_evolution_round_limit
         assert _get_evolution_round_limit("task", 30) == 30
+
+
+class TestEvolutionCapacityBackoff:
+    def test_capacity_block_sets_retry_and_dedup_logs(self, tmp_drive, monkeypatch):
+        from supervisor import queue as q
+        from supervisor.state import save_state, ensure_state_defaults, load_state
+
+        st = ensure_state_defaults({
+            "owner_chat_id": 123,
+            "evolution_mode_enabled": True,
+        })
+        save_state(st)
+
+        monkeypatch.setattr(q, "_evolution_blocked_by_codex_capacity", lambda now_iso: (True, {"total_5h": 200, "threshold": 140}))
+        monkeypatch.setattr(q, "append_jsonl", q.append_jsonl)
+
+        q.enqueue_evolution_task_if_needed()
+        st1 = load_state()
+        assert st1["evolution_capacity_blocked"] is True
+        assert st1["evolution_capacity_backoff_step"] == 1
+        assert st1["next_evolution_retry_at"]
+
+        log_path = tmp_drive / "logs" / "supervisor.jsonl"
+        rows1 = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        blocked_rows1 = [row for row in rows1 if row.get("type") == "evolution_blocked"]
+        assert len(blocked_rows1) == 1
+        assert blocked_rows1[0]["backoff_sec"] == 300
+
+        q.enqueue_evolution_task_if_needed()
+        rows2 = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        blocked_rows2 = [row for row in rows2 if row.get("type") == "evolution_blocked"]
+        assert len(blocked_rows2) == 1
+
+    def test_capacity_second_block_uses_longer_backoff_after_retry_window(self, tmp_drive, monkeypatch):
+        from supervisor import queue as q
+        from supervisor.state import save_state, ensure_state_defaults, load_state
+        import datetime as dt
+
+        st = ensure_state_defaults({
+            "owner_chat_id": 123,
+            "evolution_mode_enabled": True,
+        })
+        save_state(st)
+
+        monkeypatch.setattr(q, "_evolution_blocked_by_codex_capacity", lambda now_iso: (True, {"total_5h": 200, "threshold": 140}))
+        q.enqueue_evolution_task_if_needed()
+
+        st2 = load_state()
+        st2["next_evolution_retry_at"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)).isoformat()
+        save_state(st2)
+
+        q.enqueue_evolution_task_if_needed()
+        st3 = load_state()
+        assert st3["evolution_capacity_backoff_step"] == 2
+        log_path = tmp_drive / "logs" / "supervisor.jsonl"
+        rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        blocked_rows = [row for row in rows if row.get("type") == "evolution_blocked"]
+        assert len(blocked_rows) == 1
+
+    def test_capacity_unblocked_logs_transition_once_and_enqueues(self, tmp_drive, monkeypatch):
+        from supervisor import queue as q
+        from supervisor.state import save_state, ensure_state_defaults, load_state
+        import datetime as dt
+
+        st = ensure_state_defaults({
+            "owner_chat_id": 123,
+            "evolution_mode_enabled": True,
+            "evolution_capacity_blocked": True,
+            "evolution_capacity_backoff_step": 2,
+            "next_evolution_retry_at": (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)).isoformat(),
+        })
+        save_state(st)
+
+        monkeypatch.setattr(q, "_evolution_blocked_by_codex_capacity", lambda now_iso: (False, {"total_5h": 100, "threshold": 140}))
+        q.enqueue_evolution_task_if_needed()
+
+        st2 = load_state()
+        assert st2["evolution_capacity_blocked"] is False
+        assert st2["evolution_capacity_backoff_step"] == 0
+        assert st2["next_evolution_retry_at"] == ""
+        assert len(q.PENDING) == 1
+
+        log_path = tmp_drive / "logs" / "supervisor.jsonl"
+        rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert len([row for row in rows if row.get("type") == "evolution_unblocked"]) == 1
+
+
+class TestAutoResumeControls:
+    def test_auto_resume_suppressed_by_flag(self, tmp_drive, monkeypatch):
+        from supervisor.state import save_state, ensure_state_defaults
+        from supervisor import workers as w
+        w.init(pathlib.Path("/opt/veles"), tmp_drive, max_workers=1, soft_timeout=600, hard_timeout=1800, total_budget_limit=1000.0)
+
+        (tmp_drive / "memory").mkdir(exist_ok=True)
+        (tmp_drive / "memory" / "scratchpad.md").write_text("real work here", encoding="utf-8")
+        (tmp_drive / "state" / "pending_restart_verify.json").write_text("{}", encoding="utf-8")
+
+        st = ensure_state_defaults({
+            "owner_chat_id": 123,
+            "launcher_session_id": "sess-1",
+            "suppress_auto_resume_until_owner_message": True,
+        })
+        save_state(st)
+
+        called = {"n": 0}
+        monkeypatch.setattr(w.time, "sleep", lambda *_: None)
+        monkeypatch.setattr(w, "_get_chat_agent", lambda: type("A", (), {"_busy": False})())
+        monkeypatch.setattr(w, "handle_chat_direct", lambda *a, **kw: called.__setitem__("n", called["n"] + 1))
+
+        w.auto_resume_after_restart()
+        assert called["n"] == 0
+
+    def test_auto_resume_consumed_once_per_launcher_session(self, tmp_drive, monkeypatch):
+        from supervisor.state import save_state, ensure_state_defaults, load_state
+        from supervisor import workers as w
+        w.init(pathlib.Path("/opt/veles"), tmp_drive, max_workers=1, soft_timeout=600, hard_timeout=1800, total_budget_limit=1000.0)
+
+        (tmp_drive / "memory").mkdir(exist_ok=True)
+        (tmp_drive / "memory" / "scratchpad.md").write_text("real work here", encoding="utf-8")
+        (tmp_drive / "state" / "pending_restart_verify.json").write_text("{}", encoding="utf-8")
+
+        st = ensure_state_defaults({
+            "owner_chat_id": 123,
+            "launcher_session_id": "sess-1",
+        })
+        save_state(st)
+
+        calls = {"n": 0}
+        monkeypatch.setattr(w.time, "sleep", lambda *_: None)
+        monkeypatch.setattr(w, "_get_chat_agent", lambda: type("A", (), {"_busy": False})())
+
+        class DummyThread:
+            def __init__(self, target=None, args=(), daemon=None):
+                self.target = target
+                self.args = args
+            def start(self):
+                calls["n"] += 1
+
+        monkeypatch.setattr("threading.Thread", DummyThread)
+        monkeypatch.setattr(w, "handle_chat_direct", lambda *a, **kw: None)
+
+        w.auto_resume_after_restart()
+        st1 = load_state()
+        assert calls["n"] == 1
+        assert st1["auto_resume_consumed_session_id"] == "sess-1"
+
+        w.auto_resume_after_restart()
+        assert calls["n"] == 1

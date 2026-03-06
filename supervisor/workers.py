@@ -189,11 +189,13 @@ def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple
 # ---------------------------------------------------------------------------
 
 def auto_resume_after_restart() -> None:
-    """If recent restart left open work, auto-resume without waiting for owner message.
+    """Fire one-shot auto-resume only once per launcher session.
 
-    Checks: scratchpad content, recent restart events, pending_restart_verify.
-    Background consciousness will subsume this eventually, but auto-resume is
-    needed immediately after a restart so the agent doesn't go silent.
+    Conditions:
+    - recent restart evidence exists;
+    - scratchpad contains meaningful content;
+    - not suppressed until next explicit owner message;
+    - current launcher session has not consumed auto-resume yet.
     """
     try:
         st = load_state()
@@ -201,13 +203,28 @@ def auto_resume_after_restart() -> None:
         if not chat_id:
             return
 
-        # Check for recent restart (within 2 minutes)
+        launcher_session_id = str(st.get("launcher_session_id") or "").strip()
+        consumed_session_id = str(st.get("auto_resume_consumed_session_id") or "").strip()
+        if launcher_session_id and launcher_session_id == consumed_session_id:
+            return
+
+        if bool(st.get("suppress_auto_resume_until_owner_message")):
+            append_jsonl(
+                DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "type": "auto_resume_suppressed",
+                    "reason": "suppressed_until_owner_message",
+                    "launcher_session_id": launcher_session_id or None,
+                },
+            )
+            return
+
         restart_verify_path = DRIVE_ROOT / "state" / "pending_restart_verify.json"
         recent_restart = False
         if restart_verify_path.exists():
             recent_restart = True
         else:
-            # Check supervisor.jsonl for recent restart event
             sup_log = DRIVE_ROOT / "logs" / "supervisor.jsonl"
             if sup_log.exists():
                 try:
@@ -225,35 +242,35 @@ def auto_resume_after_restart() -> None:
         if not recent_restart:
             return
 
-        # Check if scratchpad has meaningful content
         scratchpad_path = DRIVE_ROOT / "memory" / "scratchpad.md"
         if not scratchpad_path.exists():
             return
 
         scratchpad = scratchpad_path.read_text(encoding="utf-8")
-        # Skip if scratchpad is empty or default
         stripped = scratchpad.strip()
         if not stripped or stripped == "# Scratchpad" or "(empty" in stripped.lower():
-            # Check if it's just the default template with all empty sections
             content_lines = [
                 ln.strip() for ln in stripped.splitlines()
                 if ln.strip() and not ln.strip().startswith("#") and ln.strip() != "- (empty)"
             ]
-            # Filter out UpdatedAt lines
             content_lines = [ln for ln in content_lines if not ln.startswith("UpdatedAt:")]
             if not content_lines:
                 return
 
-        # Auto-resume: inject synthetic message
-        time.sleep(2)  # Let everything initialize
+        time.sleep(2)
         agent = _get_chat_agent()
         if not agent._busy:
+            if launcher_session_id:
+                st["auto_resume_consumed_session_id"] = launcher_session_id
+                save_state(st)
             import threading
             threading.Thread(
                 target=handle_chat_direct,
-                args=(int(chat_id),
-                      "[auto-resume after restart] Continue your work. Read scratchpad and identity — they contain context of what you were doing.",
-                      None),
+                args=(
+                    int(chat_id),
+                    "[auto-resume after restart] Continue your work. Read scratchpad and identity — they contain context of what you were doing.",
+                    None,
+                ),
                 daemon=True,
             ).start()
             append_jsonl(
@@ -261,15 +278,18 @@ def auto_resume_after_restart() -> None:
                 {
                     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "type": "auto_resume_triggered",
+                    "launcher_session_id": launcher_session_id or None,
                 },
             )
     except Exception as e:
-        append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
-            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "type": "auto_resume_error",
-            "error": repr(e),
-        })
-
+        append_jsonl(
+            DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "type": "auto_resume_error",
+                "error": repr(e),
+            },
+        )
 
 # ---------------------------------------------------------------------------
 # Worker process
