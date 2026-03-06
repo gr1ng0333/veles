@@ -186,6 +186,46 @@ def parse_iso_to_ts(iso_ts: str) -> Optional[float]:
         return None
 
 
+
+
+def snapshot_interrupted_work_info(max_age_sec: int = 900) -> Dict[str, Any]:
+    """Inspect queue snapshot for evidence of interrupted work after restart."""
+    info: Dict[str, Any] = {
+        "has_interrupted_work": False,
+        "reason": "",
+        "pending_count": 0,
+        "running_count": 0,
+        "snapshot_ts": "",
+    }
+    try:
+        if not QUEUE_SNAPSHOT_PATH.exists():
+            return info
+        snap = json.loads(QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        if not isinstance(snap, dict):
+            return info
+        ts = str(snap.get("ts") or "")
+        ts_unix = parse_iso_to_ts(ts)
+        if ts_unix is None:
+            return info
+        if (time.time() - ts_unix) > max_age_sec:
+            return info
+        pending_rows = snap.get("pending") or []
+        running_rows = snap.get("running") or []
+        pending_count = len(pending_rows) if isinstance(pending_rows, list) else 0
+        running_count = len(running_rows) if isinstance(running_rows, list) else 0
+        if pending_count or running_count:
+            info.update({
+                "has_interrupted_work": True,
+                "reason": "queue_snapshot_interrupted_work",
+                "pending_count": pending_count,
+                "running_count": running_count,
+                "snapshot_ts": ts,
+            })
+        return info
+    except Exception:
+        log.warning("Failed to inspect queue snapshot for interrupted work", exc_info=True)
+        return info
+
 def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
     """Restore PENDING queue from snapshot file."""
     if PENDING:
@@ -212,12 +252,19 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
             enqueue_task(task)
             restored += 1
         if restored > 0:
+            st = load_state()
+            st["resume_needed"] = True
+            st["resume_reason"] = "queue_restored_from_snapshot"
+            st["resume_snapshot_pending_count"] = restored
+            st["resume_snapshot_running_count"] = 0
+            save_state(st)
             append_jsonl(
                 DRIVE_ROOT / "logs" / "supervisor.jsonl",
                 {
                     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "type": "queue_restored_from_snapshot",
                     "restored_pending": restored,
+                    "resume_needed": True,
                 },
             )
             persist_queue_snapshot(reason="queue_restored")

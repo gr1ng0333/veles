@@ -585,11 +585,11 @@ class TestAutoResumeControls:
 
         (tmp_drive / "memory").mkdir(exist_ok=True)
         (tmp_drive / "memory" / "scratchpad.md").write_text("real work here", encoding="utf-8")
-        (tmp_drive / "state" / "pending_restart_verify.json").write_text("{}", encoding="utf-8")
 
         st = ensure_state_defaults({
             "owner_chat_id": 123,
             "launcher_session_id": "sess-1",
+            "resume_needed": False,
         })
         save_state(st)
 
@@ -608,9 +608,145 @@ class TestAutoResumeControls:
         monkeypatch.setattr(w, "handle_chat_direct", lambda *a, **kw: None)
 
         w.auto_resume_after_restart()
+        assert calls["n"] == 0
+
+        st = load_state()
+        st["resume_needed"] = True
+        st["resume_reason"] = "test_interrupted_work"
+        save_state(st)
+
+        w.auto_resume_after_restart()
         st1 = load_state()
         assert calls["n"] == 1
         assert st1["auto_resume_consumed_session_id"] == "sess-1"
+        assert st1["resume_needed"] is False
 
         w.auto_resume_after_restart()
         assert calls["n"] == 1
+
+
+# ===========================================================================
+# 6. Auto-resume gating / suppress release
+# ===========================================================================
+
+class TestQueueSnapshotInterruptedWork:
+    def test_detects_recent_interrupted_work_from_snapshot(self, tmp_drive, monkeypatch):
+        from supervisor import queue as q
+        monkeypatch.setattr(q, "QUEUE_SNAPSHOT_PATH", tmp_drive / "state" / "queue_snapshot.json")
+        snapshot = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "pending": [{"id": "p1"}],
+            "running": [{"id": "r1"}],
+        }
+        (tmp_drive / "state" / "queue_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+
+        info = q.snapshot_interrupted_work_info()
+        assert info["has_interrupted_work"] is True
+        assert info["pending_count"] == 1
+        assert info["running_count"] == 1
+
+    def test_ignores_stale_snapshot(self, tmp_drive, monkeypatch):
+        from supervisor import queue as q
+        monkeypatch.setattr(q, "QUEUE_SNAPSHOT_PATH", tmp_drive / "state" / "queue_snapshot.json")
+        snapshot = {
+            "ts": (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=4000)).isoformat(),
+            "pending": [{"id": "p1"}],
+            "running": [],
+        }
+        (tmp_drive / "state" / "queue_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+
+        info = q.snapshot_interrupted_work_info()
+        assert info["has_interrupted_work"] is False
+
+
+class TestAutoResumeHelpers:
+    def test_owner_message_release_allows_work_and_explicit_resume(self):
+        from supervisor.workers import owner_message_allows_auto_resume_release
+
+        assert owner_message_allows_auto_resume_release("почини это") is True
+        assert owner_message_allows_auto_resume_release("/resume") is True
+        assert owner_message_allows_auto_resume_release("/continue work") is True
+        assert owner_message_allows_auto_resume_release("/evolve") is True
+
+    def test_owner_message_release_blocks_service_commands(self):
+        from supervisor.workers import owner_message_allows_auto_resume_release
+
+        for text in ("/status", "/accounts", "/model", "/switch", "/restart", "/evolve stop"):
+            assert owner_message_allows_auto_resume_release(text) is False
+
+
+class TestAutoResumeAfterRestart:
+    def _prepare_workers(self, tmp_drive, monkeypatch):
+        from supervisor import workers as w
+        w.DRIVE_ROOT = tmp_drive
+        (tmp_drive / "memory").mkdir(exist_ok=True)
+        (tmp_drive / "memory" / "scratchpad.md").write_text("# Scratchpad\n\n- interrupted work", encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(w.time, "sleep", lambda *_: None)
+        monkeypatch.setattr(w, "handle_chat_direct", lambda chat_id, text, image=None: calls.append((chat_id, text, image)))
+
+        class _Agent:
+            _busy = False
+
+        monkeypatch.setattr(w, "_get_chat_agent", lambda: _Agent())
+
+        class _ImmediateThread:
+            def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+                self._target = target
+                self._args = args
+                self._kwargs = kwargs or {}
+            def start(self):
+                if self._target:
+                    self._target(*self._args, **self._kwargs)
+
+        monkeypatch.setattr("threading.Thread", _ImmediateThread)
+        return w, calls
+
+    def test_requires_resume_needed_signal(self, tmp_drive, monkeypatch):
+        from supervisor.state import save_state, ensure_state_defaults
+        w, calls = self._prepare_workers(tmp_drive, monkeypatch)
+        st = ensure_state_defaults({
+            "owner_chat_id": 123,
+            "launcher_session_id": "sess-1",
+            "resume_needed": False,
+        })
+        save_state(st)
+
+        w.auto_resume_after_restart()
+
+        assert calls == []
+
+    def test_triggers_once_and_clears_resume_needed(self, tmp_drive, monkeypatch):
+        from supervisor.state import save_state, load_state, ensure_state_defaults
+        w, calls = self._prepare_workers(tmp_drive, monkeypatch)
+        st = ensure_state_defaults({
+            "owner_chat_id": 123,
+            "launcher_session_id": "sess-2",
+            "resume_needed": True,
+            "resume_reason": "owner_restart_busy_state",
+        })
+        save_state(st)
+
+        w.auto_resume_after_restart()
+        assert len(calls) == 1
+        st2 = load_state()
+        assert st2["resume_needed"] is False
+        assert st2["auto_resume_consumed_session_id"] == "sess-2"
+
+        w.auto_resume_after_restart()
+        assert len(calls) == 1
+
+    def test_respects_suppress_flag(self, tmp_drive, monkeypatch):
+        from supervisor.state import save_state, ensure_state_defaults
+        w, calls = self._prepare_workers(tmp_drive, monkeypatch)
+        st = ensure_state_defaults({
+            "owner_chat_id": 123,
+            "launcher_session_id": "sess-3",
+            "resume_needed": True,
+            "suppress_auto_resume_until_owner_message": True,
+        })
+        save_state(st)
+
+        w.auto_resume_after_restart()
+        assert calls == []
