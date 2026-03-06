@@ -43,6 +43,7 @@ from ouroboros.tools.browser_login_helpers import (
     _SUBMIT_LOGIN_FORM_JS,
     _USERNAME_CANDIDATE_JS,
     infer_login_state,
+    plan_login_flow,
 )
 
 
@@ -436,6 +437,8 @@ def _browser_fill_login_form(
     username_selector: str = "",
     password_selector: str = "",
     submit_selector: str = "",
+    allow_multi_step: bool = False,
+    next_selector: str = "",
     timeout: int = 5000,
 ) -> str:
     page = _ensure_browser(ctx)
@@ -453,44 +456,70 @@ def _browser_fill_login_form(
     user_sel = chosen["username_selector"]
     pass_sel = chosen["password_selector"]
     submit_sel = _normalize_selector(submit_selector)
+    next_sel = _normalize_selector(next_selector)
+    plan = plan_login_flow(user_sel, pass_sel, allow_multi_step=allow_multi_step)
 
-    if not pass_sel:
+    if not plan["can_proceed"]:
         return (
-            "Error: password field not found. "
-            f"password_candidates={len(password_candidates)} current_url={page.url}"
-        )
-    if not user_sel:
-        return (
-            "Error: username/email field not found. "
-            f"username_candidates={len(username_candidates)} current_url={page.url}"
+            f"Error: {plan['reason']}. "
+            f"username_candidates={len(username_candidates)} password_candidates={len(password_candidates)} current_url={page.url}"
         )
 
     try:
         page.wait_for_selector(user_sel, timeout=timeout, state="visible")
-        page.wait_for_selector(pass_sel, timeout=timeout, state="visible")
     except Exception as e:
-        return f"Error: login fields resolved but not interactable ({e}). current_url={page.url}"
+        return f"Error: username/email field resolved but not interactable ({e}). current_url={page.url}"
 
     user_fill = page.evaluate(_FILL_INPUT_JS, {"selector": user_sel, "value": username})
-    pass_fill = page.evaluate(_FILL_INPUT_JS, {"selector": pass_sel, "value": password})
     if not user_fill.get("ok"):
         return f"Error: failed to fill username field ({user_sel}). current_url={page.url}"
+
+    step_results = []
+
+    if plan["mode"] == "multi_step_username_first":
+        next_result = page.evaluate(
+            _SUBMIT_LOGIN_FORM_JS,
+            {"anchorSelector": user_sel, "submitSelector": next_sel or submit_sel},
+        )
+        step_results.append({"step": "username_submit", **next_result})
+        page.wait_for_timeout(800)
+        password_candidates = page.evaluate(_PASSWORD_CANDIDATE_JS)
+        chosen = choose_login_field_selectors(
+            username_candidates=page.evaluate(_USERNAME_CANDIDATE_JS),
+            password_candidates=password_candidates,
+            username_selector=username_selector,
+            password_selector=password_selector,
+        )
+        pass_sel = chosen["password_selector"]
+        if not pass_sel:
+            return (
+                "Error: multi-step login advanced past username but password field not found. "
+                f"submit_source={next_result.get('source', 'none')} current_url={page.url}"
+            )
+
+    try:
+        page.wait_for_selector(pass_sel, timeout=timeout, state="visible")
+    except Exception as e:
+        return f"Error: password field resolved but not interactable ({e}). current_url={page.url}"
+
+    pass_fill = page.evaluate(_FILL_INPUT_JS, {"selector": pass_sel, "value": password})
     if not pass_fill.get("ok"):
         return f"Error: failed to fill password field ({pass_sel}). current_url={page.url}"
 
     submit_result = page.evaluate(
         _SUBMIT_LOGIN_FORM_JS,
-        {"passwordSelector": pass_sel, "submitSelector": submit_sel},
+        {"anchorSelector": pass_sel, "submitSelector": submit_sel},
     )
+    step_results.append({"step": "password_submit", **submit_result})
     page.wait_for_timeout(800)
 
     return (
         "Login form filled. "
+        f"mode={plan['mode']}; "
         f"username_selector={user_sel} ({chosen.get('username_source') or 'heuristic'}); "
         f"password_selector={pass_sel} ({chosen.get('password_source') or 'heuristic'}); "
         f"shared_form={chosen.get('shared_form', False)}; "
-        f"submit={submit_result.get('submitted', False)} via {submit_result.get('source', 'none')} "
-        f"[{submit_result.get('method', 'none')}]; "
+        f"steps={json.dumps(step_results, ensure_ascii=False)}; "
         f"submit_selector={submit_result.get('selector', submit_sel or '')}; "
         f"current_url={page.url}"
     )
@@ -689,7 +718,7 @@ def get_tools() -> List[ToolEntry]:
                 "name": "browser_fill_login_form",
                 "description": (
                     "Fill a login form on the current page using explicit selectors or "
-                    "simple heuristics for username/email and password fields, then submit it."
+                    "simple heuristics for username/email and password fields, submit it, and optionally handle username-first multi-step flows."
                 ),
                 "parameters": {
                     "type": "object",
@@ -699,6 +728,8 @@ def get_tools() -> List[ToolEntry]:
                         "username_selector": {"type": "string", "description": "Optional CSS selector for username/email input"},
                         "password_selector": {"type": "string", "description": "Optional CSS selector for password input"},
                         "submit_selector": {"type": "string", "description": "Optional CSS selector for submit button/control"},
+                        "allow_multi_step": {"type": "boolean", "description": "Allow username-first multi-step login flows (default: false)"},
+                        "next_selector": {"type": "string", "description": "Optional CSS selector for the intermediate next/continue control in multi-step login"},
                         "timeout": {"type": "integer", "description": "Field interaction timeout in ms (default: 5000)"},
                     },
                     "required": ["username", "password"],

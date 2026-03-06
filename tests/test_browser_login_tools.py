@@ -1,6 +1,7 @@
 import pytest
 
 from ouroboros.tools.browser import choose_login_field_selectors, infer_login_state
+from ouroboros.tools.browser_login_helpers import plan_login_flow
 
 
 def test_choose_login_field_selectors_prefers_same_form_as_password():
@@ -120,3 +121,27 @@ def test_infer_login_state_expected_url_and_password_gone_is_logged_in():
         "error_texts": [],
     })
     assert result["state"] == "logged_in"
+
+
+def test_plan_login_flow_single_step_when_both_fields_present():
+    result = plan_login_flow('#user', '#pass', allow_multi_step=False)
+    assert result['can_proceed'] is True
+    assert result['mode'] == 'single_step'
+
+
+def test_plan_login_flow_allows_username_first_multi_step():
+    result = plan_login_flow('#user', '', allow_multi_step=True)
+    assert result['can_proceed'] is True
+    assert result['mode'] == 'multi_step_username_first'
+
+
+def test_plan_login_flow_rejects_missing_password_without_multi_step():
+    result = plan_login_flow('#user', '', allow_multi_step=False)
+    assert result['can_proceed'] is False
+    assert result['mode'] == 'missing_password'
+
+
+def test_plan_login_flow_rejects_missing_username():
+    result = plan_login_flow('', '#pass', allow_multi_step=True)
+    assert result['can_proceed'] is False
+    assert result['mode'] == 'missing_username'
