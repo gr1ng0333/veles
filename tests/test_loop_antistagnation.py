@@ -64,7 +64,7 @@ def teststagnation_action_force_after_grace():
 
 def test_get_evolution_round_limit_uses_default_env_fallback(monkeypatch):
     monkeypatch.delenv("OUROBOROS_EVOLUTION_MAX_ROUNDS", raising=False)
-    assert _get_evolution_round_limit("evolution", 15) == 8
+    assert _get_evolution_round_limit("evolution", 15) == 10
 
 
 def test_get_evolution_round_limit_keeps_regular_task_limit(monkeypatch):

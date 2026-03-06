@@ -139,6 +139,30 @@ for subdir in ("state", "logs", "memory/knowledge"):
     (DRIVE_ROOT / subdir).mkdir(parents=True, exist_ok=True)
 REPO_DIR.mkdir(parents=True, exist_ok=True)
 
+# ----------------------------
+# 2.1) PID lock — prevent duplicate supervisor processes
+# ----------------------------
+_PID_LOCK_PATH = DRIVE_ROOT / "state" / "supervisor.pid"
+
+def _acquire_pid_lock() -> None:
+    """Write our PID to lock file, killing any stale previous process."""
+    import signal
+    if _PID_LOCK_PATH.exists():
+        try:
+            old_pid = int(_PID_LOCK_PATH.read_text(encoding="utf-8").strip())
+            if old_pid != os.getpid():
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                    log.warning("Killed stale supervisor process PID=%d", old_pid)
+                    time.sleep(1)
+                except (ProcessLookupError, PermissionError):
+                    pass  # process already dead
+        except (ValueError, OSError):
+            pass
+    _PID_LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+
+_acquire_pid_lock()
+
 # Clear stale owner mailbox files from previous session
 try:
     from ouroboros.owner_inject import get_pending_path
@@ -416,6 +440,8 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         st2["evolution_mode_enabled"] = bool(turn_on)
         if turn_on:
             st2["evolution_consecutive_failures"] = 0
+            st2["no_commit_streak"] = 0
+            st2["evolution_cycles_1h"] = []
         save_state(st2)
         if not turn_on:
             PENDING[:] = [t for t in PENDING if str(t.get("type")) != "evolution"]
