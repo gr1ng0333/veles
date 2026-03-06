@@ -91,7 +91,7 @@ def _on_dead_account(account_idx: int) -> None:
 
 
 def _refresh_account(acc: Dict[str, Any], account_idx: int) -> str:
-    return _accounts_impl._refresh_account(acc, account_idx)
+    return _accounts_impl._refresh_account(acc, account_idx, AUTH_ENDPOINT, urllib.request.urlopen)
 
 
 def _is_multi_account() -> bool:
