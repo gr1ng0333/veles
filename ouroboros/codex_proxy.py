@@ -29,7 +29,9 @@ ACCOUNTS_STATE_FILE = Path("/opt/veles-data/state/codex_accounts_state.json")
 TIMEOUT_SEC = 120
 MAX_RETRIES = 2
 REFRESH_THRESHOLD_SEC = 3600  # refresh if < 1 hour until expiry
-RATE_LIMIT_COOLDOWN_SEC = 300  # 5 minutes cooldown on 429
+RATE_LIMIT_COOLDOWN_SEC = 600  # 10 minutes default cooldown on 429
+RATE_LIMIT_REPEAT_WINDOW = 1800  # 30 min window for repeat 429 detection
+RATE_LIMIT_ESCALATED_SEC = 3600  # 1 hour cooldown on repeated 429
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +214,8 @@ def _load_accounts() -> List[Dict[str, Any]]:
                             "expires": float(item.get("expires", 0)),
                             "cooldown_until": 0.0,
                             "dead": False,
+                            "last_429_at": 0.0,
+                            "request_timestamps": [],
                         })
             if accounts:
                 log.info("Loaded %d Codex accounts from CODEX_ACCOUNTS", len(accounts))
@@ -223,7 +227,14 @@ def _load_accounts() -> List[Dict[str, Any]]:
     # Merge persisted state (cooldowns, updated tokens)
     if ACCOUNTS_STATE_FILE.exists():
         try:
-            state = json.loads(ACCOUNTS_STATE_FILE.read_text(encoding="utf-8"))
+            raw_state = json.loads(ACCOUNTS_STATE_FILE.read_text(encoding="utf-8"))
+            # Support new format {"active_idx": N, "accounts": [...]} and legacy [...]
+            if isinstance(raw_state, dict):
+                state = raw_state.get("accounts", [])
+            elif isinstance(raw_state, list):
+                state = raw_state
+            else:
+                state = []
             if isinstance(state, list):
                 for i, s in enumerate(state):
                     if i < len(accounts) and isinstance(s, dict):
@@ -235,6 +246,14 @@ def _load_accounts() -> List[Dict[str, Any]]:
                         if s.get("expires"):
                             accounts[i]["expires"] = float(s["expires"])
                         accounts[i]["cooldown_until"] = float(s.get("cooldown_until", 0))
+                        accounts[i]["last_429_at"] = float(s.get("last_429_at", 0))
+                        # Restore request timestamps, drop entries older than 7 days
+                        raw_ts = s.get("request_timestamps", [])
+                        if isinstance(raw_ts, list):
+                            cutoff = time.time() - 604800
+                            accounts[i]["request_timestamps"] = [
+                                t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff
+                            ]
                         # dead is NOT restored — give accounts a second chance on restart.
                         # If the subscription is truly dead, refresh will fail again → re-marked dead.
         except Exception as e:
@@ -244,20 +263,32 @@ def _load_accounts() -> List[Dict[str, Any]]:
 
 
 def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
-    """Persist account state (tokens, cooldowns) to disk."""
+    """Persist account state (tokens, cooldowns, active_idx) to disk."""
     try:
         ACCOUNTS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         serializable = []
+        now = time.time()
+        cutoff_7d = now - 604800
         for acc in accounts:
+            # Prune timestamps older than 7 days before persisting
+            raw_ts = acc.get("request_timestamps", [])
+            pruned = [t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff_7d]
+            acc["request_timestamps"] = pruned
             serializable.append({
                 "access": acc.get("access", ""),
                 "refresh": acc.get("refresh", ""),
                 "expires": acc.get("expires", 0),
                 "cooldown_until": acc.get("cooldown_until", 0),
                 "dead": acc.get("dead", False),
+                "last_429_at": acc.get("last_429_at", 0),
+                "request_timestamps": pruned,
             })
+        state_obj = {
+            "active_idx": _active_idx,
+            "accounts": serializable,
+        }
         ACCOUNTS_STATE_FILE.write_text(
-            json.dumps(serializable, indent=2), encoding="utf-8"
+            json.dumps(state_obj, indent=2), encoding="utf-8"
         )
     except Exception as e:
         log.warning("Failed to save accounts state: %s", e)
@@ -270,12 +301,32 @@ def _init_accounts(force: bool = False) -> None:
         return
     _accounts = _load_accounts()
     if _accounts:
-        # Pick first non-dead, non-cooldown account
+        # Restore persisted active_idx if valid
+        restored_idx = -1
+        if ACCOUNTS_STATE_FILE.exists():
+            try:
+                raw_state = json.loads(ACCOUNTS_STATE_FILE.read_text(encoding="utf-8"))
+                if isinstance(raw_state, dict):
+                    restored_idx = int(raw_state.get("active_idx", -1))
+            except Exception:
+                pass
         now = time.time()
-        for i, acc in enumerate(_accounts):
+        if 0 <= restored_idx < len(_accounts):
+            acc = _accounts[restored_idx]
             if not acc["dead"] and acc["cooldown_until"] < now:
-                _active_idx = i
-                break
+                _active_idx = restored_idx
+            else:
+                # Restored idx is unusable, find first usable
+                for i, acc in enumerate(_accounts):
+                    if not acc["dead"] and acc["cooldown_until"] < now:
+                        _active_idx = i
+                        break
+        else:
+            # No valid persisted idx, pick first usable
+            for i, acc in enumerate(_accounts):
+                if not acc["dead"] and acc["cooldown_until"] < now:
+                    _active_idx = i
+                    break
         log.info(
             "Codex multi-account: %d accounts loaded, active=#%d",
             len(_accounts), _active_idx,
@@ -306,14 +357,33 @@ def _get_active_account() -> Optional[Tuple[Dict[str, Any], int]]:
         return None
 
 
-def _on_rate_limit(account_idx: int) -> None:
-    """Put account on cooldown after HTTP 429."""
+def _on_rate_limit(account_idx: int, retry_after: int = 0) -> None:
+    """Put account on cooldown after HTTP 429.
+
+    Args:
+        retry_after: Value from Retry-After header (seconds), 0 if absent.
+    """
     with _accounts_lock:
         if account_idx < len(_accounts):
-            _accounts[account_idx]["cooldown_until"] = time.time() + RATE_LIMIT_COOLDOWN_SEC
+            acc = _accounts[account_idx]
+            now = time.time()
+            last_429 = acc.get("last_429_at", 0)
+            acc["last_429_at"] = now
+
+            # Determine cooldown duration
+            if retry_after > 0:
+                cooldown = retry_after
+            elif (now - last_429) < RATE_LIMIT_REPEAT_WINDOW:
+                # Repeated 429 within 30 min → escalate to 1 hour
+                cooldown = RATE_LIMIT_ESCALATED_SEC
+            else:
+                cooldown = RATE_LIMIT_COOLDOWN_SEC
+
+            acc["cooldown_until"] = now + cooldown
             log.warning(
-                "Codex account #%d rate-limited, cooldown %ds",
-                account_idx, RATE_LIMIT_COOLDOWN_SEC,
+                "Codex account #%d rate-limited, cooldown %ds (retry_after=%d, repeated=%s)",
+                account_idx, cooldown, retry_after,
+                (now - last_429) < RATE_LIMIT_REPEAT_WINDOW if last_429 else False,
             )
             _save_accounts_state(_accounts)
 
@@ -355,6 +425,99 @@ def _is_multi_account() -> bool:
     with _accounts_lock:
         _init_accounts()
         return len(_accounts) > 0
+
+
+def get_account_usage(acc: Dict[str, Any]) -> Dict[str, int]:
+    """Return request counts in the 5h and 7d sliding windows."""
+    now = time.time()
+    timestamps = acc.get("request_timestamps", [])
+    last_5h = sum(1 for t in timestamps if now - t < 18000)
+    last_7d = sum(1 for t in timestamps if now - t < 604800)
+    return {"5h": last_5h, "7d": last_7d}
+
+
+def _record_successful_request(account_idx: int) -> None:
+    """Record a successful request timestamp for usage tracking."""
+    with _accounts_lock:
+        if account_idx < len(_accounts):
+            _accounts[account_idx].setdefault("request_timestamps", []).append(time.time())
+            _save_accounts_state(_accounts)
+
+
+def force_switch_account(target_idx: int = -1) -> Dict[str, Any]:
+    """Force-switch active Codex account.
+
+    Args:
+        target_idx: Account index to switch to. -1 = next usable account.
+
+    Returns:
+        {"ok": bool, "active_idx": int, "total": int, "message": str}
+    """
+    global _active_idx
+    with _accounts_lock:
+        _init_accounts()
+        if not _accounts:
+            return {"ok": False, "active_idx": -1, "total": 0,
+                    "message": "No Codex accounts configured"}
+
+        now = time.time()
+        if target_idx >= 0:
+            # Explicit target
+            if target_idx >= len(_accounts):
+                return {"ok": False, "active_idx": _active_idx,
+                        "total": len(_accounts),
+                        "message": f"Index {target_idx} out of range (0-{len(_accounts)-1})"}
+            acc = _accounts[target_idx]
+            if acc["dead"]:
+                return {"ok": False, "active_idx": _active_idx,
+                        "total": len(_accounts),
+                        "message": f"Account #{target_idx} is dead"}
+            # Force switch even if on cooldown — user explicitly asked
+            _active_idx = target_idx
+            _save_accounts_state(_accounts)
+            log.info("Force-switched to Codex account #%d", target_idx)
+            return {"ok": True, "active_idx": target_idx,
+                    "total": len(_accounts),
+                    "message": f"Switched to account #{target_idx}"}
+        else:
+            # Next usable account (skip current)
+            for i in range(len(_accounts)):
+                idx = (_active_idx + 1 + i) % len(_accounts)
+                acc = _accounts[idx]
+                if not acc["dead"] and acc["cooldown_until"] < now:
+                    _active_idx = idx
+                    _save_accounts_state(_accounts)
+                    log.info("Force-rotated to Codex account #%d", idx)
+                    return {"ok": True, "active_idx": idx,
+                            "total": len(_accounts),
+                            "message": f"Rotated to account #{idx}"}
+            return {"ok": False, "active_idx": _active_idx,
+                    "total": len(_accounts),
+                    "message": "All other accounts dead or on cooldown"}
+
+
+def get_accounts_status() -> List[Dict[str, Any]]:
+    """Return status of all accounts (for /accounts command and tools)."""
+    with _accounts_lock:
+        _init_accounts()
+        now = time.time()
+        result = []
+        for i, acc in enumerate(_accounts):
+            usage = get_account_usage(acc)
+            result.append({
+                "index": i,
+                "active": i == _active_idx,
+                "dead": acc.get("dead", False),
+                "cooldown_until": acc.get("cooldown_until", 0),
+                "in_cooldown": acc.get("cooldown_until", 0) > now,
+                "cooldown_remaining": max(0, int(acc.get("cooldown_until", 0) - now)),
+                "has_access": bool(acc.get("access")),
+                "has_refresh": bool(acc.get("refresh")),
+                "requests_5h": usage["5h"],
+                "requests_7d": usage["7d"],
+                "last_429_at": acc.get("last_429_at", 0),
+            })
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -640,11 +803,20 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
             try:
                 result = _do_request(access_token, payload)
                 log.info("Codex request succeeded via account #%d", idx)
+                _record_successful_request(idx)
                 return result
             except urllib.error.HTTPError as e:
                 last_error = e
                 if e.code == 429:
-                    _on_rate_limit(idx)
+                    # Extract Retry-After header if present
+                    retry_after = 0
+                    try:
+                        ra = e.headers.get("Retry-After", "")
+                        if ra and ra.isdigit():
+                            retry_after = int(ra)
+                    except Exception:
+                        pass
+                    _on_rate_limit(idx, retry_after=retry_after)
                     break  # break retry loop → outer while picks next account
                 if e.code in (401, 403):
                     if attempt < MAX_RETRIES:
@@ -802,8 +974,7 @@ def call_codex(
     event_data: Dict[str, Any] = {}
 
     # Multi-account rotation or single-account fallback
-    # Multi-account rotation only used for default CODEX prefix
-    if token_prefix == "CODEX" and _is_multi_account():
+    if _is_multi_account():
         event_data = _call_with_rotation(payload)
     else:
         for attempt in range(MAX_RETRIES + 1):
