@@ -21,25 +21,6 @@ def install_launcher_deps() -> None:
 
 install_launcher_deps()
 
-def ensure_claude_code_cli() -> bool:
-    """Best-effort install of Claude Code CLI for Anthropic-powered code edits."""
-    local_bin = str(pathlib.Path.home() / ".local" / "bin")
-    if local_bin not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
-
-    has_cli = subprocess.run(["bash", "-lc", "command -v claude >/dev/null 2>&1"], check=False).returncode == 0
-    if has_cli:
-        return True
-
-    subprocess.run(["bash", "-lc", "curl -fsSL https://claude.ai/install.sh | bash"], check=False)
-    has_cli = subprocess.run(["bash", "-lc", "command -v claude >/dev/null 2>&1"], check=False).returncode == 0
-    if has_cli:
-        return True
-
-    subprocess.run(["bash", "-lc", "command -v npm >/dev/null 2>&1 && npm install -g @anthropic-ai/claude-code"], check=False)
-    has_cli = subprocess.run(["bash", "-lc", "command -v claude >/dev/null 2>&1"], check=False).returncode == 0
-    return has_cli
-
 # ----------------------------
 # 0.1) provide apply_patch shim
 # ----------------------------
@@ -146,8 +127,7 @@ os.environ["OUROBOROS_DIAG_SLOW_CYCLE_SEC"] = str(DIAG_SLOW_CYCLE_SEC)
 os.environ["OUROBOROS_EVOLUTION_HARD_TIMEOUT_SEC"] = str(EVOLUTION_HARD_TIMEOUT_SEC)
 os.environ["TELEGRAM_BOT_TOKEN"] = str(TELEGRAM_BOT_TOKEN)
 
-if str(ANTHROPIC_API_KEY or "").strip():
-    ensure_claude_code_cli()
+
 
 # ----------------------------
 # 2) Data directories (VPS: local disk, no Drive mount)

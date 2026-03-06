@@ -88,7 +88,7 @@ EXPECTED_TOOLS = [
     "repo_read", "repo_write_commit", "repo_list", "repo_commit_push",
     "drive_read", "drive_write", "drive_list",
     "git_status", "git_diff",
-    "run_shell", "claude_code_edit",
+    "run_shell",
     "browse_page", "browser_action", "browser_fill_login_form", "browser_check_login_state",
     "web_search",
     "chat_history", "update_scratchpad", "update_identity",

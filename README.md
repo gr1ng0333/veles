@@ -52,7 +52,7 @@ Telegram --> colab_launcher.py
                 core.py             -- file ops
                 git.py              -- git ops
                 github.py           -- GitHub Issues
-                shell.py            -- shell, Claude Code CLI
+                shell.py            -- shell commands
                 search.py           -- web search
                 control.py          -- restart, evolve, review
                 browser.py          -- Playwright (stealth)
@@ -83,7 +83,7 @@ Telegram --> colab_launcher.py
 | `TOTAL_BUDGET` | Yes | Your spending limit in USD (e.g. `50`) |
 | `GITHUB_TOKEN` | Yes | [github.com/settings/tokens](https://github.com/settings/tokens) -- Generate a classic token with `repo` scope |
 | `OPENAI_API_KEY` | No | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) -- Enables web search tool |
-| `ANTHROPIC_API_KEY` | No | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) -- Enables Claude Code CLI |
+| `ANTHROPIC_API_KEY` | No | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) |
 
 ### Step 3: Set Up Google Colab
 
@@ -105,7 +105,7 @@ CFG = {
     "GITHUB_REPO": "ouroboros",                                  # <-- repo name (after fork)
     # Models
     "OUROBOROS_MODEL": "anthropic/claude-sonnet-4.6",            # primary LLM (via OpenRouter)
-    "OUROBOROS_MODEL_CODE": "anthropic/claude-sonnet-4.6",       # code editing (Claude Code CLI)
+    "OUROBOROS_MODEL_CODE": "anthropic/claude-sonnet-4.6",       # code editing model
     "OUROBOROS_MODEL_LIGHT": "google/gemini-3-pro-preview",      # consciousness + lightweight tasks
     "OUROBOROS_WEBSEARCH_MODEL": "gpt-5",                        # web search (OpenAI Responses API)
     # Fallback chain (first model != active will be used on empty response)
@@ -189,7 +189,7 @@ Full text: [BIBLE.md](BIBLE.md)
 | Variable | Description |
 |----------|-------------|
 | `OPENAI_API_KEY` | Enables the `web_search` tool |
-| `ANTHROPIC_API_KEY` | Enables Claude Code CLI for code editing |
+| `ANTHROPIC_API_KEY` | Enables Anthropic API access |
 
 ### Optional Configuration (environment variables)
 
@@ -330,7 +330,7 @@ Full text: [BIBLE.md](BIBLE.md)
 - **Fix: health invariant #5** -- `owner_message_injected` events now properly logged to events.jsonl for duplicate processing detection.
 - **Fix: shell cmd parsing** -- `str.split()` replaced with `shlex.split()` for proper shell quoting support.
 - **Fix: retry task_id** -- timeout retries now get a new task_id with `original_task_id` lineage tracking.
-- **claude_code_edit timeout** -- aligned subprocess and tool wrapper to 300s.
+- **claude_code_edit removed** — not used in this setup.
 - **Direct chat guard** -- `schedule_task` from direct chat now logged as warning for audit.
 
 ### v6.1.0 -- Budget Optimization: Selective Schemas + Self-Check + Dedup
