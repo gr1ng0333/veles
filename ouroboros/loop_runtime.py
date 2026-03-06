@@ -314,9 +314,9 @@ def _get_evolution_round_limit(task_type: str, default_task_max_rounds: int) -> 
     if task_type != "evolution":
         return default_task_max_rounds
     try:
-        return max(1, int(os.environ.get("OUROBOROS_EVOLUTION_MAX_ROUNDS", "8")))
+        return max(1, int(os.environ.get("OUROBOROS_EVOLUTION_MAX_ROUNDS", "12")))
     except (ValueError, TypeError):
-        log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS, falling back to 8")
+        log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS, falling back to 12")
         return 8
 
 
