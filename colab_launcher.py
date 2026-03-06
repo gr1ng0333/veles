@@ -489,43 +489,34 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         return True
 
     if lowered.startswith("/accounts"):
-        import json as _json_accounts
-        accounts_state_path = DRIVE_ROOT / "state" / "codex_accounts_state.json"
-        raw = os.environ.get("CODEX_ACCOUNTS", "[]")
-        try:
-            accounts = _json_accounts.loads(raw)
-        except Exception:
-            accounts = []
-        state_data = []
-        if accounts_state_path.exists():
-            try:
-                state_data = _json_accounts.loads(accounts_state_path.read_text())
-                if not isinstance(state_data, list):
-                    state_data = []
-            except Exception:
-                state_data = []
-        lines = [f"📊 Codex Accounts: {len(accounts)} шт.\n"]
-        now_ts = time.time()
-        for i, acc in enumerate(accounts):
-            st_acc = state_data[i] if i < len(state_data) and isinstance(state_data[i], dict) else {}
-            dead = bool(st_acc.get("dead", False))
-            cooldown = float(st_acc.get("cooldown_until", 0))
-            in_cooldown = cooldown > now_ts
-            has_access = bool(st_acc.get("access") or acc.get("access"))
-            has_refresh = bool(acc.get("refresh"))
-            if dead:
+        from ouroboros.codex_proxy import get_accounts_status
+        statuses = get_accounts_status()
+        lines = [f"📊 Codex Accounts: {len(statuses)} шт.\n"]
+        for st_acc in statuses:
+            i = st_acc["index"]
+            if st_acc["dead"]:
                 icon, status = "💀", "dead"
-            elif in_cooldown:
-                remaining = int(cooldown - now_ts)
-                icon, status = "⏳", f"cooldown ({remaining}s)"
-            elif has_access:
+            elif st_acc["in_cooldown"]:
+                icon, status = "⏳", f"cooldown ({st_acc['cooldown_remaining']}s)"
+            elif st_acc["has_access"]:
                 icon, status = "✅", "active"
             else:
                 icon, status = "⚠️", "no access token"
-            lines.append(f"{icon} #{i}: {status}")
-            if has_refresh:
-                lines.append(f"   refresh: ...{acc.get('refresh', '')[-8:]}")
+            active_marker = " ← [active]" if st_acc["active"] else ""
+            usage = f"5h:{st_acc['requests_5h']} 7d:{st_acc['requests_7d']}"
+            lines.append(f"{icon} #{i}: {status} | {usage}{active_marker}")
         send_with_budget(chat_id, "\n".join(lines))
+        return True
+
+    if lowered.startswith("/switch"):
+        from ouroboros.codex_proxy import force_switch_account
+        parts = lowered.split()
+        target = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else -1
+        result = force_switch_account(target_idx=target)
+        if result["ok"]:
+            send_with_budget(chat_id, f"✅ {result['message']}")
+        else:
+            send_with_budget(chat_id, f"⚠️ {result['message']}")
         return True
 
     return ""

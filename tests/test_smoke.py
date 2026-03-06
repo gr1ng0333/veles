@@ -96,6 +96,7 @@ EXPECTED_TOOLS = [
     "schedule_task", "cancel_task",
     "switch_model", "toggle_evolution", "toggle_consciousness",
     "send_owner_message", "send_photo", "send_document",
+    "switch_codex_account",
     "codebase_digest", "codebase_health",
     "knowledge_read", "knowledge_write", "knowledge_list",
     "multi_model_review",

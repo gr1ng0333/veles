@@ -206,6 +206,19 @@ def _wait_for_task(ctx: ToolContext, task_id: str) -> str:
     return f"Task {task_id}: still running. Call again later to check."
 
 
+def _switch_codex_account(ctx: ToolContext, account_index: int = -1) -> str:
+    """Switch active Codex account for multi-account rotation.
+
+    account_index=-1 rotates to the next usable account.
+    account_index=N switches to account #N explicitly.
+    """
+    from ouroboros.codex_proxy import force_switch_account
+    result = force_switch_account(target_idx=account_index)
+    if result["ok"]:
+        return f"OK: {result['message']} (total: {result['total']})"
+    return f"FAILED: {result['message']} (active: #{result['active_idx']}, total: {result['total']})"
+
+
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("request_restart", {
@@ -313,4 +326,11 @@ def get_tools() -> List[ToolEntry]:
                 "task_id": {"type": "string", "description": "Task ID to check"},
             }},
         }, _wait_for_task),
+        ToolEntry("switch_codex_account", {
+            "name": "switch_codex_account",
+            "description": "Switch active Codex OAuth account. Use -1 (default) to rotate to the next usable account, or specify an index to switch to a specific one.",
+            "parameters": {"type": "object", "properties": {
+                "account_index": {"type": "integer", "default": -1, "description": "Account index to switch to. -1 = next usable account."},
+            }, "required": []},
+        }, _switch_codex_account),
     ]
