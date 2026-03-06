@@ -4,6 +4,19 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+
+def plan_login_flow(user_selector: str, password_selector: str, allow_multi_step: bool = False) -> Dict[str, Any]:
+    """Plan whether login can proceed in one step, two steps, or not at all."""
+    user_sel = str(user_selector or "").strip()
+    pass_sel = str(password_selector or "").strip()
+    if user_sel and pass_sel:
+        return {"mode": "single_step", "can_proceed": True, "reason": "username and password fields available"}
+    if user_sel and allow_multi_step and not pass_sel:
+        return {"mode": "multi_step_username_first", "can_proceed": True, "reason": "username field available; waiting for password after next step"}
+    if not user_sel:
+        return {"mode": "missing_username", "can_proceed": False, "reason": "username/email field not found"}
+    return {"mode": "missing_password", "can_proceed": False, "reason": "password field not found"}
+
 _USERNAME_CANDIDATE_JS = r"""() => {
     const toInfo = (el, index, source, score) => {
         const form = el.form || el.closest('form');
@@ -87,23 +100,57 @@ _FILL_INPUT_JS = r"""({selector, value}) => {
     return {ok: true, selector, tag: el.tagName.toLowerCase(), type: (el.type || '').toLowerCase()};
 }"""
 
-_SUBMIT_LOGIN_FORM_JS = r"""({passwordSelector, submitSelector}) => {
-    const passwordEl = passwordSelector ? document.querySelector(passwordSelector) : null;
+_SUBMIT_LOGIN_FORM_JS = r"""({anchorSelector, submitSelector}) => {
+    const keywords = ['sign in', 'log in', 'login', 'continue', 'next', 'submit', 'verify'];
+    const anchorEl = anchorSelector ? document.querySelector(anchorSelector) : null;
     const explicitSubmit = submitSelector ? document.querySelector(submitSelector) : null;
-    const form = passwordEl ? (passwordEl.form || passwordEl.closest('form')) : null;
+    const form = anchorEl ? (anchorEl.form || anchorEl.closest('form')) : null;
+
+    const visible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && !el.disabled && rect.width > 0 && rect.height > 0;
+    };
+
+    const labelScore = (el) => {
+        const text = [el.innerText, el.textContent, el.value, el.getAttribute('aria-label'), el.getAttribute('title')]
+            .filter(Boolean)
+            .join(' ')
+            .trim()
+            .toLowerCase();
+        if (!text) return 0;
+        let score = 0;
+        for (const keyword of keywords) {
+            if (text.includes(keyword)) score += keyword === 'continue' || keyword === 'next' ? 4 : 6;
+        }
+        return score;
+    };
 
     const clickAndDescribe = (el, selector, source) => {
         el.click();
-        return {submitted: true, method: 'click', selector, source};
+        return {submitted: true, method: 'click', selector, source, text: ((el.innerText || el.textContent || el.value || '') + '').trim().slice(0, 120)};
     };
 
-    if (explicitSubmit) {
+    const bestButton = (nodes) => {
+        return nodes
+            .filter(visible)
+            .map((el) => ({ el, score: labelScore(el) }))
+            .sort((a, b) => b.score - a.score)[0] || null;
+    };
+
+    if (explicitSubmit && visible(explicitSubmit)) {
         return clickAndDescribe(explicitSubmit, submitSelector, 'explicit_submit_selector');
     }
 
     if (form) {
+        const controls = Array.from(form.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]'));
+        const scored = bestButton(controls);
+        if (scored && scored.score > 0) {
+            return clickAndDescribe(scored.el, window.__veles_build_selector(scored.el, 0), 'form_keyword_control');
+        }
         const submitEl = form.querySelector('button[type="submit"], input[type="submit"], button:not([type]), [role="button"]');
-        if (submitEl) {
+        if (submitEl && visible(submitEl)) {
             return clickAndDescribe(submitEl, window.__veles_build_selector(submitEl, 0), 'form_submit_control');
         }
         if (typeof form.requestSubmit === 'function') {
@@ -114,10 +161,16 @@ _SUBMIT_LOGIN_FORM_JS = r"""({passwordSelector, submitSelector}) => {
         return {submitted: true, method: 'form_submit', selector: window.__veles_build_selector(form, 0), source: 'form_submit'};
     }
 
-    if (passwordEl) {
-        passwordEl.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
-        passwordEl.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
-        return {submitted: true, method: 'enter_key', selector: passwordSelector, source: 'password_enter'};
+    const globalControls = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]'));
+    const globalBest = bestButton(globalControls);
+    if (globalBest && globalBest.score > 0) {
+        return clickAndDescribe(globalBest.el, window.__veles_build_selector(globalBest.el, 0), 'global_keyword_control');
+    }
+
+    if (anchorEl) {
+        anchorEl.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
+        anchorEl.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+        return {submitted: true, method: 'enter_key', selector: anchorSelector, source: 'anchor_enter'};
     }
 
     return {submitted: false, method: 'none', selector: '', source: 'no_submit_target'};
