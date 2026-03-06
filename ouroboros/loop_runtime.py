@@ -10,6 +10,8 @@ import pathlib
 import queue
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+PROMPT_TOKEN_GUARD_THRESHOLD = 40000
+
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
 from ouroboros.llm import LLMClient, normalize_reasoning_effort
 from ouroboros.tools.registry import ToolRegistry
@@ -308,6 +310,36 @@ def _handle_no_tool_call_finalize(content: Optional[str], llm_trace: Dict[str, A
     return final[0], final[1], final[2], recent_progress, 0
 
 
+def _get_evolution_round_limit(task_type: str, default_task_max_rounds: int) -> int:
+    if task_type != "evolution":
+        return default_task_max_rounds
+    try:
+        return max(1, int(os.environ.get("OUROBOROS_EVOLUTION_MAX_ROUNDS", "8")))
+    except (ValueError, TypeError):
+        log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS, falling back to 8")
+        return 8
+
+
+def _update_large_prompt_streak(
+    task_type: str,
+    current_streak: int,
+    round_prompt_tokens: int,
+    threshold: int = PROMPT_TOKEN_GUARD_THRESHOLD,
+) -> int:
+    if task_type != "evolution":
+        return 0
+    if round_prompt_tokens > threshold:
+        return current_streak + 1
+    return 0
+
+
+def _should_finalize_evolution_for_prompt_tokens(
+    task_type: str,
+    large_prompt_streak: int,
+) -> bool:
+    return task_type == "evolution" and large_prompt_streak >= 2
+
+
 def _append_assistant_with_tool_calls(messages: List[Dict[str, Any]], content: Optional[str], tool_calls: List[Dict[str, Any]], emit_progress: Callable[[str], None], llm_trace: Dict[str, Any]) -> None:
     messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
     if content and content.strip():
@@ -372,10 +404,12 @@ def run_llm_loop_impl(
     _owner_msg_seen: set = set()
 
     MAX_ROUNDS, anti, round_idx, no_progress_rounds, recent_progress, stagnation_check_injected, task_round_warn_emitted = _init_antistagnation_state()
+    task_round_limit = _get_evolution_round_limit(task_type, anti.task_max_rounds)
 
     # New tracking state for small-completion stagnation and context overflow
     recent_completion_tokens: List[int] = []
     prev_prompt_tokens: int = 0
+    evolution_large_prompt_streak: int = 0
     original_task_text: str = _extract_original_task(messages)
 
     try:
@@ -400,10 +434,11 @@ def run_llm_loop_impl(
             if hard_limit is not None:
                 return hard_limit
 
-            # --- Task-specific max rounds (OUROBOROS_TASK_MAX_ROUNDS, default=15) ---
-            if task_type not in ("evolution", "consciousness") and round_idx > anti.task_max_rounds:
+            # --- Task-specific max rounds ---
+            if task_type != "consciousness" and round_idx > task_round_limit:
+                limit_name = "OUROBOROS_EVOLUTION_MAX_ROUNDS" if task_type == "evolution" else "TASK_MAX_ROUNDS"
                 reason = (
-                    f"⚠️ Task exceeded TASK_MAX_ROUNDS ({anti.task_max_rounds}). "
+                    f"⚠️ Task exceeded {limit_name} ({task_round_limit}). "
                     "Формирую финальный ответ из собранных данных."
                 )
                 final_text, accumulated_usage, _ = _finalize_with_summary(
@@ -505,6 +540,33 @@ def run_llm_loop_impl(
                 messages.append({"role": "system", "content": f"[CONTEXT_TRUNCATED] {reminder}"})
                 emit_progress(f"⚠️ Context truncated at round {round_idx}: {prev_prompt_tokens} → {round_prompt_tokens} tokens")
             prev_prompt_tokens = round_prompt_tokens
+
+            evolution_large_prompt_streak = _update_large_prompt_streak(
+                task_type,
+                evolution_large_prompt_streak,
+                round_prompt_tokens,
+            )
+            if _should_finalize_evolution_for_prompt_tokens(task_type, evolution_large_prompt_streak):
+                reason = (
+                    "⚠️ Evolution prompt_tokens guard triggered: prompt_tokens > "
+                    f"{PROMPT_TOKEN_GUARD_THRESHOLD} for 2 consecutive rounds. Формирую финальный ответ."
+                )
+                final_text, accumulated_usage, _ = _finalize_with_summary(
+                    reason=reason,
+                    messages=messages,
+                    llm=llm,
+                    active_model=active_model,
+                    active_effort=active_effort,
+                    max_retries=max_retries,
+                    drive_logs=drive_logs,
+                    task_id=task_id,
+                    round_idx=round_idx,
+                    event_queue=event_queue,
+                    accumulated_usage=accumulated_usage,
+                    task_type=task_type,
+                )
+                llm_trace["assistant_notes"].append(reason[:320])
+                return final_text, accumulated_usage, llm_trace
 
             # --- Small-completion stagnation detection ---
             if is_small_completion_stagnation(recent_completion_tokens, anti):
