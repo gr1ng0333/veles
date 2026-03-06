@@ -476,12 +476,32 @@ class OuroborosAgent:
         # that would double-count in update_budget_from_usage.
         # Cost/token summaries are carried by task_metrics and task_done events.
 
-        self._pending_events.append({
-            "type": "send_message", "chat_id": task["chat_id"],
-            "text": text or "\u200b", "log_text": text or "",
-            "format": "markdown",
-            "task_id": task.get("id"), "ts": utc_now_iso(),
-        })
+        # Evolution tasks: only notify if a commit was made (contains SHA or "committed")
+        task_type_str = str(task.get("type") or "").lower()
+        if task_type_str == "evolution":
+            import re as _re
+            _has_commit = bool(
+                _re.search(r'\b[0-9a-f]{7,40}\b', text or "")
+                or "committed" in (text or "").lower()
+                or "commit" in (text or "").lower()
+            )
+            if _has_commit:
+                # Extract first line as short description
+                _first_line = (text or "").strip().split("\n")[0][:200]
+                self._pending_events.append({
+                    "type": "send_message", "chat_id": task["chat_id"],
+                    "text": f"🧬 Evolution: {_first_line}",
+                    "log_text": text or "",
+                    "format": "markdown",
+                    "task_id": task.get("id"), "ts": utc_now_iso(),
+                })
+        else:
+            self._pending_events.append({
+                "type": "send_message", "chat_id": task["chat_id"],
+                "text": text or "\u200b", "log_text": text or "",
+                "format": "markdown",
+                "task_id": task.get("id"), "ts": utc_now_iso(),
+            })
 
         duration_sec = round(time.time() - start_time, 3)
         n_tool_calls = len(llm_trace.get("tool_calls", []))

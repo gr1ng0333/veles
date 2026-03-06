@@ -213,7 +213,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         cost_usd = float(evt.get("cost_usd") or 0.0)
         should_report = (
             runtime_sec >= 45.0
-            or task_type in {"evolution", "review"}
+            or task_type in {"review"}
             or soft_sent
         )
         if owner_chat_id and should_report and task_id:
