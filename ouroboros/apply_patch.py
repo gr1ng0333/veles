@@ -1,5 +1,5 @@
 """
-Apply-patch shim for Claude Code CLI.
+Apply-patch shim.
 Writes apply_patch script to /usr/local/bin/ on import.
 
 Supports: *** Update File, *** Add File, *** Delete File, *** End of File.

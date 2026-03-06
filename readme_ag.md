@@ -154,7 +154,6 @@
 
 **Key Functions:**
 - `install_launcher_deps()` – Install pip dependencies (openai, requests)
-- `ensure_claude_code_cli()` – Attempt to install Claude Code CLI
 - `get_secret(name, required=False)` – Read API keys from env vars
 - `get_cfg(name)` – Read configuration from env vars
 - `run_server()` – Main event loop that:
@@ -591,7 +590,6 @@ def handle_tool(ctx: ToolContext, **kwargs) -> str:
 ##### **shell.py** – Shell Execution
 **Tools:**
 - `run_shell(command, cwd, timeout_sec)` → Execute bash command
-- `claude_code_edit(instruction)` → Use Claude Code CLI for code editing
 
 ---
 
@@ -1456,7 +1454,7 @@ OUROBOROS_BG_BUDGET_PCT=10                       # Background % of budget
 BACKGROUND_ENABLED=true                          # Enable consciousness
 PRIMARY_MODEL=anthropic/claude-opus-4.6          # Default model
 OPENAI_API_KEY=sk-...                            # Optional: web search
-ANTHROPIC_API_KEY=sk-ant-...                     # Optional: Claude Code CLI
+ANTHROPIC_API_KEY=sk-ant-...                     # Optional: Anthropic API
 ```
 
 ### **File Structure – Storage Layers**
@@ -1526,7 +1524,7 @@ Google Drive (Persistent Storage):
 |------|-------|---------|
 | **core.py** | `repo_read`, `repo_list`, `repo_write_commit`, etc. | File I/O |
 | **git.py** | `git_status`, `git_diff` | Git introspection |
-| **shell.py** | `run_shell`, `claude_code_edit` | Shell + Claude Code |
+| **shell.py** | `run_shell` | Shell commands |
 | **control.py** | `request_restart`, `promote_to_stable`, `switch_model` | Agent control |
 | **review.py** | `review_self`, `collect_changes` | Code metrics |
 | **search.py** | `web_search` | Web search API |

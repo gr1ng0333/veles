@@ -31,7 +31,7 @@
 
 ### 1.3 `OUROBOROS_MODEL_CODE` — Модель для кода
 
-**Что делает:** Используется инструментом `claude_code_edit` (из `shell.py`), который делегирует редактирование кода через Claude Code CLI. По сути это отдельный вызов CLI-утилиты Anthropic для рефакторинга файлов.
+**Что делает:** Указывает модель, используемую для задач редактирования кода. По умолчанию совпадает с основной моделью (`OUROBOROS_MODEL`).
 
 **Текущее значение в .env:** не задана явно (по умолчанию = `anthropic/claude-sonnet-4.6`)
 
@@ -185,7 +185,7 @@
 |---|---|---|
 | `OUROBOROS_MODEL` | `anthropic/claude-sonnet-4.6` | Основная модель для всех задач |
 | `OUROBOROS_MODEL_LIGHT` | `google/gemini-3-pro-preview` | Дешёвая модель для фона, суммаризации, дедупликации |
-| `OUROBOROS_MODEL_CODE` | = OUROBOROS_MODEL | Модель для Claude Code CLI |
+| `OUROBOROS_MODEL_CODE` | = OUROBOROS_MODEL | Модель для задач редактирования кода |
 | `OUROBOROS_MODEL_FALLBACK_LIST` | `google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6` | Цепочка фоллбэков при пустых ответах |
 
 ### 5.3 Воркеры и таймауты
@@ -208,7 +208,7 @@
 | Переменная | Описание |
 |---|---|
 | `OPENAI_API_KEY` | Для инструмента `web_search` (через OpenAI Responses API) |
-| `ANTHROPIC_API_KEY` | Для Claude Code CLI (`claude_code_edit`). Если задан — при запуске автоматически установится CLI |
+| `ANTHROPIC_API_KEY` | Для доступа к Anthropic API (опционально) |
 
 ### 5.6 Диагностика (опциональные)
 
