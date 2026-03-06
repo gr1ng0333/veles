@@ -261,10 +261,44 @@ def _handle_review_request(evt: Dict[str, Any], ctx: Any) -> None:
 
 def _handle_restart_request(evt: Dict[str, Any], ctx: Any) -> None:
     st = ctx.load_state()
+    reason = str(evt.get("reason") or "").strip()
+
+    advisor_result = None
+    try:
+        from supervisor.restart_advisor import advise_restart
+        advisor_result = advise_restart(
+            reason=reason,
+            state=st or {},
+            pending_count=len(ctx.PENDING),
+            running_count=len(ctx.RUNNING),
+        )
+        ctx.append_jsonl(
+            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "type": "restart_advisor_verdict",
+                "reason": reason,
+                "advisor": advisor_result,
+            },
+        )
+    except Exception as e:
+        ctx.append_jsonl(
+            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "type": "restart_advisor_error",
+                "reason": reason,
+                "error": repr(e),
+            },
+        )
+
     if st.get("owner_chat_id"):
+        verdict_suffix = ""
+        if isinstance(advisor_result, dict) and advisor_result.get("verdict"):
+            verdict_suffix = f" [advisor: {advisor_result.get('verdict')}]"
         ctx.send_with_budget(
             int(st["owner_chat_id"]),
-            f"♻️ Restart requested by agent: {evt.get('reason')}",
+            f"♻️ Restart requested by agent: {reason or 'unspecified'}{verdict_suffix}",
         )
     ok, msg = ctx.safe_restart(
         reason="agent_restart_request", unsynced_policy="rescue_and_reset"
