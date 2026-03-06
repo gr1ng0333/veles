@@ -406,7 +406,7 @@ class BackgroundConsciousness:
 
             now_iso = utc_now_iso()
             self._monitor_state["wakeup_count"] = int(self._monitor_state.get("wakeup_count", 0)) + 1
-            self._monitor_state["last_issues_check"] = self._monitor_state.get("last_issues_check") or now_iso
+            self._monitor_state["last_issues_check"] = now_iso
             self._monitor_state["last_thought_at"] = now_iso
             self._monitor_state["last_thought_preview"] = thought_preview
             self._monitor_state["last_model"] = model
@@ -421,7 +421,9 @@ class BackgroundConsciousness:
                 "type": "consciousness_llm_error",
                 "error": repr(e),
             })
-            self._monitor_state["last_thought_at"] = utc_now_iso()
+            err_now_iso = utc_now_iso()
+            self._monitor_state["last_issues_check"] = err_now_iso
+            self._monitor_state["last_thought_at"] = err_now_iso
             self._monitor_state["last_thought_preview"] = _build_thought_preview(
                 "", rounds=round_idx, tool_calls=tool_call_count, end_reason="error"
             )

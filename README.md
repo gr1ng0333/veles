@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.6.3 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.6.4 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -225,6 +225,11 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.6.4 -- Background monitor heartbeat consistency fix
+- Fixed `monitor_state.last_issues_check` heartbeat update in `ouroboros/consciousness.py`: now refreshed on every wake cycle (not only when empty).
+- On consciousness LLM error path, monitor state now also updates `last_issues_check` together with `last_thought_at`/`last_thought_preview`.
+- Added test `test_normalize_monitor_state_preserves_existing_last_issues_check` in `tests/test_consciousness_monitor_state.py` to protect monitor-state normalization expectations.
 
 ### v6.6.3 -- Background consciousness monitor-state + non-empty thought preview
 - Added monitor-state normalization in `ouroboros/consciousness.py` with safe defaults and type coercion.
