@@ -27,3 +27,5 @@ Thumbs.db
 .create_release.py
 .release_notes.md
 venv/
+# Local scratch/untracked artifacts
+ouroboros/codex_responses.py
