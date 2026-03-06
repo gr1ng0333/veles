@@ -358,6 +358,49 @@ def _safe_selector_presence(page: Any, selector: str, timeout: int) -> bool:
         return False
 
 
+def _post_submit_wait(page: Any, wait_ms: int = 1200) -> None:
+    page.wait_for_timeout(max(0, wait_ms))
+
+
+def _check_session_alive_via_protected_url(ctx: ToolContext, protected_url: str, timeout: int = 5000) -> Dict[str, Any]:
+    url = (protected_url or "").strip()
+    if not url:
+        return {"checked": False}
+
+    page = _ensure_browser(ctx)
+    before_url = page.url
+    try:
+        probe = ctx.browser_state.context.new_page()
+        _apply_stealth(probe)
+        probe.set_default_timeout(30000)
+        probe.goto(url, timeout=timeout, wait_until="domcontentloaded")
+        final_url = probe.url
+        redirected_to_login = any(term in final_url.lower() for term in ["login", "sign-in", "signin", "auth"])
+        return {
+            "checked": True,
+            "protected_url": url,
+            "final_url": final_url,
+            "alive": not redirected_to_login,
+        }
+    except Exception as e:
+        return {
+            "checked": True,
+            "protected_url": url,
+            "alive": False,
+            "error": str(e),
+        }
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            log.debug("Failed to close protected-url probe page", exc_info=True)
+        try:
+            if before_url and page.url != before_url:
+                page.goto(before_url, timeout=timeout, wait_until="domcontentloaded")
+        except Exception:
+            log.debug("Failed to restore original page after protected-url probe", exc_info=True)
+
+
 def _session_snapshot(context: Any) -> Dict[str, Any]:
     state = context.storage_state()
     cookies = list(state.get("cookies") or [])
@@ -482,7 +525,7 @@ def _browser_fill_login_form(
             {"anchorSelector": user_sel, "submitSelector": next_sel or submit_sel},
         )
         step_results.append({"step": "username_submit", **next_result})
-        page.wait_for_timeout(800)
+        _post_submit_wait(page)
         password_candidates = page.evaluate(_PASSWORD_CANDIDATE_JS)
         chosen = choose_login_field_selectors(
             username_candidates=page.evaluate(_USERNAME_CANDIDATE_JS),
@@ -511,7 +554,7 @@ def _browser_fill_login_form(
         {"anchorSelector": pass_sel, "submitSelector": submit_sel},
     )
     step_results.append({"step": "password_submit", **submit_result})
-    page.wait_for_timeout(800)
+    _post_submit_wait(page)
 
     return (
         "Login form filled. "
@@ -533,10 +576,17 @@ def _browser_check_login_state(
     expected_url_substring: str = "",
     success_cookie_names: Optional[List[str]] = None,
     failure_text_substrings: Optional[List[str]] = None,
+    protected_url: str = "",
     timeout: int = 5000,
 ) -> str:
     page = _ensure_browser(ctx)
     page.evaluate(_SELECTOR_HELPERS_JS)
+    _post_submit_wait(page)
+
+    current_url = str(page.url or "")
+    expected_url = _normalize_selector(expected_url_substring).lower()
+    login_url_markers = ["login", "sign-in", "signin", "auth"]
+    submitted_from_login_url = any(marker in current_url.lower() for marker in login_url_markers)
 
     matched: List[str] = []
     if _safe_selector_presence(page, success_selector, timeout):
@@ -553,8 +603,9 @@ def _browser_check_login_state(
     except Exception:
         log.debug("Failed to read browser cookies during login state check", exc_info=True)
 
-    expected_url = _normalize_selector(expected_url_substring).lower()
     cookie_names = [str(cookie.get("name") or "") for cookie in cookies if cookie.get("name")]
+    redirected_away_from_login = submitted_from_login_url and not any(marker in str(signals.get("url") or page.url).lower() for marker in login_url_markers)
+    protected_probe = _check_session_alive_via_protected_url(ctx, protected_url=protected_url, timeout=timeout)
     signals.update({
         "matched": matched,
         "cookie_names": cookie_names,
@@ -563,6 +614,11 @@ def _browser_check_login_state(
         "expected_url_substring": expected_url_substring or "",
         "expected_url_matched": bool(expected_url and expected_url in str(signals.get("url") or page.url).lower()),
         "body_text": str(signals.get("body_text") or signals.get("title") or ""),
+        "submitted_from_login_url": submitted_from_login_url,
+        "redirected_away_from_login": redirected_away_from_login,
+        "has_error_classes": bool(signals.get("error_class_count") or 0),
+        "protected_url_checked": bool(protected_probe.get("checked")),
+        "protected_url_alive": bool(protected_probe.get("alive")) if protected_probe.get("checked") else False,
     })
 
     inferred = infer_login_state(signals)
@@ -574,6 +630,7 @@ def _browser_check_login_state(
         "signals": signals,
         "reason": inferred["reason"],
         "active_session_name": ctx.browser_state.active_session_name,
+        "protected_url_check": protected_probe if protected_probe.get("checked") else None,
     }
     return json.dumps(result, ensure_ascii=False)
 
@@ -788,6 +845,7 @@ def get_tools() -> List[ToolEntry]:
                         "expected_url_substring": {"type": "string", "description": "Optional URL substring expected after successful login"},
                         "success_cookie_names": {"type": "array", "items": {"type": "string"}, "description": "Optional cookie names that suggest authenticated state"},
                         "failure_text_substrings": {"type": "array", "items": {"type": "string"}, "description": "Optional substrings that indicate login failure"},
+                        "protected_url": {"type": "string", "description": "Optional authenticated URL used for an internal session-alive probe"},
                         "timeout": {"type": "integer", "description": "Selector wait timeout in ms (default: 5000)"},
                     },
                 },

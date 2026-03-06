@@ -183,16 +183,22 @@ _LOGIN_SIGNALS_JS = r"""() => {
         const rect = el.getBoundingClientRect();
         return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
     };
+    const loginInputs = Array.from(document.querySelectorAll('input')).filter((el) => {
+        const type = (el.type || 'text').toLowerCase();
+        return ['text', 'email', 'tel', 'password'].includes(type) || !type;
+    });
+    const visibleLoginInputs = loginInputs.filter(visible).length;
     const texts = Array.from(document.querySelectorAll('[role="alert"], .error, .alert, .alert-danger, .notification, .flash, [aria-live]'))
         .map((el) => (el.textContent || '').trim())
         .filter(Boolean)
         .slice(0, 10);
+    const errorClassCount = document.querySelectorAll('.error, .alert, .alert-danger, [role="alert"], [aria-invalid="true"]').length;
     const bodyText = (document.body.innerText || '').toLowerCase();
     const passwordFields = Array.from(document.querySelectorAll('input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"]'));
-    const profileUi = Array.from(document.querySelectorAll('a, button, [role="button"], nav, header'))
-        .map((el) => (el.textContent || '').trim())
+    const profileUi = Array.from(document.querySelectorAll('a, button, [role="button"], nav, header, img, [class], [id]'))
+        .map((el) => [el.textContent || '', el.getAttribute && el.getAttribute('aria-label') || '', el.getAttribute && el.getAttribute('alt') || '', el.id || '', el.className || ''].join(' '))
         .filter(Boolean)
-        .slice(0, 50)
+        .slice(0, 120)
         .join(' | ')
         .toLowerCase();
     return {
@@ -200,139 +206,94 @@ _LOGIN_SIGNALS_JS = r"""() => {
         title: document.title || '',
         visible_password_fields: passwordFields.filter(visible).length,
         total_password_fields: passwordFields.length,
+        visible_login_inputs: visibleLoginInputs,
+        login_form_visible: visibleLoginInputs > 0,
         error_texts: texts,
+        error_class_count: errorClassCount,
         body_mentions_logout: /logout|log out|sign out/.test(bodyText),
         body_mentions_profile: /profile|account|my account|dashboard/.test(bodyText),
         body_mentions_login: /login|log in|sign in/.test(bodyText),
-        has_profile_ui: /logout|log out|sign out|profile|account|dashboard/.test(profileUi),
+        has_profile_ui: /logout|log out|sign out|profile|account|dashboard|avatar/.test(profileUi),
     };
 }"""
 
 
 def infer_login_state(signals: Dict[str, Any]) -> Dict[str, Any]:
-    """Infer coarse login state from page signals. Pure function for unit tests."""
+    """Infer post-login state with failure priority. Pure function for unit tests."""
     matched = list(signals.get("matched") or [])
-    reason_parts: List[str] = []
-
-    if "success_selector" in matched:
-        return {"state": "logged_in", "reason": "explicit success selector matched", "matched": matched}
-    if "failure_selector" in matched:
-        return {"state": "login_failed", "reason": "explicit failure selector matched", "matched": matched}
-    if "logged_out_selector" in matched:
-        return {"state": "logged_out", "reason": "explicit logged_out selector matched", "matched": matched}
 
     error_text = " ".join(signals.get("error_texts") or []).lower()
     body_text = str(signals.get("body_text") or "").lower()
     failure_text_substrings = [str(x).lower() for x in (signals.get("failure_text_substrings") or []) if str(x).strip()]
     matched_failure_substrings = [term for term in failure_text_substrings if term in error_text or term in body_text]
-    if matched_failure_substrings:
-        return {
-            "state": "login_failed",
-            "reason": f"failure text matched: {', '.join(matched_failure_substrings[:3])}",
-            "matched": matched,
-        }
-
-    if error_text:
-        failure_terms = ["invalid", "incorrect", "wrong", "try again", "error", "failed", "required"]
-        if any(term in error_text for term in failure_terms):
-            return {
-                "state": "login_failed",
-                "reason": "error or alert text suggests authentication failure",
-                "matched": matched,
-            }
-        reason_parts.append("alert text present but not clearly auth-related")
-
+    has_error_classes = bool(signals.get("has_error_classes")) or int(signals.get("error_class_count") or 0) > 0
+    login_form_visible = bool(signals.get("login_form_visible"))
     visible_password_fields = int(signals.get("visible_password_fields") or 0)
+    submitted_from_login_url = bool(signals.get("submitted_from_login_url"))
+    redirected_away_from_login = bool(signals.get("redirected_away_from_login"))
     body_mentions_login = bool(signals.get("body_mentions_login"))
     has_profile_ui = bool(signals.get("has_profile_ui"))
     body_mentions_profile = bool(signals.get("body_mentions_profile"))
     body_mentions_logout = bool(signals.get("body_mentions_logout"))
-    expected_url_matched = bool(signals.get("expected_url_matched"))
-    success_cookie_names = [str(x).lower() for x in (signals.get("success_cookie_names") or []) if str(x).strip()]
-    cookie_names = [str(x).lower() for x in (signals.get("cookie_names") or []) if str(x).strip()]
-    matched_success_cookies = [name for name in success_cookie_names if name in cookie_names]
+    protected_url_alive = bool(signals.get("protected_url_alive"))
 
-    positive_signals = 0
+    if "failure_selector" in matched:
+        return {"state": "failure", "reason": "explicit failure selector matched", "matched": matched}
+    if matched_failure_substrings:
+        return {
+            "state": "failure",
+            "reason": f"failure text matched: {', '.join(matched_failure_substrings[:3])}",
+            "matched": matched,
+        }
+    if error_text:
+        failure_terms = ["invalid", "incorrect", "wrong", "try again", "error", "failed", "required"]
+        if any(term in error_text for term in failure_terms):
+            return {
+                "state": "failure",
+                "reason": "error or alert text suggests authentication failure",
+                "matched": matched,
+            }
+    if has_error_classes:
+        return {
+            "state": "failure",
+            "reason": "error/alert classes present in DOM after submit",
+            "matched": matched,
+        }
+    if submitted_from_login_url and not redirected_away_from_login and login_form_visible:
+        return {
+            "state": "failure",
+            "reason": "still on login URL with login form visible after submit",
+            "matched": matched,
+        }
+
+    success_reasons: List[str] = []
+    if "success_selector" in matched:
+        success_reasons.append("explicit success selector matched")
+    if redirected_away_from_login:
+        success_reasons.append("redirected away from login URL")
+    if not login_form_visible:
+        success_reasons.append("login form disappeared after submit")
     if has_profile_ui or body_mentions_profile or body_mentions_logout:
-        positive_signals += 1
-    if expected_url_matched:
-        positive_signals += 1
-    if matched_success_cookies:
-        positive_signals += 1
+        success_reasons.append("account/logout/dashboard UI present")
+    if protected_url_alive:
+        success_reasons.append("protected URL stayed accessible")
 
-    if matched_success_cookies and visible_password_fields == 0 and not body_mentions_login:
+    strong_success = any([
+        "success_selector" in matched,
+        redirected_away_from_login,
+        has_profile_ui or body_mentions_profile or body_mentions_logout,
+        protected_url_alive,
+    ])
+    if strong_success or (success_reasons and not login_form_visible and submitted_from_login_url):
         return {
-            "state": "logged_in",
-            "reason": f"success cookies present: {', '.join(matched_success_cookies[:3])}",
+            "state": "success",
+            "reason": "; ".join(success_reasons[:3]),
             "matched": matched,
         }
 
-    if expected_url_matched and visible_password_fields == 0 and positive_signals >= 1:
-        return {
-            "state": "logged_in",
-            "reason": "expected post-login URL matched and password field is gone",
-            "matched": matched,
-        }
-
-    if (has_profile_ui or body_mentions_logout or body_mentions_profile) and visible_password_fields == 0:
-        return {
-            "state": "logged_in",
-            "reason": "profile/logout UI present and password form no longer visible",
-            "matched": matched,
-        }
-
-    if positive_signals >= 2 and visible_password_fields == 0:
-        return {
-            "state": "logged_in",
-            "reason": "multiple post-login signals agree",
-            "matched": matched,
-        }
-
-    if positive_signals > 0 and visible_password_fields > 0:
-        return {
-            "state": "unclear",
-            "reason": "post-login signals conflict with still-visible password field",
-            "matched": matched,
-        }
-
-    if visible_password_fields > 0 and body_mentions_login:
-        return {
-            "state": "logged_out",
-            "reason": "login/sign-in page still visible with password field",
-            "matched": matched,
-        }
-
-    if visible_password_fields > 0:
-        return {
-            "state": "unclear",
-            "reason": "password field still visible without explicit failure signal",
-            "matched": matched,
-        }
-
-    if has_profile_ui or body_mentions_profile or body_mentions_logout:
-        return {
-            "state": "logged_in",
-            "reason": "page suggests authenticated account UI",
-            "matched": matched,
-        }
-
-    if expected_url_matched and not body_mentions_login:
-        return {
-            "state": "unclear",
-            "reason": "expected URL matched, but other login signals remain weak",
-            "matched": matched,
-        }
-
-    if body_mentions_login:
-        return {
-            "state": "logged_out",
-            "reason": "page still looks like login screen",
-            "matched": matched,
-        }
-
-    return {
-        "state": "unclear",
-        "reason": "; ".join(reason_parts) if reason_parts else "insufficient signals",
-        "matched": matched,
-    }
+    if "logged_out_selector" in matched:
+        return {"state": "unclear", "reason": "logged-out selector matched without explicit failure", "matched": matched}
+    if visible_password_fields > 0 or body_mentions_login:
+        return {"state": "unclear", "reason": "login UI is still present without explicit failure", "matched": matched}
+    return {"state": "unclear", "reason": "insufficient post-login signals", "matched": matched}
 
