@@ -13,9 +13,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
 from ouroboros.llm import LLMClient, normalize_reasoning_effort
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.antistagnation import (
     build_forced_finalize_reason,
+    detect_context_overflow,
     inject_stagnation_self_check,
+    is_small_completion_stagnation,
     load_antistagnation_config,
     should_force_round_finalize,
     stagnation_action,
@@ -322,6 +325,20 @@ def _init_antistagnation_state() -> Tuple[int, Any, int, int, List[bool], bool, 
     return max_rounds, anti, 0, 0, [], False, False
 
 
+def _extract_original_task(messages: List[Dict[str, Any]]) -> str:
+    """Extract the original user task from the message history."""
+    for m in messages:
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, str) and content.strip():
+                return content.strip()[:500]
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("text", "").strip():
+                        return block["text"].strip()[:500]
+    return "(unknown task)"
+
+
 def run_llm_loop_impl(
     messages: List[Dict[str, Any]],
     tools: ToolRegistry,
@@ -356,6 +373,11 @@ def run_llm_loop_impl(
 
     MAX_ROUNDS, anti, round_idx, no_progress_rounds, recent_progress, stagnation_check_injected, task_round_warn_emitted = _init_antistagnation_state()
 
+    # New tracking state for small-completion stagnation and context overflow
+    recent_completion_tokens: List[int] = []
+    prev_prompt_tokens: int = 0
+    original_task_text: str = _extract_original_task(messages)
+
     try:
         while True:
             round_idx += 1
@@ -377,6 +399,29 @@ def run_llm_loop_impl(
             )
             if hard_limit is not None:
                 return hard_limit
+
+            # --- Task-specific max rounds (OUROBOROS_TASK_MAX_ROUNDS, default=15) ---
+            if task_type not in ("evolution", "consciousness") and round_idx > anti.task_max_rounds:
+                reason = (
+                    f"⚠️ Task exceeded TASK_MAX_ROUNDS ({anti.task_max_rounds}). "
+                    "Формирую финальный ответ из собранных данных."
+                )
+                final_text, accumulated_usage, _ = _finalize_with_summary(
+                    reason=reason,
+                    messages=messages,
+                    llm=llm,
+                    active_model=active_model,
+                    active_effort=active_effort,
+                    max_retries=max_retries,
+                    drive_logs=drive_logs,
+                    task_id=task_id,
+                    round_idx=round_idx,
+                    event_queue=event_queue,
+                    accumulated_usage=accumulated_usage,
+                    task_type=task_type,
+                )
+                llm_trace["assistant_notes"].append(reason[:320])
+                return final_text, accumulated_usage, llm_trace
 
             _maybe_inject_self_check(round_idx, MAX_ROUNDS, messages, accumulated_usage, emit_progress)
             task_round_warn_emitted = _maybe_emit_round_warning(
@@ -436,6 +481,54 @@ def run_llm_loop_impl(
                 return (
                     "⚠️ Failed to get a response from the model after retries/fallback. Try rephrasing your request."
                 ), accumulated_usage, llm_trace
+
+            # --- Per-round token tracking for stagnation/overflow detection ---
+            round_completion_tokens = int(accumulated_usage.get("_last_round_completion_tokens") or 0)
+            round_prompt_tokens = int(accumulated_usage.get("_last_round_prompt_tokens") or 0)
+            recent_completion_tokens.append(round_completion_tokens)
+            if len(recent_completion_tokens) > 16:
+                recent_completion_tokens = recent_completion_tokens[-16:]
+
+            # --- Context overflow recovery ---
+            if prev_prompt_tokens > 0 and detect_context_overflow(round_prompt_tokens, prev_prompt_tokens, anti):
+                append_jsonl(drive_logs / "events.jsonl", {
+                    "ts": utc_now_iso(), "type": "context_truncated",
+                    "task_id": task_id, "round": round_idx,
+                    "prev_prompt_tokens": prev_prompt_tokens,
+                    "current_prompt_tokens": round_prompt_tokens,
+                    "drop_pct": round((1.0 - round_prompt_tokens / prev_prompt_tokens) * 100, 1),
+                })
+                reminder = (
+                    f"Контекст был обрезан. Задача пользователя: {original_task_text}. "
+                    "Сформируй финальный ответ из собранных данных."
+                )
+                messages.append({"role": "system", "content": f"[CONTEXT_TRUNCATED] {reminder}"})
+                emit_progress(f"⚠️ Context truncated at round {round_idx}: {prev_prompt_tokens} → {round_prompt_tokens} tokens")
+            prev_prompt_tokens = round_prompt_tokens
+
+            # --- Small-completion stagnation detection ---
+            if is_small_completion_stagnation(recent_completion_tokens, anti):
+                reason = (
+                    f"⚠️ Small completion stagnation: {anti.small_completion_max_rounds} rounds "
+                    f"in a row with completion_tokens < {anti.small_completion_threshold}. "
+                    "Формирую финальный ответ."
+                )
+                final_text, accumulated_usage, _ = _finalize_with_summary(
+                    reason=reason,
+                    messages=messages,
+                    llm=llm,
+                    active_model=active_model,
+                    active_effort=active_effort,
+                    max_retries=max_retries,
+                    drive_logs=drive_logs,
+                    task_id=task_id,
+                    round_idx=round_idx,
+                    event_queue=event_queue,
+                    accumulated_usage=accumulated_usage,
+                    task_type=task_type,
+                )
+                llm_trace["assistant_notes"].append(reason[:320])
+                return final_text, accumulated_usage, llm_trace
 
             tool_calls = msg.get("tool_calls") or []
             content = msg.get("content")

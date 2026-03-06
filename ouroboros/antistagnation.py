@@ -17,6 +17,10 @@ class AntiStagnationConfig:
     task_round_cap: int = 30
     extension_cap: int = 50
     extension_progress_window: int = 5
+    task_max_rounds: int = 15
+    small_completion_threshold: int = 100
+    small_completion_max_rounds: int = 3
+    context_drop_pct: int = 30
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -39,6 +43,10 @@ def load_antistagnation_config() -> AntiStagnationConfig:
         task_round_cap=_env_int("OUROBOROS_TASK_ROUND_CAP", 30),
         extension_cap=_env_int("OUROBOROS_TASK_ROUND_EXTENSION_CAP", 50),
         extension_progress_window=_env_int("OUROBOROS_TASK_PROGRESS_WINDOW", 5),
+        task_max_rounds=_env_int("OUROBOROS_TASK_MAX_ROUNDS", 15),
+        small_completion_threshold=_env_int("OUROBOROS_SMALL_COMPLETION_THRESHOLD", 100),
+        small_completion_max_rounds=_env_int("OUROBOROS_SMALL_COMPLETION_MAX_ROUNDS", 3),
+        context_drop_pct=_env_int("OUROBOROS_CONTEXT_DROP_PCT", 30, minimum=5),
     )
 
 
@@ -88,3 +96,26 @@ def stagnation_action(no_progress_rounds: int, cfg: AntiStagnationConfig, alread
     if no_progress_rounds >= cfg.stagnation_rounds and not already_injected:
         return "inject_self_check"
     return "none"
+
+
+def is_small_completion_stagnation(
+    recent_completion_tokens: List[int],
+    cfg: AntiStagnationConfig,
+) -> bool:
+    """Return True if the last N rounds all had completion_tokens below threshold."""
+    n = cfg.small_completion_max_rounds
+    if len(recent_completion_tokens) < n:
+        return False
+    return all(t < cfg.small_completion_threshold for t in recent_completion_tokens[-n:])
+
+
+def detect_context_overflow(
+    current_prompt_tokens: int,
+    prev_prompt_tokens: int,
+    cfg: AntiStagnationConfig,
+) -> bool:
+    """Return True if prompt_tokens dropped more than context_drop_pct% from previous round."""
+    if prev_prompt_tokens <= 0 or current_prompt_tokens <= 0:
+        return False
+    drop_ratio = 1.0 - (current_prompt_tokens / prev_prompt_tokens)
+    return drop_ratio > (cfg.context_drop_pct / 100.0)
