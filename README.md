@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.4 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.5 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.5 (2026-03-06)
+
+- Narrowed restart auto-resume to true interrupted-work cases via explicit `resume_needed` state instead of broad recent-restart heuristics.
+- Resume is now raised only by real restart/work signals (restored queue snapshot, interrupted busy restart) and `/evolve stop` suppression is released only by working owner commands, not service chatter.
+- Added tests for interrupted-work snapshot detection, stricter suppress release, and one-shot resume consumption under the new contract.
 
 ## v6.11.4 (2026-03-06)
 

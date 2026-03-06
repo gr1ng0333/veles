@@ -222,7 +222,7 @@ git_ops_init(
 
 from supervisor.queue import (
     enqueue_task, enforce_task_timeouts, enqueue_evolution_task_if_needed,
-    persist_queue_snapshot, restore_pending_from_snapshot,
+    persist_queue_snapshot, restore_pending_from_snapshot, snapshot_interrupted_work_info,
     cancel_task_by_id, queue_review_task, sort_pending,
 )
 
@@ -230,6 +230,7 @@ from supervisor.workers import (
     init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
     spawn_workers, kill_workers, assign_tasks, ensure_workers_healthy,
     handle_chat_direct, _get_chat_agent, auto_resume_after_restart,
+    owner_message_allows_auto_resume_release,
 )
 workers_init(
     repo_dir=REPO_DIR, drive_root=DRIVE_ROOT, max_workers=MAX_WORKERS,
@@ -253,6 +254,15 @@ assert ok, f"Bootstrap failed: {msg}"
 kill_workers()
 spawn_workers(MAX_WORKERS)
 restored_pending = restore_pending_from_snapshot()
+_snapshot_resume = snapshot_interrupted_work_info()
+if _snapshot_resume.get("has_interrupted_work"):
+    _st_resume = load_state()
+    if not bool(_st_resume.get("resume_needed")):
+        _st_resume["resume_needed"] = True
+        _st_resume["resume_reason"] = str(_snapshot_resume.get("reason") or "queue_snapshot_interrupted_work")
+        _st_resume["resume_snapshot_pending_count"] = int(_snapshot_resume.get("pending_count") or 0)
+        _st_resume["resume_snapshot_running_count"] = int(_snapshot_resume.get("running_count") or 0)
+        save_state(_st_resume)
 persist_queue_snapshot(reason="startup")
 if restored_pending > 0:
     st_boot = load_state()
@@ -418,6 +428,16 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         st2 = load_state()
         st2["session_id"] = uuid.uuid4().hex
         st2["tg_offset"] = tg_offset
+        _agent_busy = False
+        try:
+            _agent_busy = bool(_get_chat_agent()._busy)
+        except Exception:
+            _agent_busy = False
+        if PENDING or RUNNING or _agent_busy:
+            st2["resume_needed"] = True
+            st2["resume_reason"] = "owner_restart_busy_state"
+            st2["resume_snapshot_pending_count"] = len(PENDING)
+            st2["resume_snapshot_running_count"] = len(RUNNING)
         save_state(st2)
         send_with_budget(chat_id, "♻️ Restarting (soft).")
         ok, msg = safe_restart(reason="owner_restart", unsynced_policy="rescue_and_reset")
@@ -712,18 +732,16 @@ while True:
 
         log_chat("in", chat_id, user_id, text)
         st["last_owner_message_at"] = now_iso
-        if bool(st.get("suppress_auto_resume_until_owner_message")):
-            lowered_text = text.strip().lower()
-            if lowered_text not in ("/evolve stop", "/evolve off", "/evolve 0"):
-                st["suppress_auto_resume_until_owner_message"] = False
-                append_jsonl(
-                    DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                    {
-                        "ts": now_iso,
-                        "type": "auto_resume_unsuppressed",
-                        "reason": "owner_message",
-                    },
-                )
+        if bool(st.get("suppress_auto_resume_until_owner_message")) and owner_message_allows_auto_resume_release(text):
+            st["suppress_auto_resume_until_owner_message"] = False
+            append_jsonl(
+                DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    "ts": now_iso,
+                    "type": "auto_resume_unsuppressed",
+                    "reason": "working_owner_message",
+                },
+            )
         _last_message_ts = time.time()
         save_state(st)
 

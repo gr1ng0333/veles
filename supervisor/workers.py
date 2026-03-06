@@ -188,15 +188,42 @@ def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple
 # Auto-resume after restart
 # ---------------------------------------------------------------------------
 
-def auto_resume_after_restart() -> None:
-    """Fire one-shot auto-resume only once per launcher session.
 
-    Conditions:
-    - recent restart evidence exists;
-    - scratchpad contains meaningful content;
-    - not suppressed until next explicit owner message;
-    - current launcher session has not consumed auto-resume yet.
-    """
+
+def _scratchpad_has_meaningful_content(scratchpad_path: pathlib.Path) -> bool:
+    if not scratchpad_path.exists():
+        return False
+    stripped = scratchpad_path.read_text(encoding="utf-8").strip()
+    if not stripped or stripped == "# Scratchpad" or "(empty" in stripped.lower():
+        content_lines = [
+            ln.strip() for ln in stripped.splitlines()
+            if ln.strip() and not ln.strip().startswith("#") and ln.strip() != "- (empty)"
+        ]
+        content_lines = [ln for ln in content_lines if not ln.startswith("UpdatedAt:")]
+        return bool(content_lines)
+    return True
+
+
+def owner_message_allows_auto_resume_release(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    lowered = stripped.lower()
+    if not lowered.startswith("/"):
+        return True
+    if lowered.startswith("/resume") or lowered.startswith("/continue"):
+        return True
+    if lowered.startswith("/review"):
+        return True
+    if lowered.startswith("/evolve"):
+        parts = lowered.split()
+        action = parts[1] if len(parts) > 1 else "on"
+        return action not in ("off", "stop", "0")
+    return False
+
+
+def auto_resume_after_restart() -> None:
+    """Fire one-shot auto-resume only when interrupted work explicitly needs resume."""
     try:
         st = load_state()
         chat_id = st.get("owner_chat_id")
@@ -220,67 +247,44 @@ def auto_resume_after_restart() -> None:
             )
             return
 
-        restart_verify_path = DRIVE_ROOT / "state" / "pending_restart_verify.json"
-        recent_restart = False
-        if restart_verify_path.exists():
-            recent_restart = True
-        else:
-            sup_log = DRIVE_ROOT / "logs" / "supervisor.jsonl"
-            if sup_log.exists():
-                try:
-                    lines = sup_log.read_text(encoding="utf-8").strip().split("\n")
-                    for line in reversed(lines[-20:]):
-                        if not line.strip():
-                            continue
-                        evt = json.loads(line)
-                        if evt.get("type") in ("launcher_start", "restart"):
-                            recent_restart = True
-                            break
-                except Exception:
-                    log.debug("Suppressed exception", exc_info=True)
-
-        if not recent_restart:
+        if not bool(st.get("resume_needed")):
             return
 
         scratchpad_path = DRIVE_ROOT / "memory" / "scratchpad.md"
-        if not scratchpad_path.exists():
+        if not _scratchpad_has_meaningful_content(scratchpad_path):
             return
-
-        scratchpad = scratchpad_path.read_text(encoding="utf-8")
-        stripped = scratchpad.strip()
-        if not stripped or stripped == "# Scratchpad" or "(empty" in stripped.lower():
-            content_lines = [
-                ln.strip() for ln in stripped.splitlines()
-                if ln.strip() and not ln.strip().startswith("#") and ln.strip() != "- (empty)"
-            ]
-            content_lines = [ln for ln in content_lines if not ln.startswith("UpdatedAt:")]
-            if not content_lines:
-                return
 
         time.sleep(2)
         agent = _get_chat_agent()
-        if not agent._busy:
-            if launcher_session_id:
-                st["auto_resume_consumed_session_id"] = launcher_session_id
-                save_state(st)
-            import threading
-            threading.Thread(
-                target=handle_chat_direct,
-                args=(
-                    int(chat_id),
-                    "[auto-resume after restart] Continue your work. Read scratchpad and identity — they contain context of what you were doing.",
-                    None,
-                ),
-                daemon=True,
-            ).start()
-            append_jsonl(
-                DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "type": "auto_resume_triggered",
-                    "launcher_session_id": launcher_session_id or None,
-                },
-            )
+        if agent._busy:
+            return
+
+        resume_reason = str(st.get("resume_reason") or "").strip() or "interrupted_work"
+        if launcher_session_id:
+            st["auto_resume_consumed_session_id"] = launcher_session_id
+        st["resume_needed"] = False
+        st["resume_reason"] = ""
+        save_state(st)
+
+        import threading
+        threading.Thread(
+            target=handle_chat_direct,
+            args=(
+                int(chat_id),
+                "[auto-resume after restart] Resume interrupted work. Read scratchpad and identity — they contain context of what you were doing.",
+                None,
+            ),
+            daemon=True,
+        ).start()
+        append_jsonl(
+            DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "type": "auto_resume_triggered",
+                "launcher_session_id": launcher_session_id or None,
+                "resume_reason": resume_reason,
+            },
+        )
     except Exception as e:
         append_jsonl(
             DRIVE_ROOT / "logs" / "supervisor.jsonl",

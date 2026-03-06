@@ -148,6 +148,10 @@ def ensure_state_defaults(st: Dict[str, Any]) -> Dict[str, Any]:
     st.setdefault("evolution_consecutive_failures", 0)
     st.setdefault("no_commit_streak", 0)
     st.setdefault("evolution_cycles_1h", [])
+    st.setdefault("resume_needed", False)
+    st.setdefault("resume_reason", "")
+    st.setdefault("resume_snapshot_pending_count", 0)
+    st.setdefault("resume_snapshot_running_count", 0)
     for legacy_key in ("approvals", "idle_cursor", "idle_stats", "last_idle_task_at",
                         "last_auto_review_at", "last_review_task_id", "session_daily_snapshot"):
         st.pop(legacy_key, None)
