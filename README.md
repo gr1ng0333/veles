@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.1 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.2 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.2 (2026-03-06)
+
+- Isolated Codex capacity gating into a dedicated helper in `supervisor/queue.py` so evolution throttling policy no longer depends directly on live account-state reads.
+- Made `tests/test_evolution_throttling.py` deterministic by monkeypatching the helper in throttling tests instead of inheriting real Codex account usage.
+- Added focused tests for Codex capacity behavior: below-threshold allow, above-threshold block, and fail-open logging on status-read errors.
 
 ## v6.11.0 (2026-03-06)
 

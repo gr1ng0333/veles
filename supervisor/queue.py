@@ -396,6 +396,44 @@ def queue_review_task(reason: str, force: bool = False) -> Optional[str]:
     return tid
 
 
+def _evolution_blocked_by_codex_capacity(now_iso: str) -> bool:
+    """Return True when Codex 5h usage is above the configured threshold.
+
+    This isolates live Codex account state from evolution throttling policy so
+    tests can monkeypatch one narrow function instead of depending on runtime
+    account usage.
+    """
+    try:
+        from ouroboros.codex_proxy import get_accounts_status
+        statuses = get_accounts_status()
+        if not statuses:
+            return False
+        total_5h = sum(int(s.get("requests_5h", 0) or 0) for s in statuses)
+        threshold = CODEX_5H_CAPACITY_LIMIT * CODEX_5H_CAPACITY_THRESHOLD
+        if total_5h > threshold:
+            append_jsonl(
+                DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    "ts": now_iso,
+                    "type": "evolution_skipped_rate_limit",
+                    "total_5h": total_5h,
+                    "threshold": threshold,
+                },
+            )
+            return True
+        return False
+    except Exception as exc:
+        append_jsonl(
+            DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                "ts": now_iso,
+                "type": "evolution_codex_capacity_check_failed",
+                "error": repr(exc),
+            },
+        )
+        return False
+
+
 def enqueue_evolution_task_if_needed() -> None:
     """Enqueue evolution task if queue is empty and evolution mode is enabled.
 
@@ -449,21 +487,8 @@ def enqueue_evolution_task_if_needed() -> None:
         return
 
     # --- Codex 5h usage check ---
-    try:
-        from ouroboros.codex_proxy import get_accounts_status
-        statuses = get_accounts_status()
-        if statuses:
-            total_5h = sum(s.get("requests_5h", 0) for s in statuses)
-            if total_5h > CODEX_5H_CAPACITY_LIMIT * CODEX_5H_CAPACITY_THRESHOLD:
-                append_jsonl(
-                    DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                    {"ts": now_iso, "type": "evolution_skipped_rate_limit",
-                     "total_5h": total_5h,
-                     "threshold": CODEX_5H_CAPACITY_LIMIT * CODEX_5H_CAPACITY_THRESHOLD},
-                )
-                return
-    except Exception:
-        pass  # codex proxy not available (e.g. OpenRouter-only setup)
+    if _evolution_blocked_by_codex_capacity(now_iso):
+        return
 
     # --- Circuit breaker: consecutive failures ---
     consecutive_failures = int(st.get("evolution_consecutive_failures") or 0)

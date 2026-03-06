@@ -34,6 +34,14 @@ def _patch_telegram(monkeypatch):
     monkeypatch.setattr("supervisor.telegram.send_with_budget", lambda *a, **kw: None)
 
 
+@pytest.fixture(autouse=True)
+def _patch_codex_capacity_gate(monkeypatch, request):
+    """Keep throttling tests deterministic unless a test exercises the real helper."""
+    if request.node.cls and request.node.cls.__name__ == "TestCodexCapacityGate":
+        return
+    monkeypatch.setattr("supervisor.queue._evolution_blocked_by_codex_capacity", lambda now_iso: False)
+
+
 @pytest.fixture
 def tmp_drive(tmp_path, monkeypatch):
     """Set up a temporary DRIVE_ROOT for supervisor.state + supervisor.queue."""
@@ -202,6 +210,44 @@ class TestNoCommitBackoff:
 # ===========================================================================
 # 3. Hourly cap tests
 # ===========================================================================
+
+class TestCodexCapacityGate:
+    def test_capacity_gate_allows_below_threshold(self, tmp_drive, monkeypatch):
+        from supervisor import queue as q
+
+        statuses = [{"requests_5h": 50}, {"requests_5h": 60}]
+        monkeypatch.setattr(
+            "ouroboros.codex_proxy.get_accounts_status",
+            lambda: statuses,
+        )
+
+        assert q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00") is False
+
+    def test_capacity_gate_blocks_above_threshold(self, tmp_drive, monkeypatch):
+        from supervisor import queue as q
+
+        statuses = [{"requests_5h": 100}, {"requests_5h": 50}]
+        monkeypatch.setattr(
+            "ouroboros.codex_proxy.get_accounts_status",
+            lambda: statuses,
+        )
+
+        assert q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00") is True
+
+    def test_capacity_gate_fail_open_on_error_with_log(self, tmp_drive, monkeypatch):
+        from supervisor import queue as q
+
+        def boom():
+            raise RuntimeError("codex state unavailable")
+
+        monkeypatch.setattr("ouroboros.codex_proxy.get_accounts_status", boom)
+
+        assert q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00") is False
+
+        log_path = tmp_drive / "logs" / "supervisor.jsonl"
+        rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert any(row.get("type") == "evolution_codex_capacity_check_failed" for row in rows)
+
 
 class TestHourlyCap:
     def test_blocked_at_hourly_cap(self, tmp_drive, monkeypatch):
