@@ -31,15 +31,18 @@ log = logging.getLogger(__name__)
 DRIVE_ROOT: pathlib.Path = pathlib.Path("/content/drive/MyDrive/Ouroboros")
 SOFT_TIMEOUT_SEC: int = 600
 HARD_TIMEOUT_SEC: int = 1800
+EVOLUTION_HARD_TIMEOUT_SEC: int = 3600
 HEARTBEAT_STALE_SEC: int = 120
 QUEUE_MAX_RETRIES: int = 1
 
 
-def init(drive_root: pathlib.Path, soft_timeout: int, hard_timeout: int) -> None:
-    global DRIVE_ROOT, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC
+def init(drive_root: pathlib.Path, soft_timeout: int, hard_timeout: int,
+         evolution_hard_timeout: int = 3600) -> None:
+    global DRIVE_ROOT, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC, EVOLUTION_HARD_TIMEOUT_SEC
     DRIVE_ROOT = drive_root
     SOFT_TIMEOUT_SEC = soft_timeout
     HARD_TIMEOUT_SEC = hard_timeout
+    EVOLUTION_HARD_TIMEOUT_SEC = evolution_hard_timeout
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +294,8 @@ def enforce_task_timeouts() -> None:
                 },
             )
 
-        if runtime_sec < HARD_TIMEOUT_SEC:
+        effective_hard_timeout = EVOLUTION_HARD_TIMEOUT_SEC if task_type == "evolution" else HARD_TIMEOUT_SEC
+        if runtime_sec < effective_hard_timeout:
             continue
 
         RUNNING.pop(task_id, None)

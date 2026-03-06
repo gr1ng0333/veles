@@ -120,6 +120,7 @@ MODEL_LIGHT = get_cfg("OUROBOROS_MODEL_LIGHT", default=DEFAULT_LIGHT_MODEL, allo
 BUDGET_REPORT_EVERY_MESSAGES = 10
 SOFT_TIMEOUT_SEC = max(60, int(get_cfg("OUROBOROS_SOFT_TIMEOUT_SEC", default="600", allow_legacy_secret=True) or "600"))
 HARD_TIMEOUT_SEC = max(120, int(get_cfg("OUROBOROS_HARD_TIMEOUT_SEC", default="1800", allow_legacy_secret=True) or "1800"))
+EVOLUTION_HARD_TIMEOUT_SEC = max(300, int(get_cfg("OUROBOROS_EVOLUTION_HARD_TIMEOUT_SEC", default="3600", allow_legacy_secret=True) or "3600"))
 DIAG_HEARTBEAT_SEC = _parse_int_cfg(
     get_cfg("OUROBOROS_DIAG_HEARTBEAT_SEC", default="30", allow_legacy_secret=True),
     default=30,
@@ -142,6 +143,7 @@ if MODEL_LIGHT:
     os.environ["OUROBOROS_MODEL_LIGHT"] = str(MODEL_LIGHT)
 os.environ["OUROBOROS_DIAG_HEARTBEAT_SEC"] = str(DIAG_HEARTBEAT_SEC)
 os.environ["OUROBOROS_DIAG_SLOW_CYCLE_SEC"] = str(DIAG_SLOW_CYCLE_SEC)
+os.environ["OUROBOROS_EVOLUTION_HARD_TIMEOUT_SEC"] = str(EVOLUTION_HARD_TIMEOUT_SEC)
 os.environ["TELEGRAM_BOT_TOKEN"] = str(TELEGRAM_BOT_TOKEN)
 
 if str(ANTHROPIC_API_KEY or "").strip():
