@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.6 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.7 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.7 (2026-03-06)
+
+- Added restart-policy guard over Codex advisor verdicts: supervisor now suppresses unsafe restart recommendations during active work and allows hard restarts only for explicit interrupted-work/no-progress cases.
+- Narrowed advisor input to a fixed restart-signal contract and added policy-decision logging so advisor verdicts and actual supervisor actions are observable.
+- Expanded restart-advisor tests to cover guarded suppression, allowed hard-restart cases, and contract normalization.
 
 ## v6.11.6 (2026-03-06)
 

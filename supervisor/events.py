@@ -264,13 +264,21 @@ def _handle_restart_request(evt: Dict[str, Any], ctx: Any) -> None:
     reason = str(evt.get("reason") or "").strip()
 
     advisor_result = None
+    policy_decision = None
     try:
-        from supervisor.restart_advisor import advise_restart
+        from supervisor.restart_advisor import advise_restart, evaluate_restart_policy
         advisor_result = advise_restart(
             reason=reason,
             state=st or {},
             pending_count=len(ctx.PENDING),
             running_count=len(ctx.RUNNING),
+        )
+        policy_decision = evaluate_restart_policy(
+            reason=reason,
+            state=st or {},
+            pending_count=len(ctx.PENDING),
+            running_count=len(ctx.RUNNING),
+            advisor_result=advisor_result,
         )
         ctx.append_jsonl(
             ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
@@ -279,8 +287,22 @@ def _handle_restart_request(evt: Dict[str, Any], ctx: Any) -> None:
                 "type": "restart_advisor_verdict",
                 "reason": reason,
                 "advisor": advisor_result,
+                "policy": policy_decision,
             },
         )
+        if policy_decision.get("requested_verdict") != policy_decision.get("supervisor_action"):
+            ctx.append_jsonl(
+                ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "type": "restart_advisor_policy_decision",
+                    "reason": reason,
+                    "requested_verdict": policy_decision.get("requested_verdict"),
+                    "supervisor_action": policy_decision.get("supervisor_action"),
+                    "policy": policy_decision.get("policy"),
+                    "signals": policy_decision.get("signals") or {},
+                },
+            )
     except Exception as e:
         ctx.append_jsonl(
             ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
@@ -300,6 +322,15 @@ def _handle_restart_request(evt: Dict[str, Any], ctx: Any) -> None:
             int(st["owner_chat_id"]),
             f"♻️ Restart requested by agent: {reason or 'unspecified'}{verdict_suffix}",
         )
+
+    if isinstance(policy_decision, dict) and policy_decision.get("supervisor_action") == "skip_restart":
+        if st.get("owner_chat_id"):
+            ctx.send_with_budget(
+                int(st["owner_chat_id"]),
+                f"⏸️ Restart suppressed by policy: {policy_decision.get('policy')}",
+            )
+        return
+
     ok, msg = ctx.safe_restart(
         reason="agent_restart_request", unsynced_policy="rescue_and_reset"
     )
