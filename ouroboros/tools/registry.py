@@ -21,8 +21,11 @@ class BrowserState:
 
     pw_instance: Any = None
     browser: Any = None
+    context: Any = None
     page: Any = None
     last_screenshot_b64: Optional[str] = None
+    saved_sessions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    active_session_name: Optional[str] = None
 
 
 @dataclass
