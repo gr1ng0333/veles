@@ -524,6 +524,27 @@ def ensure_workers_healthy() -> None:
     # Grace period: skip health check right after spawn — workers need time to initialize
     if (time.time() - _LAST_SPAWN_TIME) < _SPAWN_GRACE_SEC:
         return
+
+    # --- Excess worker culling: kill workers beyond MAX_WORKERS ---
+    alive_wids = sorted(wid for wid, w in WORKERS.items() if w.proc.is_alive())
+    if len(alive_wids) > MAX_WORKERS:
+        excess = alive_wids[MAX_WORKERS:]
+        for wid in excess:
+            w = WORKERS[wid]
+            append_jsonl(
+                DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "type": "excess_worker_killed",
+                    "worker_id": wid,
+                    "busy_task_id": w.busy_task_id,
+                },
+            )
+            if w.proc.is_alive():
+                w.proc.terminate()
+                w.proc.join(timeout=5)
+            WORKERS.pop(wid, None)
+
     busy_crashes = 0
     dead_detections = 0
     for wid, w in list(WORKERS.items()):

@@ -103,12 +103,21 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     runtime_sec = max(0.0, time.time() - started_at) if started_at > 0 else 0.0
     soft_sent = bool(running_meta.get("soft_sent"))
 
-    # Track evolution task success/failure for circuit breaker
+    # Track evolution task success/failure for circuit breaker + no-commit tracking
     if task_type == "evolution":
+        import re as _re
         st = ctx.load_state()
         raw_ok = evt.get("ok")
         raw_response_len = evt.get("response_len")
         raw_rounds = evt.get("total_rounds")
+        response_text = str(evt.get("response_text") or evt.get("text") or "")
+
+        # Detect commit in response (same heuristic as agent.py)
+        _has_commit = bool(
+            _re.search(r'\b[0-9a-f]{7,40}\b', response_text)
+            or "committed" in response_text.lower()
+            or "commit" in response_text.lower()
+        )
 
         # Validate payload: all three fields must be present for counting
         payload_complete = (
@@ -133,17 +142,17 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             response_len = int(raw_response_len or 0)
             rounds = int(raw_rounds or 0)
 
-            if ok and response_len > 50:
-                # Confirmed success: reset failure counter
+            if ok and _has_commit:
+                # Confirmed commit: reset failure counter AND no-commit streak
                 st["evolution_consecutive_failures"] = 0
+                st["no_commit_streak"] = 0
                 ctx.save_state(st)
                 ctx.append_jsonl(
                     ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
                     {
                         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                        "type": "evolution_success_counted",
+                        "type": "evolution_commit",
                         "task_id": task_id,
-                        "reason": "ok=True, response_len > 50",
                         "response_len": response_len,
                         "rounds": rounds,
                     },
@@ -166,14 +175,17 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
                     },
                 )
             else:
-                # ok=True but response too short — ambiguous, do NOT count as failure
+                # ok=True but no commit detected — increment no-commit streak
+                streak = int(st.get("no_commit_streak") or 0) + 1
+                st["no_commit_streak"] = streak
+                ctx.save_state(st)
                 ctx.append_jsonl(
                     ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
                     {
                         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                        "type": "evolution_task_done_incomplete",
+                        "type": "evolution_no_commit",
                         "task_id": task_id,
-                        "reason": "ok=True but response_len <= 50, not counting",
+                        "no_commit_streak": streak,
                         "response_len": response_len,
                         "rounds": rounds,
                     },
