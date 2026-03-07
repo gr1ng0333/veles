@@ -737,6 +737,7 @@ def run_llm_loop_impl(
     event_queue: Optional[queue.Queue] = None,
     initial_effort: str = "medium",
     drive_root: Optional[pathlib.Path] = None,
+    persistent_executor: Optional[_StatefulToolExecutor] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Core LLM-with-tools loop runtime implementation."""
     active_model = llm.default_model()
@@ -771,7 +772,10 @@ def run_llm_loop_impl(
         "evolution_large_prompt_streak": 0,
         "original_task_text": _extract_original_task(messages),
     }
-    stateful_executor = _StatefulToolExecutor()
+    # If caller provides a persistent executor (direct-chat), reuse it and
+    # do NOT shut it down when this task ends — it survives across messages.
+    owns_executor = persistent_executor is None
+    stateful_executor = persistent_executor or _StatefulToolExecutor()
     owner_msg_seen: set = set()
 
     try:
@@ -796,10 +800,11 @@ def run_llm_loop_impl(
             if result is not None:
                 return result
     finally:
-        try:
-            stateful_executor.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            log.warning("Failed to shutdown stateful executor", exc_info=True)
+        if owns_executor:
+            try:
+                stateful_executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                log.warning("Failed to shutdown stateful executor", exc_info=True)
 
         if drive_root is not None and task_id:
             try:

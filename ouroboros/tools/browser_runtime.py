@@ -6,6 +6,7 @@ import base64
 import logging
 import subprocess
 import sys
+import time
 import threading
 from typing import Any, Dict, Optional
 
@@ -15,13 +16,137 @@ try:
 except ImportError:
     _HAS_STEALTH = False
 
-from ouroboros.tools.registry import ToolContext
+from ouroboros.tools.registry import BrowserState, ToolContext
 
 log = logging.getLogger(__name__)
 
 _playwright_ready = False
 _pw_instance = None
 _pw_thread_id = None
+
+
+# ---------------------------------------------------------------------------
+# BrowserSessionManager — persistent browser sessions across direct chat msgs
+# ---------------------------------------------------------------------------
+
+class BrowserSessionManager:
+    """Module-level singleton managing long-lived browser sessions per chat_id.
+
+    For direct-chat mode: browser/page/context survive across messages so
+    cookies, sessions and page state are preserved.  Each chat_id also gets
+    a dedicated single-thread executor to maintain Playwright thread-affinity.
+    """
+
+    _lock = threading.Lock()
+    _sessions: Dict[int, Dict[str, Any]] = {}  # chat_id → {browser_state, executor, last_used}
+
+    @classmethod
+    def get_or_create(cls, chat_id: int) -> tuple:
+        """Return (BrowserState, _StatefulToolExecutor) for *chat_id*, creating if needed.
+
+        The executor wraps a single-worker ThreadPoolExecutor keeping Playwright
+        calls on the same OS thread (greenlet affinity).
+        """
+        from ouroboros.loop import _StatefulToolExecutor
+
+        with cls._lock:
+            entry = cls._sessions.get(chat_id)
+            if entry is not None:
+                entry["last_used"] = time.monotonic()
+                return entry["browser_state"], entry["executor"]
+            bs = BrowserState()
+            executor = _StatefulToolExecutor()
+            cls._sessions[chat_id] = {
+                "browser_state": bs,
+                "executor": executor,
+                "last_used": time.monotonic(),
+            }
+            return bs, executor
+
+    @classmethod
+    def touch(cls, chat_id: int) -> None:
+        """Update last_used timestamp for *chat_id*."""
+        with cls._lock:
+            entry = cls._sessions.get(chat_id)
+            if entry is not None:
+                entry["last_used"] = time.monotonic()
+
+    @classmethod
+    def validate(cls, browser_state: BrowserState) -> str:
+        """Check health of an existing BrowserState.
+
+        Returns one of:
+          "ok"              — page is alive
+          "page_dead"       — page gone, but browser connected
+          "context_dead"    — context gone, browser connected
+          "browser_dead"    — browser disconnected or None
+        """
+        if browser_state.browser is None:
+            return "browser_dead"
+        try:
+            if not browser_state.browser.is_connected():
+                return "browser_dead"
+        except Exception:
+            return "browser_dead"
+        if browser_state.context is None:
+            return "context_dead"
+        if browser_state.page is None:
+            return "page_dead"
+        try:
+            # Probe liveliness — accessing url triggers comms with browser
+            _ = browser_state.page.url
+            return "ok"
+        except Exception:
+            return "page_dead"
+
+    @classmethod
+    def cleanup(cls, chat_id: int) -> None:
+        """Explicitly close and remove session for *chat_id*."""
+        with cls._lock:
+            entry = cls._sessions.pop(chat_id, None)
+        if entry is None:
+            return
+        bs = entry["browser_state"]
+        executor = entry["executor"]
+        # Close browser resources (best-effort)
+        for obj_name in ("page", "context", "browser"):
+            try:
+                obj = getattr(bs, obj_name, None)
+                if obj is not None:
+                    obj.close()
+            except Exception:
+                log.debug("Failed to close %s during session cleanup for chat %s", obj_name, chat_id, exc_info=True)
+        bs.page = None
+        bs.context = None
+        bs.browser = None
+        bs.pw_instance = None
+        bs.active_session_name = None
+        # Shutdown the dedicated _StatefulToolExecutor
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            log.debug("Failed to shutdown executor for chat %s", chat_id, exc_info=True)
+
+    @classmethod
+    def cleanup_stale(cls, max_idle_seconds: float = 300) -> int:
+        """Close sessions idle longer than *max_idle_seconds*.  Returns count closed."""
+        now = time.monotonic()
+        stale_ids: list = []
+        with cls._lock:
+            for cid, entry in cls._sessions.items():
+                if now - entry["last_used"] > max_idle_seconds:
+                    stale_ids.append(cid)
+        closed = 0
+        for cid in stale_ids:
+            cls.cleanup(cid)
+            closed += 1
+            log.info("Cleaned up stale browser session for chat_id=%s (idle >%ss)", cid, max_idle_seconds)
+        return closed
+
+    @classmethod
+    def has_session(cls, chat_id: int) -> bool:
+        with cls._lock:
+            return chat_id in cls._sessions
 
 _MARKDOWN_JS = """() => {
     const walk = (el) => {
@@ -145,21 +270,52 @@ def _replace_browser_context(ctx: ToolContext, storage_state: Optional[Dict[str,
 
 def _ensure_browser(ctx: ToolContext):
     """Create or reuse browser for this task. Browser state lives in ctx,
-    but Playwright instance is module-level to avoid greenlet issues."""
+    but Playwright instance is module-level to avoid greenlet issues.
+
+    When a persistent BrowserState is attached (direct-chat mode) this
+    performs tiered recovery instead of a full teardown:
+      - ok            → reuse page as-is ("browser_session_reused")
+      - page_dead     → new page in same context ("browser_page_recovered")
+      - context_dead  → new context+page ("browser_context_recovered")
+      - browser_dead  → full restart ("browser_full_restart")
+    """
     global _pw_instance, _pw_thread_id
 
     current_thread_id = threading.get_ident()
+
+    # --- Tiered recovery for existing browser state ---
+    health = BrowserSessionManager.validate(ctx.browser_state)
+    if health == "ok":
+        log.debug("browser_session_reused (thread=%s)", current_thread_id)
+        return ctx.browser_state.page
+    if health == "page_dead" and ctx.browser_state.context is not None:
+        log.info("browser_page_recovered — creating new page in existing context")
+        try:
+            ctx.browser_state.page = ctx.browser_state.context.new_page()
+            _apply_stealth(ctx.browser_state.page)
+            ctx.browser_state.page.set_default_timeout(30000)
+            return ctx.browser_state.page
+        except Exception:
+            log.debug("Page recovery failed, falling through to context recovery", exc_info=True)
+            health = "context_dead"
+    if health == "context_dead" and ctx.browser_state.browser is not None:
+        log.info("browser_context_recovered — creating new context+page (cookies lost)")
+        try:
+            if not ctx.browser_state.browser.is_connected():
+                raise RuntimeError("browser disconnected")
+            return _replace_browser_context(ctx)
+        except Exception:
+            log.debug("Context recovery failed, falling through to full restart", exc_info=True)
+            health = "browser_dead"
+    # browser_dead → full teardown + recreate
+    if ctx.browser_state.browser is not None:
+        log.info("browser_full_restart — previous browser is dead, cleaning up")
+        cleanup_browser(ctx)
+
+    # --- Thread-affinity check for module-level Playwright ---
     if _pw_instance is not None and _pw_thread_id != current_thread_id:
         log.info(f"Thread switch detected (old={_pw_thread_id}, new={current_thread_id}). Resetting Playwright...")
         _reset_playwright_greenlet()
-
-    if ctx.browser_state.browser is not None:
-        try:
-            if ctx.browser_state.browser.is_connected() and ctx.browser_state.page is not None:
-                return ctx.browser_state.page
-        except Exception:
-            log.debug("Browser connection check failed in _ensure_browser", exc_info=True)
-        cleanup_browser(ctx)
 
     _ensure_playwright_installed()
 
