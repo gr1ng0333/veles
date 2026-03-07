@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.13 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.14 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.14 (2026-03-07)
+
+- Extracted Playwright runtime/state management out of `ouroboros/tools/browser.py` into a dedicated `browser_runtime.py` module, separating low-level browser lifecycle from tool orchestration.
+- Reduced `browser.py` from 1047 lines to 753 lines and added a smoke guard to keep it under the 800-line budget.
+- Kept browser/login/vision test coverage green while locking in the new runtime module contract.
 
 ## v6.11.13 (2026-03-07)
 
