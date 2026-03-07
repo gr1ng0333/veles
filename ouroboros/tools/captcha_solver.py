@@ -70,12 +70,15 @@ def preprocess_image(image_bytes: bytes) -> bytes:
 def recognize_ddddocr(image_bytes: bytes) -> Tuple[str, float]:
     """Return (text, confidence) using ddddocr.
 
-    Confidence is a heuristic based on result characteristics:
-      * 4-8 alnum chars  → 0.9
-      * 3+ chars         → 0.6
-      * otherwise        → 0.3
+    Missing ddddocr is not fatal: the solver should fall through to
+    other recognizers instead of raising at call sites.
     """
-    ocr = _get_ddddocr()
+    try:
+        ocr = _get_ddddocr()
+    except ImportError as exc:
+        log.debug("ddddocr unavailable: %s", exc)
+        return "", 0.0
+
     text = ocr.classification(image_bytes)
     text = re.sub(r"[^A-Za-z0-9]", "", text)  # strip stray symbols
 
@@ -127,7 +130,8 @@ def recognize_tesseract(image_bytes: bytes) -> Tuple[str, float]:
 def solve_captcha_image(image_bytes: bytes) -> dict:
     """Preprocess → ddddocr → optional tesseract fallback.
 
-    Returns dict with keys: text, confidence, method.
+    Returns dict with keys: text, confidence, method. Never raises merely
+    because an optional OCR backend is absent.
     """
     processed = preprocess_image(image_bytes)
 
@@ -137,6 +141,7 @@ def solve_captcha_image(image_bytes: bytes) -> dict:
 
     tess_text, tess_conf = recognize_tesseract(processed)
     if tess_conf > conf:
-        return {"text": tess_text, "confidence": tess_conf, "method": "tesseract"}
+        return {"text": tess_text, "confidence": float(tess_conf), "method": "tesseract"}
 
-    return {"text": text, "confidence": conf, "method": "ddddocr"}
+    fallback_method = "ddddocr" if conf > 0 else "tesseract"
+    return {"text": text, "confidence": float(conf), "method": fallback_method}
