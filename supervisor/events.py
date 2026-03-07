@@ -435,19 +435,54 @@ def _handle_send_photo(evt: Dict[str, Any], ctx: Any) -> None:
         chat_id = int(evt.get("chat_id") or 0)
         image_b64 = str(evt.get("image_base64") or "")
         caption = str(evt.get("caption") or "")
+        source = str(evt.get("source") or "unknown")
+        task_id = str(evt.get("task_id") or "")
+        task_type = str(evt.get("task_type") or "")
+        is_direct_chat = bool(evt.get("is_direct_chat"))
         if not chat_id or not image_b64:
-            return
-        photo_bytes = b64mod.b64decode(image_b64)
-        ok, err = ctx.TG.send_photo(chat_id, photo_bytes, caption=caption)
-        if not ok:
             ctx.append_jsonl(
                 ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
                 {
                     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "type": "send_photo_error",
-                    "chat_id": chat_id, "error": err,
+                    "type": "send_photo_skipped",
+                    "chat_id": chat_id,
+                    "reason": "missing_chat_or_image",
+                    "source": source,
+                    "task_id": task_id,
+                    "task_type": task_type,
+                    "is_direct_chat": is_direct_chat,
                 },
             )
+            return
+        photo_bytes = b64mod.b64decode(image_b64)
+        ok, err = ctx.TG.send_photo(chat_id, photo_bytes, caption=caption)
+        payload = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "chat_id": chat_id,
+            "caption_len": len(caption),
+            "source": source,
+            "task_id": task_id,
+            "task_type": task_type,
+            "is_direct_chat": is_direct_chat,
+        }
+        if ok:
+            ctx.append_jsonl(
+                ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    **payload,
+                    "type": "send_photo_delivered",
+                    "bytes": len(photo_bytes),
+                },
+            )
+            return
+        ctx.append_jsonl(
+            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                **payload,
+                "type": "send_photo_error",
+                "error": err,
+            },
+        )
     except Exception as e:
         ctx.append_jsonl(
             ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",

@@ -206,3 +206,43 @@ def test_restart_request_persists_post_restart_notification_handoff(tmp_path, mo
     assert state["restart_notify_source"] == "agent_restart_request"
     assert state["tg_offset"] == 7
     assert state.get("session_id")
+
+
+def test_send_photo_event_logs_success(tmp_path):
+    from supervisor.events import _handle_send_photo
+
+    logs = []
+    sent = []
+
+    class DummyTG:
+        def send_photo(self, chat_id, photo_bytes, caption=""):
+            sent.append({"chat_id": chat_id, "bytes": photo_bytes, "caption": caption})
+            return True, None
+
+    ctx = types.SimpleNamespace(
+        DRIVE_ROOT=tmp_path,
+        TG=DummyTG(),
+        append_jsonl=lambda path, row: logs.append(row),
+    )
+
+    evt = {
+        "chat_id": 123,
+        "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        "caption": "captcha",
+        "source": "browser_last_screenshot",
+        "task_id": "task-123",
+        "task_type": "task",
+        "is_direct_chat": True,
+    }
+
+    _handle_send_photo(evt, ctx)
+
+    assert len(sent) == 1
+    assert sent[0]["chat_id"] == 123
+    assert sent[0]["caption"] == "captcha"
+    assert any(row.get("type") == "send_photo_delivered" for row in logs)
+    delivered = next(row for row in logs if row.get("type") == "send_photo_delivered")
+    assert delivered["source"] == "browser_last_screenshot"
+    assert delivered["task_id"] == "task-123"
+    assert delivered["task_type"] == "task"
+    assert delivered["is_direct_chat"] is True

@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.10 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.11 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.11 (2026-03-07)
+
+- Added screenshot-delivery observability for Telegram photo sending: `send_photo` now records event metadata (`source`, task context, direct-chat flag) when queueing a photo.
+- Supervisor now logs successful `send_photo_delivered` events in addition to failures, so a missing screenshot can be traced as queueing vs dispatch instead of guessed from chat text.
+- Added regression tests for both halves of the pipeline: screenshot queueing in the tool layer and successful Telegram photo dispatch in the supervisor event handler.
 
 ## v6.11.10 (2026-03-07)
 
