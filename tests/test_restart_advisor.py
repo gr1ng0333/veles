@@ -135,3 +135,20 @@ def test_restart_request_policy_can_suppress_restart(tmp_path, monkeypatch):
     assert any(row.get("type") == "restart_advisor_verdict" for row in logs)
     assert any(row.get("type") == "restart_advisor_policy_decision" for row in logs)
     assert any("Restart suppressed by policy" in msg for msg in sent)
+
+
+def test_events_restart_entrypoint_delegates_to_live_restart_flow(monkeypatch):
+    from supervisor.events import _handle_restart_request
+
+    called = []
+
+    monkeypatch.setattr(
+        "supervisor.restart_flow.handle_restart_request",
+        lambda evt, ctx: called.append((evt, ctx)),
+    )
+
+    evt = {"reason": "delegation test"}
+    ctx = object()
+    _handle_restart_request(evt, ctx)
+
+    assert called == [(evt, ctx)]
