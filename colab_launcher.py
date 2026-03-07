@@ -903,21 +903,11 @@ while True:
             else:
                 # Dispatch to direct chat handler
                 _consciousness.pause()
-                def _run_task_and_resume(cid, txt, img):
-                    try:
-                        handle_chat_direct(cid, txt, img)
-                    finally:
-                        _consciousness.resume()
-                _t = threading.Thread(
-                    target=_run_task_and_resume,
-                    args=(chat_id, final_text, _batched_image),
-                    daemon=True,
-                )
                 try:
-                    _t.start()
+                    enqueue_chat_direct(chat_id, final_text, _batched_image)
                 except Exception as _te:
-                    log.error("Failed to start chat thread: %s", _te)
-                    _consciousness.resume()  # ensure resume if thread fails to start
+                    log.error("Failed to enqueue direct chat: %s", _te)
+                    _consciousness.resume()  # ensure resume if enqueue fails
 
     st = load_state()
     st["tg_offset"] = offset
