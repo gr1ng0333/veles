@@ -12,9 +12,14 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.15 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.16 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.16 (2026-03-07)
+
+- Fixed the low-level `browser_action(action="screenshot")` path after the browser runtime extraction: screenshot capture once again base64-encodes the PNG and stores it in `last_screenshot_b64` instead of failing with `name 'base64' is not defined`.
+- This closes the remaining live screenshot gap where `send_browser_screenshot` worked but the direct screenshot action still broke on real pages.
 
 ## v6.11.15 (2026-03-07)
 

@@ -11,6 +11,7 @@ not module-level globals — safe across threads.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from typing import Any, Dict, List, Optional
