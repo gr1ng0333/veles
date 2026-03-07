@@ -12,9 +12,14 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.16 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.17 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.17 (2026-03-07)
+
+- Added a focused regression test for the sticky direct-chat worker lane so browser continuity is locked at the supervisor boundary, not only inside the agent instance.
+- Live-regressed the ACMP registration flow specifically across the screenshot boundary: after `send_browser_screenshot`, the page, URL, and form fields now remain intact instead of collapsing to `about:blank`.
 
 ## v6.11.16 (2026-03-07)
 
