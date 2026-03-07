@@ -11,29 +11,23 @@ not module-level globals — safe across threads.
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
-import subprocess
-import sys
-import threading
 from typing import Any, Dict, List, Optional
 
-try:
-    from playwright_stealth import Stealth
-    _HAS_STEALTH = True
-except ImportError:
-    _HAS_STEALTH = False
-
 from ouroboros.tools.registry import ToolContext, ToolEntry
+from ouroboros.tools.browser_runtime import (
+    _apply_stealth,
+    _check_session_alive_via_protected_url,
+    _ensure_browser,
+    _extract_page_output,
+    _post_submit_wait,
+    _replace_browser_context,
+    _reset_playwright_greenlet,
+    cleanup_browser,
+)
 
 log = logging.getLogger(__name__)
-
-_playwright_ready = False
-# Module-level Playwright instance to avoid greenlet threading issues
-# Persists across ToolContext recreations but can be reset on error
-_pw_instance = None
-_pw_thread_id = None  # Track which thread owns the Playwright instance
 
 
 from ouroboros.tools.browser_login_helpers import (
@@ -46,253 +40,6 @@ from ouroboros.tools.browser_login_helpers import (
     plan_login_flow,
 )
 from ouroboros.tools.captcha_solver import solve_captcha_image
-
-
-def _ensure_playwright_installed():
-    """Install Playwright and Chromium if not already available."""
-    global _playwright_ready
-    if _playwright_ready:
-        return
-
-    try:
-        import playwright  # noqa: F401
-    except ImportError:
-        log.info("Playwright not found, installing...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
-
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as pw:
-            pw.chromium.executable_path
-        log.info("Playwright chromium binary found")
-    except Exception:
-        log.info("Installing Playwright chromium binary...")
-        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
-        subprocess.check_call([sys.executable, "-m", "playwright", "install-deps", "chromium"])
-
-    _playwright_ready = True
-
-
-def _reset_playwright_greenlet():
-    """
-    Fully reset Playwright's greenlet state by purging all related modules.
-    This is necessary because sync_playwright() uses greenlets internally,
-    and once a greenlet dies, it cannot be reused across "threads".
-    """
-    global _pw_instance, _pw_thread_id
-
-    log.info("Resetting Playwright greenlet state...")
-
-    try:
-        subprocess.run(["pkill", "-9", "-f", "chromium"], capture_output=True, timeout=5)
-    except Exception:
-        log.debug("Failed to kill chromium processes during reset", exc_info=True)
-        pass
-
-    mods_to_remove = [k for k in sys.modules.keys() if k.startswith('playwright')]
-    for k in mods_to_remove:
-        del sys.modules[k]
-
-    mods_to_remove = [k for k in sys.modules.keys() if 'greenlet' in k.lower()]
-    for k in mods_to_remove:
-        try:
-            del sys.modules[k]
-        except Exception:
-            log.debug(f"Failed to delete greenlet module {k} during reset", exc_info=True)
-            pass
-
-    _pw_instance = None
-    _pw_thread_id = None
-    log.info("Playwright greenlet state reset complete")
-
-
-def _browser_context_options(storage_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    options: Dict[str, Any] = {
-        "viewport": {"width": 1920, "height": 1080},
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        ),
-    }
-    if storage_state:
-        options["storage_state"] = storage_state
-    return options
-
-
-def _apply_stealth(page: Any) -> None:
-    if _HAS_STEALTH:
-        stealth = Stealth()
-        stealth.apply_stealth_sync(page)
-
-
-def _replace_browser_context(ctx: ToolContext, storage_state: Optional[Dict[str, Any]] = None) -> Any:
-    try:
-        if ctx.browser_state.page is not None:
-            ctx.browser_state.page.close()
-    except Exception:
-        log.debug("Failed to close browser page during context replace", exc_info=True)
-    try:
-        if ctx.browser_state.context is not None:
-            ctx.browser_state.context.close()
-    except Exception:
-        log.debug("Failed to close browser context during context replace", exc_info=True)
-
-    ctx.browser_state.context = ctx.browser_state.browser.new_context(**_browser_context_options(storage_state))
-    ctx.browser_state.page = ctx.browser_state.context.new_page()
-    _apply_stealth(ctx.browser_state.page)
-    ctx.browser_state.page.set_default_timeout(30000)
-    return ctx.browser_state.page
-
-
-def _ensure_browser(ctx: ToolContext):
-    """Create or reuse browser for this task. Browser state lives in ctx,
-    but Playwright instance is module-level to avoid greenlet issues."""
-    global _pw_instance, _pw_thread_id
-
-    current_thread_id = threading.get_ident()
-    if _pw_instance is not None and _pw_thread_id != current_thread_id:
-        log.info(f"Thread switch detected (old={_pw_thread_id}, new={current_thread_id}). Resetting Playwright...")
-        _reset_playwright_greenlet()
-
-    if ctx.browser_state.browser is not None:
-        try:
-            if ctx.browser_state.browser.is_connected() and ctx.browser_state.page is not None:
-                return ctx.browser_state.page
-        except Exception:
-            log.debug("Browser connection check failed in _ensure_browser", exc_info=True)
-        cleanup_browser(ctx)
-
-    _ensure_playwright_installed()
-
-    if _pw_instance is None:
-        from playwright.sync_api import sync_playwright
-
-        try:
-            _pw_instance = sync_playwright().start()
-            _pw_thread_id = current_thread_id
-            log.info(f"Created Playwright instance in thread {_pw_thread_id}")
-        except RuntimeError as e:
-            if "cannot switch" in str(e) or "different thread" in str(e):
-                _reset_playwright_greenlet()
-                from playwright.sync_api import sync_playwright
-                _pw_instance = sync_playwright().start()
-                _pw_thread_id = current_thread_id
-                log.info(f"Recreated Playwright instance in thread {_pw_thread_id} after error")
-            else:
-                raise
-
-    ctx.browser_state.pw_instance = _pw_instance
-    ctx.browser_state.browser = _pw_instance.chromium.launch(
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=site-per-process",
-            "--window-size=1920,1080",
-        ],
-    )
-    return _replace_browser_context(ctx)
-
-
-def cleanup_browser(ctx: ToolContext) -> None:
-    """Close browser and playwright. Called by agent.py in finally block.
-
-    Note: We DON'T stop the module-level _pw_instance here to allow reuse
-    across tasks. Only close the browser/page/context for this context.
-    """
-    global _pw_instance
-
-    try:
-        if ctx.browser_state.page is not None:
-            ctx.browser_state.page.close()
-    except Exception:
-        log.debug("Failed to close browser page during cleanup", exc_info=True)
-    try:
-        if ctx.browser_state.context is not None:
-            ctx.browser_state.context.close()
-    except Exception:
-        log.debug("Failed to close browser context during cleanup", exc_info=True)
-    try:
-        if ctx.browser_state.browser is not None:
-            ctx.browser_state.browser.close()
-    except Exception as e:
-        if "cannot switch" in str(e) or "different thread" in str(e):
-            log.warning("Browser cleanup hit thread error, resetting Playwright...")
-            _reset_playwright_greenlet()
-
-    ctx.browser_state.page = None
-    ctx.browser_state.context = None
-    ctx.browser_state.browser = None
-    ctx.browser_state.pw_instance = None
-    ctx.browser_state.active_session_name = None
-
-
-_MARKDOWN_JS = """() => {
-    const walk = (el) => {
-        let out = '';
-        for (const child of el.childNodes) {
-            if (child.nodeType === 3) {
-                const t = child.textContent.trim();
-                if (t) out += t + ' ';
-            } else if (child.nodeType === 1) {
-                const tag = child.tagName;
-                if (['SCRIPT','STYLE','NOSCRIPT'].includes(tag)) continue;
-                if (['H1','H2','H3','H4','H5','H6'].includes(tag))
-                    out += '\n' + '#'.repeat(parseInt(tag[1])) + ' ';
-                if (tag === 'P' || tag === 'DIV' || tag === 'BR') out += '\n';
-                if (tag === 'LI') out += '\n- ';
-                if (tag === 'A') out += '[';
-                out += walk(child);
-                if (tag === 'A') out += '](' + (child.href||'') + ')';
-            }
-        }
-        return out;
-    };
-    return walk(document.body);
-}"""
-
-_SELECTOR_HELPERS_JS = r"""() => {
-    if (window.__veles_build_selector) return true;
-    window.__veles_build_selector = (el, fallbackIndex = 0) => {
-        if (!el) return '';
-        if (el.id) return `#${CSS.escape(el.id)}`;
-        const name = el.getAttribute('name');
-        if (name) return `${el.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
-        const placeholder = el.getAttribute('placeholder');
-        if (placeholder) return `${el.tagName.toLowerCase()}[placeholder="${CSS.escape(placeholder)}"]`;
-        const type = el.getAttribute('type');
-        const parts = [el.tagName.toLowerCase()];
-        if (type) parts.push(`[type="${CSS.escape(type)}"]`);
-        const classes = Array.from(el.classList || []).slice(0, 2).map((cls) => `.${CSS.escape(cls)}`).join('');
-        const base = `${parts.join('')}${classes}`;
-        const siblings = Array.from((el.parentElement || document.body).querySelectorAll(base));
-        const index = siblings.indexOf(el);
-        return `${base}:nth-of-type(${Math.max(1, index + 1 || fallbackIndex + 1)})`;
-    };
-    return true;
-}"""
-
-
-def _extract_page_output(page: Any, output: str, ctx: ToolContext) -> str:
-    """Extract page content in the requested format."""
-    if output == "screenshot":
-        data = page.screenshot(type="png", full_page=False)
-        b64 = base64.b64encode(data).decode()
-        ctx.browser_state.last_screenshot_b64 = b64
-        return (
-            f"Screenshot captured ({len(b64)} bytes base64). "
-            f"Call send_photo(image_base64='__last_screenshot__') to deliver it to the owner."
-        )
-    elif output == "html":
-        html = page.content()
-        return html[:50000] + ("... [truncated]" if len(html) > 50000 else "")
-    elif output == "markdown":
-        text = page.evaluate(_MARKDOWN_JS)
-        return text[:30000] + ("... [truncated]" if len(text) > 30000 else "")
-    else:
-        text = page.inner_text("body")
-        return text[:30000] + ("... [truncated]" if len(text) > 30000 else "")
 
 
 def _normalize_selector(value: Optional[str]) -> str:
@@ -359,47 +106,6 @@ def _safe_selector_presence(page: Any, selector: str, timeout: int) -> bool:
         return False
 
 
-def _post_submit_wait(page: Any, wait_ms: int = 1200) -> None:
-    page.wait_for_timeout(max(0, wait_ms))
-
-
-def _check_session_alive_via_protected_url(ctx: ToolContext, protected_url: str, timeout: int = 5000) -> Dict[str, Any]:
-    url = (protected_url or "").strip()
-    if not url:
-        return {"checked": False}
-
-    page = _ensure_browser(ctx)
-    before_url = page.url
-    try:
-        probe = ctx.browser_state.context.new_page()
-        _apply_stealth(probe)
-        probe.set_default_timeout(30000)
-        probe.goto(url, timeout=timeout, wait_until="domcontentloaded")
-        final_url = probe.url
-        redirected_to_login = any(term in final_url.lower() for term in ["login", "sign-in", "signin", "auth"])
-        return {
-            "checked": True,
-            "protected_url": url,
-            "final_url": final_url,
-            "alive": not redirected_to_login,
-        }
-    except Exception as e:
-        return {
-            "checked": True,
-            "protected_url": url,
-            "alive": False,
-            "error": str(e),
-        }
-    finally:
-        try:
-            probe.close()
-        except Exception:
-            log.debug("Failed to close protected-url probe page", exc_info=True)
-        try:
-            if before_url and page.url != before_url:
-                page.goto(before_url, timeout=timeout, wait_until="domcontentloaded")
-        except Exception:
-            log.debug("Failed to restore original page after protected-url probe", exc_info=True)
 
 
 def _session_snapshot(context: Any) -> Dict[str, Any]:

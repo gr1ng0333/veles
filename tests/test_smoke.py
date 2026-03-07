@@ -42,6 +42,7 @@ TOOL_MODULES = [
     "ouroboros.tools.search",
     "ouroboros.tools.control",
     "ouroboros.tools.browser",
+    "ouroboros.tools.browser_runtime",
     "ouroboros.tools.review",
 ]
 
@@ -127,6 +128,22 @@ def test_tool_registered(registry, tool_name):
     """Each expected tool is in the registry."""
     available = [t["function"]["name"] for t in registry.schemas()]
     assert tool_name in available, f"{tool_name} not in registry"
+
+
+def test_browser_module_line_budget():
+    """browser.py should stay below the 800-line budget after runtime extraction."""
+    browser_py = REPO / "ouroboros" / "tools" / "browser.py"
+    line_count = len(browser_py.read_text().splitlines())
+    assert line_count < 800, f"browser.py regressed to {line_count} lines"
+
+
+def test_browser_runtime_module_exists_and_nontrivial():
+    """Playwright runtime helpers live in a dedicated module, not inside browser.py."""
+    runtime_py = REPO / "ouroboros" / "tools" / "browser_runtime.py"
+    assert runtime_py.exists(), "browser_runtime.py must exist"
+    text = runtime_py.read_text()
+    assert "def _ensure_browser" in text
+    assert "def cleanup_browser" in text
 
 
 def test_unknown_tool_returns_warning(registry):
