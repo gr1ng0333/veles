@@ -12,9 +12,14 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.16 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.17 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.17 (2026-03-07)
+
+- Updated the direct-chat browser cleanup regression test to assert the current persistent-session contract: `BrowserSessionManager.touch(chat_id)` runs in `finally` for direct chat, while `cleanup_browser()` does not.
+- Synced release metadata so `VERSION`, `pyproject.toml`, and README once again point to the same live version.
 
 ## v6.11.16 (2026-03-07)
 
