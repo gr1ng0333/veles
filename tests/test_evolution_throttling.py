@@ -596,16 +596,7 @@ class TestAutoResumeControls:
         calls = {"n": 0}
         monkeypatch.setattr(w.time, "sleep", lambda *_: None)
         monkeypatch.setattr(w, "_get_chat_agent", lambda: type("A", (), {"_busy": False})())
-
-        class DummyThread:
-            def __init__(self, target=None, args=(), daemon=None):
-                self.target = target
-                self.args = args
-            def start(self):
-                calls["n"] += 1
-
-        monkeypatch.setattr("threading.Thread", DummyThread)
-        monkeypatch.setattr(w, "handle_chat_direct", lambda *a, **kw: None)
+        monkeypatch.setattr(w, "enqueue_chat_direct", lambda *a, **kw: calls.__setitem__("n", calls["n"] + 1))
 
         w.auto_resume_after_restart()
         assert calls["n"] == 0
@@ -684,23 +675,12 @@ class TestAutoResumeAfterRestart:
         calls = []
 
         monkeypatch.setattr(w.time, "sleep", lambda *_: None)
-        monkeypatch.setattr(w, "handle_chat_direct", lambda chat_id, text, image=None: calls.append((chat_id, text, image)))
+        monkeypatch.setattr(w, "enqueue_chat_direct", lambda chat_id, text, image=None: calls.append((chat_id, text, image)))
 
         class _Agent:
             _busy = False
 
         monkeypatch.setattr(w, "_get_chat_agent", lambda: _Agent())
-
-        class _ImmediateThread:
-            def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-                self._target = target
-                self._args = args
-                self._kwargs = kwargs or {}
-            def start(self):
-                if self._target:
-                    self._target(*self._args, **self._kwargs)
-
-        monkeypatch.setattr("threading.Thread", _ImmediateThread)
         return w, calls
 
     def test_requires_resume_needed_signal(self, tmp_drive, monkeypatch):
