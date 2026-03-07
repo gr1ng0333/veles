@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.14 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.15 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.15 (2026-03-07)
+
+- Upgraded the local captcha solver from a single-pass OCR helper to a multi-variant pipeline: grayscale, contrast, multiple thresholds, autocontrast, upscale, and inverted preprocessing.
+- Added candidate scoring and best-result selection across preprocessing variants and both local backends (`ddddocr` first, `tesseract` fallback) instead of trusting the first readable string.
+- Extended solver output with the winning preprocessing variant and attempt count so live browser captcha flows expose which local path actually worked.
 
 ## v6.11.14 (2026-03-07)
 
