@@ -224,6 +224,7 @@ def cleanup_browser(ctx: ToolContext) -> None:
     ctx.browser_state.context = None
     ctx.browser_state.browser = None
     ctx.browser_state.pw_instance = None
+    ctx.browser_state.last_screenshot_b64 = None
     ctx.browser_state.active_session_name = None
 
 
