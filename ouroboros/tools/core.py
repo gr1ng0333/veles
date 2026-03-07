@@ -106,23 +106,34 @@ def _send_photo(ctx: ToolContext, image_base64: str, caption: str = "") -> str:
     if not ctx.current_chat_id:
         return "⚠️ No active chat — cannot send photo."
 
+    source = "raw_image"
+
     # Resolve screenshot reference from stash
     actual_b64 = image_base64
     if image_base64 == "__last_screenshot__":
         if not ctx.browser_state.last_screenshot_b64:
             return "⚠️ No screenshot stored. Take one first with browse_page(output='screenshot')."
         actual_b64 = ctx.browser_state.last_screenshot_b64
+        source = "browser_last_screenshot"
 
     if not actual_b64 or len(actual_b64) < 100:
         return "⚠️ image_base64 is empty or too short. Take a screenshot first with browse_page(output='screenshot')."
 
-    ctx.pending_events.append({
+    event = {
         "type": "send_photo",
         "chat_id": ctx.current_chat_id,
         "image_base64": actual_b64,
         "caption": caption or "",
-    })
-    return "OK: photo queued for delivery to owner."
+        "source": source,
+        "task_id": ctx.task_id or "",
+        "task_type": ctx.current_task_type or "",
+        "is_direct_chat": bool(ctx.is_direct_chat),
+    }
+    ctx.pending_events.append(event)
+    return (
+        "OK: photo queued for delivery to owner "
+        f"(source={source}, chat_id={ctx.current_chat_id}, pending_events={len(ctx.pending_events)})."
+    )
 
 def _send_browser_screenshot(ctx: ToolContext, caption: str = "") -> str:
     """Send the last browser screenshot to Telegram without manually passing base64."""

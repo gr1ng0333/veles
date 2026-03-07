@@ -209,6 +209,49 @@ class TestVlmQueryTool(unittest.TestCase):
         self.assertIn("solve_simple_captcha", tools, "solve_simple_captcha must be registered")
 
 
+class TestScreenshotSendTools(unittest.TestCase):
+    def _make_ctx(self, with_screenshot=True):
+        from ouroboros.tools.registry import ToolContext, BrowserState
+        ctx = MagicMock(spec=ToolContext)
+        ctx.browser_state = BrowserState()
+        ctx.pending_events = []
+        ctx.current_chat_id = 789
+        ctx.current_task_type = "task"
+        ctx.task_id = "task-123"
+        ctx.is_direct_chat = True
+        ctx.browser_state.last_screenshot_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" * 2
+            if with_screenshot else None
+        )
+        return ctx
+
+    def test_send_browser_screenshot_queues_photo_event_with_metadata(self):
+        from ouroboros.tools.core import _send_browser_screenshot
+
+        ctx = self._make_ctx(with_screenshot=True)
+        result = _send_browser_screenshot(ctx, caption="captcha")
+
+        self.assertIn("photo queued for delivery", result)
+        self.assertEqual(len(ctx.pending_events), 1)
+        evt = ctx.pending_events[0]
+        self.assertEqual(evt["type"], "send_photo")
+        self.assertEqual(evt["chat_id"], 789)
+        self.assertEqual(evt["caption"], "captcha")
+        self.assertEqual(evt["source"], "browser_last_screenshot")
+        self.assertEqual(evt["task_id"], "task-123")
+        self.assertEqual(evt["task_type"], "task")
+        self.assertTrue(evt["is_direct_chat"])
+
+    def test_send_browser_screenshot_requires_stored_screenshot(self):
+        from ouroboros.tools.core import _send_browser_screenshot
+
+        ctx = self._make_ctx(with_screenshot=False)
+        result = _send_browser_screenshot(ctx)
+
+        self.assertIn("No screenshot stored", result)
+        self.assertEqual(ctx.pending_events, [])
+
+
 class TestSolveSimpleCaptchaTool(unittest.TestCase):
     def _make_ctx(self, with_screenshot=True):
         from ouroboros.tools.registry import ToolContext, BrowserState
