@@ -272,6 +272,45 @@ class TestScreenshotSendTools(unittest.TestCase):
 
         self.assertIn("send_browser_screenshot", STATEFUL_BROWSER_TOOLS)
 
+    def test_send_browser_screenshot_end_to_end_dispatches_photo_and_logs_delivery(self):
+        from supervisor.events import _handle_send_photo
+        from ouroboros.tools.core import _send_browser_screenshot
+
+        ctx = self._make_ctx(with_screenshot=False)
+        ctx.browser_state.page = MagicMock()
+        ctx.browser_state.page.screenshot.return_value = b"fake-png-bytes" * 16
+
+        result = _send_browser_screenshot(ctx, caption="captcha")
+
+        self.assertIn("photo queued for delivery", result)
+        self.assertEqual(len(ctx.pending_events), 1)
+        evt = ctx.pending_events[0]
+
+        logs = []
+        sent = []
+
+        class DummyTG:
+            def send_photo(self, chat_id, photo_bytes, caption=""):
+                sent.append({"chat_id": chat_id, "photo_bytes": photo_bytes, "caption": caption})
+                return True, None
+
+        supervisor_ctx = MagicMock()
+        supervisor_ctx.DRIVE_ROOT = pathlib.Path('/tmp')
+        supervisor_ctx.TG = DummyTG()
+        supervisor_ctx.append_jsonl = lambda path, row: logs.append(row)
+
+        _handle_send_photo(evt, supervisor_ctx)
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["chat_id"], 789)
+        self.assertEqual(sent[0]["caption"], "captcha")
+        self.assertTrue(sent[0]["photo_bytes"])
+        delivered = next(row for row in logs if row.get("type") == "send_photo_delivered")
+        self.assertEqual(delivered["source"], "browser_last_screenshot")
+        self.assertEqual(delivered["task_id"], "task-123")
+        self.assertEqual(delivered["task_type"], "task")
+        self.assertTrue(delivered["is_direct_chat"])
+
 
 class TestSolveSimpleCaptchaTool(unittest.TestCase):
     def _make_ctx(self, with_screenshot=True):
