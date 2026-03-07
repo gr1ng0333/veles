@@ -125,6 +125,9 @@ def get_running_task_ids() -> List[str]:
 # Chat agent (direct mode)
 # ---------------------------------------------------------------------------
 _chat_agent = None
+_direct_chat_queue = None
+_direct_chat_thread = None
+_direct_chat_thread_lock = threading.Lock()
 
 
 def _get_chat_agent():
@@ -140,28 +143,30 @@ def _get_chat_agent():
     return _chat_agent
 
 
-def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None) -> None:
+def _build_direct_chat_task(chat_id: int, text: str, image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None) -> Dict[str, Any]:
+    task = {
+        "id": uuid.uuid4().hex[:8],
+        "type": "task",
+        "chat_id": chat_id,
+        "text": text,
+        "_is_direct_chat": True,
+    }
+    if image_data:
+        task["image_base64"] = image_data[0]
+        task["image_mime"] = image_data[1]
+        if len(image_data) > 2 and image_data[2]:
+            task["image_caption"] = image_data[2]
+            if not text:
+                task["text"] = image_data[2]
+    if not task["text"]:
+        task["text"] = "(image attached)" if image_data else ""
+    return task
+
+
+def _run_direct_chat_task(task: Dict[str, Any]) -> None:
+    chat_id = int(task.get("chat_id") or 0)
     try:
         agent = _get_chat_agent()
-        task = {
-            "id": uuid.uuid4().hex[:8],
-            "type": "task",
-            "chat_id": chat_id,
-            "text": text,
-            "_is_direct_chat": True,
-        }
-        if image_data:
-            # image_data is (base64, mime) or (base64, mime, caption)
-            task["image_base64"] = image_data[0]
-            task["image_mime"] = image_data[1]
-            if len(image_data) > 2 and image_data[2]:
-                task["image_caption"] = image_data[2]
-                # Prefer caption as task text if text is empty
-                if not text:
-                    task["text"] = image_data[2]
-        # Fallback for truly empty messages
-        if not task["text"]:
-            task["text"] = "(image attached)" if image_data else ""
         events = agent.handle_task(task)
         for e in events:
             get_event_q().put(e)
@@ -175,6 +180,8 @@ def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple
                 "type": "direct_chat_error",
                 "error": repr(e),
                 "traceback": str(traceback.format_exc())[:2000],
+                "chat_id": chat_id or None,
+                "task_id": str(task.get("id") or ""),
             },
         )
         try:
@@ -182,6 +189,46 @@ def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple
             get_tg().send_message(chat_id, err_msg)
         except Exception:
             log.debug("Suppressed exception", exc_info=True)
+
+
+def _direct_chat_worker_loop() -> None:
+    global _direct_chat_queue
+    while True:
+        payload = _direct_chat_queue.get()
+        if payload is None:
+            break
+        try:
+            _run_direct_chat_task(payload)
+        finally:
+            _direct_chat_queue.task_done()
+
+
+def _ensure_direct_chat_worker() -> Any:
+    global _direct_chat_queue, _direct_chat_thread
+    with _direct_chat_thread_lock:
+        if _direct_chat_queue is None:
+            import queue
+            _direct_chat_queue = queue.Queue()
+        if _direct_chat_thread is None or not _direct_chat_thread.is_alive():
+            _direct_chat_thread = threading.Thread(
+                target=_direct_chat_worker_loop,
+                name="direct-chat-worker",
+                daemon=True,
+            )
+            _direct_chat_thread.start()
+        return _direct_chat_queue
+
+
+def enqueue_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None) -> Dict[str, Any]:
+    task = _build_direct_chat_task(chat_id, text, image_data)
+    q = _ensure_direct_chat_worker()
+    q.put(task)
+    return task
+
+
+def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None) -> None:
+    task = _build_direct_chat_task(chat_id, text, image_data)
+    _run_direct_chat_task(task)
 
 
 # ---------------------------------------------------------------------------
@@ -266,16 +313,11 @@ def auto_resume_after_restart() -> None:
         st["resume_reason"] = ""
         save_state(st)
 
-        import threading
-        threading.Thread(
-            target=handle_chat_direct,
-            args=(
-                int(chat_id),
-                "[auto-resume after restart] Resume interrupted work. Read scratchpad and identity — they contain context of what you were doing.",
-                None,
-            ),
-            daemon=True,
-        ).start()
+        enqueue_chat_direct(
+            int(chat_id),
+            "[auto-resume after restart] Resume interrupted work. Read scratchpad and identity — they contain context of what you were doing.",
+            None,
+        )
         append_jsonl(
             DRIVE_ROOT / "logs" / "supervisor.jsonl",
             {
