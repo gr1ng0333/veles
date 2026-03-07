@@ -333,6 +333,9 @@ class OuroborosAgent:
         sanitized_task = sanitize_task_for_event(task, drive_logs)
         append_jsonl(drive_logs / "events.jsonl", {"ts": utc_now_iso(), "type": "task_received", "task": sanitized_task})
 
+        is_direct = bool(task.get("_is_direct_chat"))
+        chat_id = int(task.get("chat_id") or 0) or None
+
         # Set tool context for this task
         ctx = ToolContext(
             repo_dir=self.env.repo_dir,
@@ -343,8 +346,16 @@ class OuroborosAgent:
             current_task_type=self._current_task_type,
             emit_progress_fn=self._emit_progress,
             task_depth=int(task.get("depth", 0)),
-            is_direct_chat=bool(task.get("_is_direct_chat")),
+            is_direct_chat=is_direct,
         )
+
+        # For direct chat: reuse persistent browser session (preserves cookies/page)
+        if is_direct and chat_id:
+            from ouroboros.tools.browser_runtime import BrowserSessionManager
+            BrowserSessionManager.cleanup_stale()  # housekeeping
+            bs, _ = BrowserSessionManager.get_or_create(chat_id)
+            ctx.browser_state = bs
+
         self.tools.set_context(ctx)
 
         # Typing indicator via event queue (no direct Telegram API)
@@ -392,8 +403,17 @@ class OuroborosAgent:
         self._current_chat_id = int(task.get("chat_id") or 0) or None
         self._current_task_type = str(task.get("type") or "")
 
+        is_direct = bool(task.get("_is_direct_chat"))
+        chat_id = self._current_chat_id
+
         drive_logs = self.env.drive_path("logs")
         heartbeat_stop = self._start_task_heartbeat_loop(str(task.get("id") or ""))
+
+        # For direct chat: obtain the persistent executor bound to this chat_id
+        persistent_executor = None
+        if is_direct and chat_id:
+            from ouroboros.tools.browser_runtime import BrowserSessionManager
+            _, persistent_executor = BrowserSessionManager.get_or_create(chat_id)
 
         try:
             # --- Prepare task context ---
@@ -425,6 +445,7 @@ class OuroborosAgent:
                     event_queue=self._event_queue,
                     initial_effort=initial_effort,
                     drive_root=self.env.drive_root,
+                    persistent_executor=persistent_executor,
                 )
             except Exception as e:
                 tb = traceback.format_exc()
@@ -445,13 +466,17 @@ class OuroborosAgent:
 
         finally:
             self._busy = False
-            # Clean up browser if it was used during this task
-            try:
-                from ouroboros.tools.browser import cleanup_browser
-                cleanup_browser(self.tools._ctx)
-            except Exception:
-                log.debug("Failed to cleanup browser", exc_info=True)
-                pass
+            # Browser cleanup: for direct chat keep the session alive;
+            # for other task types (evolution, scheduled) clean up fully.
+            if is_direct and chat_id:
+                from ouroboros.tools.browser_runtime import BrowserSessionManager
+                BrowserSessionManager.touch(chat_id)
+            else:
+                try:
+                    from ouroboros.tools.browser_runtime import cleanup_browser
+                    cleanup_browser(self.tools._ctx)
+                except Exception:
+                    log.debug("Failed to cleanup browser", exc_info=True)
             while not self._incoming_messages.empty():
                 try:
                     self._incoming_messages.get_nowait()

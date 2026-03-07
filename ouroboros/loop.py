@@ -637,6 +637,7 @@ def run_llm_loop(
     event_queue: Optional[queue.Queue] = None,
     initial_effort: str = "medium",
     drive_root: Optional[pathlib.Path] = None,
+    persistent_executor: Optional[_StatefulToolExecutor] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Thin wrapper delegating runtime loop implementation (keeps module compact)."""
     from ouroboros.loop_runtime import run_llm_loop_impl
@@ -654,6 +655,7 @@ def run_llm_loop(
         event_queue=event_queue,
         initial_effort=initial_effort,
         drive_root=drive_root,
+        persistent_executor=persistent_executor,
     )
 
 
