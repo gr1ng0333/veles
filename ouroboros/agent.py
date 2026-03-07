@@ -71,6 +71,7 @@ class OuroborosAgent:
         self._event_queue: Any = event_queue
         self._current_chat_id: Optional[int] = None
         self._current_task_type: Optional[str] = None
+        self._direct_chat_browser_state: Optional[ToolContext.__annotations__.get('browser_state', Any)] = None
 
         # Message injection: owner can send messages while agent is busy
         self._incoming_messages: queue.Queue = queue.Queue()
@@ -391,6 +392,7 @@ class OuroborosAgent:
         self._pending_events = []
         self._current_chat_id = int(task.get("chat_id") or 0) or None
         self._current_task_type = str(task.get("type") or "")
+        is_direct_chat = bool(task.get("_is_direct_chat"))
 
         drive_logs = self.env.drive_path("logs")
         heartbeat_stop = self._start_task_heartbeat_loop(str(task.get("id") or ""))
@@ -398,6 +400,9 @@ class OuroborosAgent:
         try:
             # --- Prepare task context ---
             ctx, messages, cap_info = self._prepare_task_context(task)
+            if is_direct_chat and self._direct_chat_browser_state is not None:
+                ctx.browser_state = self._direct_chat_browser_state
+                self.tools.set_context(ctx)
             budget_remaining = cap_info.get("budget_remaining")
 
             # --- LLM loop (delegated to loop.py) ---
@@ -445,12 +450,14 @@ class OuroborosAgent:
 
         finally:
             self._busy = False
-            # Clean up browser if it was used during this task
             try:
-                from ouroboros.tools.browser import cleanup_browser
-                cleanup_browser(self.tools._ctx)
+                if is_direct_chat:
+                    self._direct_chat_browser_state = self.tools._ctx.browser_state
+                else:
+                    from ouroboros.tools.browser import cleanup_browser
+                    cleanup_browser(self.tools._ctx)
             except Exception:
-                log.debug("Failed to cleanup browser", exc_info=True)
+                log.debug("Failed to manage browser lifecycle", exc_info=True)
                 pass
             while not self._incoming_messages.empty():
                 try:
