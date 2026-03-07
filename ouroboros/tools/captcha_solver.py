@@ -1,7 +1,8 @@
 """
 Local captcha solver helpers.
 
-Pipeline: preprocess image → ddddocr (primary) → tesseract (fallback).
+Pipeline: generate several preprocessing variants -> run ddddocr first ->
+optionally try tesseract -> return the strongest alphanumeric candidate.
 Models are lazily initialised — no heavy imports at module load time.
 """
 
@@ -10,21 +11,20 @@ from __future__ import annotations
 import io
 import logging
 import re
-from typing import Tuple
+from typing import Dict, List, Tuple
 
 log = logging.getLogger(__name__)
+
+_ddddocr_instance = None
+
 
 # ---------------------------------------------------------------------------
 # Lazy singletons
 # ---------------------------------------------------------------------------
-_ddddocr_instance = None
-
 
 def _get_ddddocr():
     global _ddddocr_instance
     if _ddddocr_instance is None:
-        # ddddocr >=1.6.0 ships a broken top-level __init__ on some Python
-        # versions, so we try multiple import paths.
         DdddOcr = None
         for _import_fn in [
             lambda: __import__("ddddocr", fromlist=["DdddOcr"]).DdddOcr,
@@ -43,60 +43,115 @@ def _get_ddddocr():
 
 
 # ---------------------------------------------------------------------------
+# Normalization and scoring
+# ---------------------------------------------------------------------------
+
+def _clean_text(raw: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", raw or "").strip()
+
+
+def _score_candidate(text: str, *, backend: str, variant: str) -> float:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return 0.0
+
+    score = 0.2
+    length = len(cleaned)
+    if 4 <= length <= 8:
+        score += 0.45
+    elif length == 3:
+        score += 0.25
+    elif 9 <= length <= 10:
+        score += 0.1
+    else:
+        score += 0.02
+
+    if cleaned.isalnum():
+        score += 0.1
+    if any(ch.isdigit() for ch in cleaned):
+        score += 0.08
+    if any(ch.isalpha() for ch in cleaned):
+        score += 0.08
+    if any(ch.islower() for ch in cleaned) and any(ch.isupper() for ch in cleaned):
+        score += 0.03
+
+    if backend == "ddddocr":
+        score += 0.05
+    if variant in {"threshold_140", "autocontrast_threshold_160", "upscale_threshold_160"}:
+        score += 0.03
+
+    return min(score, 0.99)
+
+
+# ---------------------------------------------------------------------------
 # Image preprocessing
 # ---------------------------------------------------------------------------
 
-def preprocess_image(image_bytes: bytes) -> bytes:
-    """Grayscale → contrast boost → binarise → median denoise.
-
-    Returns PNG bytes suitable for OCR.
-    """
-    from PIL import Image, ImageFilter, ImageEnhance
-
-    img = Image.open(io.BytesIO(image_bytes)).convert("L")  # grayscale
-    img = ImageEnhance.Contrast(img).enhance(2.0)
-    img = img.point(lambda px: 255 if px > 140 else 0, "1")  # binarise
-    img = img.convert("L").filter(ImageFilter.MedianFilter(size=3))
-
+def _image_to_png_bytes(img) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 
+def _build_preprocessed_variants(image_bytes: bytes) -> List[Tuple[str, bytes]]:
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+
+    base = Image.open(io.BytesIO(image_bytes)).convert("L")
+    variants: List[Tuple[str, bytes]] = []
+
+    def add_variant(name: str, img) -> None:
+        variants.append((name, _image_to_png_bytes(img)))
+
+    contrast = ImageEnhance.Contrast(base).enhance(2.0)
+    add_variant("grayscale", base)
+    add_variant("contrast", contrast)
+    add_variant(
+        "threshold_140",
+        contrast.point(lambda px: 255 if px > 140 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3)),
+    )
+    add_variant(
+        "threshold_170",
+        contrast.point(lambda px: 255 if px > 170 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3)),
+    )
+    auto = ImageOps.autocontrast(base)
+    add_variant(
+        "autocontrast_threshold_160",
+        auto.point(lambda px: 255 if px > 160 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3)),
+    )
+    upscale = contrast.resize((base.width * 2, base.height * 2))
+    add_variant(
+        "upscale_threshold_160",
+        upscale.point(lambda px: 255 if px > 160 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3)),
+    )
+    add_variant("inverted", ImageOps.invert(contrast))
+    return variants
+
+
+def preprocess_image(image_bytes: bytes) -> bytes:
+    """Compatibility helper: return the default OCR-oriented variant as PNG bytes."""
+    for name, data in _build_preprocessed_variants(image_bytes):
+        if name == "threshold_140":
+            return data
+    return _build_preprocessed_variants(image_bytes)[0][1]
+
+
 # ---------------------------------------------------------------------------
-# ddddocr recogniser
+# OCR backends
 # ---------------------------------------------------------------------------
 
 def recognize_ddddocr(image_bytes: bytes) -> Tuple[str, float]:
-    """Return (text, confidence) using ddddocr.
-
-    Missing ddddocr is not fatal: the solver should fall through to
-    other recognizers instead of raising at call sites.
-    """
     try:
         ocr = _get_ddddocr()
     except ImportError as exc:
         log.debug("ddddocr unavailable: %s", exc)
         return "", 0.0
 
-    text = ocr.classification(image_bytes)
-    text = re.sub(r"[^A-Za-z0-9]", "", text)  # strip stray symbols
+    raw = ocr.classification(image_bytes)
+    text = _clean_text(raw)
+    return text, _score_candidate(text, backend="ddddocr", variant="single")
 
-    if 4 <= len(text) <= 8 and text.isalnum():
-        confidence = 0.9
-    elif len(text) >= 3:
-        confidence = 0.6
-    else:
-        confidence = 0.3
-    return text, confidence
-
-
-# ---------------------------------------------------------------------------
-# Tesseract fallback
-# ---------------------------------------------------------------------------
 
 def recognize_tesseract(image_bytes: bytes) -> Tuple[str, float]:
-    """Return (text, confidence) via pytesseract. May raise if not installed."""
     try:
         import pytesseract
         from PIL import Image
@@ -109,15 +164,8 @@ def recognize_tesseract(image_bytes: bytes) -> Tuple[str, float]:
             img,
             config="--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
         )
-        text = re.sub(r"[^A-Za-z0-9]", "", raw).strip()
-
-        if 4 <= len(text) <= 8 and text.isalnum():
-            confidence = 0.85
-        elif len(text) >= 3:
-            confidence = 0.55
-        else:
-            confidence = 0.25
-        return text, confidence
+        text = _clean_text(raw)
+        return text, _score_candidate(text, backend="tesseract", variant="single") - 0.03
     except Exception as exc:
         log.debug("Tesseract fallback failed: %s", exc)
         return "", 0.0
@@ -127,21 +175,41 @@ def recognize_tesseract(image_bytes: bytes) -> Tuple[str, float]:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+def _best_backend_candidate(variants: List[Tuple[str, bytes]], backend: str) -> Dict[str, object]:
+    best = {"text": "", "confidence": 0.0, "method": backend, "variant": ""}
+
+    for variant_name, variant_bytes in variants:
+        if backend == "ddddocr":
+            text, _ = recognize_ddddocr(variant_bytes)
+        else:
+            text, _ = recognize_tesseract(variant_bytes)
+
+        confidence = _score_candidate(text, backend=backend, variant=variant_name)
+        if confidence > float(best["confidence"]):
+            best = {
+                "text": text,
+                "confidence": float(confidence),
+                "method": backend,
+                "variant": variant_name,
+            }
+
+    return best
+
+
 def solve_captcha_image(image_bytes: bytes) -> dict:
-    """Preprocess → ddddocr → optional tesseract fallback.
+    """Try several preprocessing variants and return the strongest OCR candidate."""
+    variants = _build_preprocessed_variants(image_bytes)
+    dddd_best = _best_backend_candidate(variants, backend="ddddocr")
+    tess_best = _best_backend_candidate(variants, backend="tesseract")
 
-    Returns dict with keys: text, confidence, method. Never raises merely
-    because an optional OCR backend is absent.
-    """
-    processed = preprocess_image(image_bytes)
+    best = dddd_best
+    if float(tess_best["confidence"]) > float(dddd_best["confidence"]):
+        best = tess_best
 
-    text, conf = recognize_ddddocr(processed)
-    if conf >= 0.5:
-        return {"text": text, "confidence": conf, "method": "ddddocr"}
-
-    tess_text, tess_conf = recognize_tesseract(processed)
-    if tess_conf > conf:
-        return {"text": tess_text, "confidence": float(tess_conf), "method": "tesseract"}
-
-    fallback_method = "ddddocr" if conf > 0 else "tesseract"
-    return {"text": text, "confidence": float(conf), "method": fallback_method}
+    return {
+        "text": str(best["text"]),
+        "confidence": float(best["confidence"]),
+        "method": str(best["method"]),
+        "variant": str(best.get("variant") or ""),
+        "attempts": len(variants),
+    }
