@@ -90,7 +90,8 @@ CORE_TOOL_NAMES = {
     "send_owner_message", "send_document", "switch_model",
     "request_restart", "promote_to_stable",
     "knowledge_read", "knowledge_write",
-    "browse_page", "browser_action", "analyze_screenshot",
+    "browse_page", "browser_action", "analyze_screenshot", "solve_simple_captcha",
+    "send_browser_screenshot",
 }
 
 

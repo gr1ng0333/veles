@@ -124,6 +124,12 @@ def _send_photo(ctx: ToolContext, image_base64: str, caption: str = "") -> str:
     })
     return "OK: photo queued for delivery to owner."
 
+def _send_browser_screenshot(ctx: ToolContext, caption: str = "") -> str:
+    """Send the last browser screenshot to Telegram without manually passing base64."""
+    if not ctx.browser_state.last_screenshot_b64:
+        return "⚠️ No screenshot stored. Take one first with browse_page(output='screenshot') or browser_action(action='screenshot')."
+    return _send_photo(ctx, image_base64="__last_screenshot__", caption=caption)
+
 
 # ---------------------------------------------------------------------------
 # Codebase digest
@@ -424,6 +430,16 @@ def get_tools() -> List[ToolEntry]:
                 "caption": {"type": "string", "description": "Optional caption for the photo"},
             }, "required": ["image_base64"]},
         }, _send_photo),
+        ToolEntry("send_browser_screenshot", {
+            "name": "send_browser_screenshot",
+            "description": (
+                "Send the last browser screenshot directly to the owner's Telegram chat. "
+                "Use after browse_page(output='screenshot') or browser_action(action='screenshot')."
+            ),
+            "parameters": {"type": "object", "properties": {
+                "caption": {"type": "string", "description": "Optional caption for the screenshot"},
+            }, "required": []},
+        }, _send_browser_screenshot),
         ToolEntry("codebase_digest", {
             "name": "codebase_digest",
             "description": "Get a compact digest of the entire codebase: files, sizes, classes, functions. One call instead of many repo_read calls.",
