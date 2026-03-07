@@ -12,9 +12,14 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.12 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.13 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.13 (2026-03-07)
+
+- Routed `send_browser_screenshot` through the same sticky stateful tool executor as `browse_page` and `browser_action`, so Playwright screenshot capture no longer crosses threads and trips `Cannot switch to a different thread`.
+- Added a focused regression test that locks this routing contract in place.
 
 ## v6.11.12 (2026-03-07)
 
