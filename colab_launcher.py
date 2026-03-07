@@ -255,14 +255,16 @@ kill_workers()
 spawn_workers(MAX_WORKERS)
 restored_pending = restore_pending_from_snapshot()
 _snapshot_resume = snapshot_interrupted_work_info()
-if _snapshot_resume.get("has_interrupted_work"):
-    _st_resume = load_state()
-    if not bool(_st_resume.get("resume_needed")):
-        _st_resume["resume_needed"] = True
+_st_resume = load_state()
+if not bool(_st_resume.get("resume_needed")):
+    _st_resume["resume_needed"] = True
+    if _snapshot_resume.get("has_interrupted_work"):
         _st_resume["resume_reason"] = str(_snapshot_resume.get("reason") or "queue_snapshot_interrupted_work")
         _st_resume["resume_snapshot_pending_count"] = int(_snapshot_resume.get("pending_count") or 0)
         _st_resume["resume_snapshot_running_count"] = int(_snapshot_resume.get("running_count") or 0)
-        save_state(_st_resume)
+    else:
+        _st_resume["resume_reason"] = "launcher_start"
+    save_state(_st_resume)
 persist_queue_snapshot(reason="startup")
 if restored_pending > 0:
     st_boot = load_state()
@@ -477,11 +479,10 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             _agent_busy = bool(_get_chat_agent()._busy)
         except Exception:
             _agent_busy = False
-        if PENDING or RUNNING or _agent_busy:
-            st2["resume_needed"] = True
-            st2["resume_reason"] = "owner_restart_busy_state"
-            st2["resume_snapshot_pending_count"] = len(PENDING)
-            st2["resume_snapshot_running_count"] = len(RUNNING)
+        st2["resume_needed"] = True
+        st2["resume_reason"] = "owner_restart"
+        st2["resume_snapshot_pending_count"] = len(PENDING)
+        st2["resume_snapshot_running_count"] = len(RUNNING)
         st2["restart_notify_pending"] = True
         st2["restart_notify_reason"] = "owner_restart"
         st2["restart_notify_requested_at"] = now_iso
