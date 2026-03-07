@@ -267,6 +267,11 @@ class TestScreenshotSendTools(unittest.TestCase):
         self.assertIn("No screenshot stored and no active browser page", result)
         self.assertEqual(ctx.pending_events, [])
 
+    def test_send_browser_screenshot_is_routed_as_stateful_browser_tool(self):
+        from ouroboros.loop import STATEFUL_BROWSER_TOOLS
+
+        self.assertIn("send_browser_screenshot", STATEFUL_BROWSER_TOOLS)
+
 
 class TestSolveSimpleCaptchaTool(unittest.TestCase):
     def _make_ctx(self, with_screenshot=True):

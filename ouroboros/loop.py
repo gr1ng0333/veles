@@ -124,7 +124,7 @@ READ_ONLY_PARALLEL_TOOLS = frozenset({
 })
 
 # Stateful browser tools require thread-affinity (Playwright sync uses greenlet)
-STATEFUL_BROWSER_TOOLS = frozenset({"browse_page", "browser_action"})
+STATEFUL_BROWSER_TOOLS = frozenset({"browse_page", "browser_action", "send_browser_screenshot"})
 
 
 def _truncate_tool_result(result: Any) -> str:
