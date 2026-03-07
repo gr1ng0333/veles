@@ -84,11 +84,20 @@ def _try_parse_tool_json(json_str: str, out: List[Dict[str, Any]]) -> None:
         return
 
     # {"tool_uses": [{"name": ..., "arguments": ...}, ...]}
+    # {"tool_uses": [{"recipient_name": "functions.tool", "parameters": {...}}, ...]}
     if "tool_uses" in obj and isinstance(obj["tool_uses"], list):
         for item in obj["tool_uses"]:
-            if isinstance(item, dict) and "name" in item:
+            if not isinstance(item, dict):
+                continue
+            if "name" in item:
                 args = item.get("arguments", item.get("args", {}))
                 out.append(_make_tool_call(item["name"], args))
+                continue
+            if "recipient_name" in item:
+                rn = str(item["recipient_name"])
+                name = rn[len("functions."):] if rn.startswith("functions.") else rn
+                args = item.get("parameters", item.get("arguments", {}))
+                out.append(_make_tool_call(name, args))
         return
 
     # {"recipient_name": "functions.tool_name", "parameters": {...}}
@@ -161,6 +170,10 @@ def _try_extract_tool_calls_from_text(
     cleaned = text
     for s, e in sorted(regions, reverse=True):
         cleaned = cleaned[:s] + cleaned[e:]
+    # If recovery fired, strip leftover pseudo-tool-call preambles like
+    # "to=multi_tool_use.parallel" that should never leak into chat.
+    cleaned = re.sub(r'(?im)^\s*to=[^\n]+\n?', '', cleaned)
+    cleaned = re.sub(r'(?im)^\s*```(?:json)?\s*$', '', cleaned)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
     log.info(

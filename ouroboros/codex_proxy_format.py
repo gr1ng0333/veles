@@ -5,6 +5,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from ouroboros.codex_recovery import _try_extract_tool_calls_from_text
+
 log = logging.getLogger(__name__)
 
 
@@ -145,6 +147,14 @@ def _output_to_chat_message(output_items: List[Dict[str, Any]]) -> Dict[str, Any
             })
 
     content = "\n".join(part for part in text_parts if part).strip()
+
+    recovery_enabled = os.environ.get("CODEX_TOOL_RECOVERY_ENABLED", "false").lower() in ("1", "true", "yes")
+    if recovery_enabled and not tool_calls and content:
+        recovered, cleaned = _try_extract_tool_calls_from_text(content)
+        if recovered:
+            tool_calls = recovered
+            content = cleaned or ""
+
     return {
         "role": "assistant",
         "content": content,
