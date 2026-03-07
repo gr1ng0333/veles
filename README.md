@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.9 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.10 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.10 (2026-03-07)
+
+- Added `solve_simple_captcha`: a vision-only MVP for simple text captchas that uses the last browser screenshot (or a provided image), returns structured `ok/uncertain` JSON, and refuses to pretend confidence on ambiguous reads.
+- Added `send_browser_screenshot`: a minimal convenience tool that sends the last browser screenshot directly to Telegram without manually threading base64 through the conversation.
+- Expanded vision/smoke tests so both tools are registry-covered and the captcha normalizer stays bounded to simple cases.
 
 ## v6.11.9 (2026-03-07)
 

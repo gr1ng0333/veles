@@ -12,8 +12,10 @@ Two tools:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -120,9 +122,143 @@ def _emit_usage(ctx: ToolContext, usage: Dict[str, Any], model: str) -> None:
     except Exception:
         log.debug("Failed to emit VLM usage event", exc_info=True)
 
+_UNCERTAIN_MARKERS = (
+    "uncertain",
+    "unsure",
+    "not sure",
+    "can't read",
+    "cannot read",
+    "unreadable",
+    "не уверен",
+    "не могу",
+    "нечита",
+)
+
+
+def _normalize_captcha_guess(raw_text: str, max_length: int = 8) -> Dict[str, Any]:
+    raw = (raw_text or "").strip()
+    if not raw:
+        return {"status": "uncertain", "text": "", "reason": "empty_response", "raw_response": raw_text or ""}
+
+    lowered = raw.lower()
+    if any(marker in lowered for marker in _UNCERTAIN_MARKERS):
+        return {"status": "uncertain", "text": "", "reason": "model_uncertain", "raw_response": raw}
+
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    candidate_source = lines[0] if lines else raw
+    if ':' in candidate_source and len(candidate_source) > max_length + 3:
+        candidate_source = candidate_source.split(':', 1)[-1].strip()
+
+    tokens = re.findall(r"[A-Za-z0-9]+", candidate_source)
+    if not tokens:
+        return {"status": "uncertain", "text": "", "reason": "no_alnum_token", "raw_response": raw}
+
+    candidate = max(tokens, key=len)
+    if len(candidate) > max_length:
+        return {
+            "status": "uncertain",
+            "text": "",
+            "reason": "candidate_too_long",
+            "raw_response": raw,
+            "candidate": candidate,
+        }
+
+    return {
+        "status": "ok",
+        "text": candidate,
+        "length": len(candidate),
+        "raw_response": raw,
+    }
+
+
+def _solve_simple_captcha(
+    ctx: ToolContext,
+    prompt: str = "",
+    image_base64: str = "",
+    image_url: str = "",
+    image_mime: str = "image/png",
+    model: str = "",
+    max_length: int = 8,
+) -> str:
+    """Vision-only MVP for simple text captchas. Returns JSON with status ok/uncertain."""
+    actual_b64 = (image_base64 or "").strip()
+    if not image_url and not actual_b64:
+        actual_b64 = ctx.browser_state.last_screenshot_b64 or ""
+
+    if not image_url and not actual_b64:
+        return json.dumps({
+            "status": "uncertain",
+            "text": "",
+            "reason": "no_image",
+            "message": "Provide image_base64/image_url or capture a browser screenshot first.",
+        }, ensure_ascii=False)
+
+    images: List[Dict[str, Any]] = []
+    if image_url:
+        images.append({"url": image_url})
+    else:
+        images.append({"base64": actual_b64, "mime": image_mime or "image/png"})
+
+    vlm_model = model or _get_vlm_model()
+    captcha_prompt = prompt or (
+        "Read the captcha text in this image. Return ONLY the captcha characters with no explanation. "
+        "If the captcha is unreadable or ambiguous, return exactly UNCERTAIN."
+    )
+
+    try:
+        client = _get_llm_client()
+        text, usage = client.vision_query(
+            prompt=captcha_prompt,
+            images=images,
+            model=vlm_model,
+            max_tokens=32,
+            reasoning_effort="low",
+        )
+        _emit_usage(ctx, usage, vlm_model)
+        result = _normalize_captcha_guess(text or "", max_length=max_length)
+        result["model"] = vlm_model
+        result["vision_only"] = True
+        result["source"] = "image_url" if image_url else "image_base64"
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        log.warning("solve_simple_captcha failed: %s", e, exc_info=True)
+        return json.dumps({
+            "status": "uncertain",
+            "text": "",
+            "reason": "tool_error",
+            "error": str(e),
+            "model": vlm_model,
+            "vision_only": True,
+        }, ensure_ascii=False)
+
 
 def get_tools() -> List[ToolEntry]:
     return [
+        ToolEntry(
+            name="solve_simple_captcha",
+            schema={
+                "name": "solve_simple_captcha",
+                "description": (
+                    "Vision-only MVP for simple text captchas. "
+                    "Uses the last browser screenshot by default, or a provided image_url/image_base64. "
+                    "Returns JSON with status ok/uncertain and the normalized captcha text when confident."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "description": "Optional custom prompt for the vision model"},
+                        "image_base64": {"type": "string", "description": "Optional base64 image; defaults to last browser screenshot"},
+                        "image_url": {"type": "string", "description": "Optional public image URL"},
+                        "image_mime": {"type": "string", "description": "MIME type for image_base64 (default image/png)"},
+                        "model": {"type": "string", "description": "Vision model override"},
+                        "max_length": {"type": "integer", "description": "Maximum accepted captcha length before returning uncertain"},
+                    },
+                    "required": [],
+                },
+            },
+            handler=_solve_simple_captcha,
+            timeout_sec=30,
+        ),
         ToolEntry(
             name="analyze_screenshot",
             schema={

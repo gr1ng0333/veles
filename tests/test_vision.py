@@ -1,6 +1,7 @@
 """Smoke tests for VLM (Vision Language Model) support."""
 
 import sys
+import json
 import os
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -205,6 +206,59 @@ class TestVlmQueryTool(unittest.TestCase):
         tools = registry.available_tools()
         self.assertIn("analyze_screenshot", tools, "analyze_screenshot must be registered")
         self.assertIn("vlm_query", tools, "vlm_query must be registered")
+        self.assertIn("solve_simple_captcha", tools, "solve_simple_captcha must be registered")
+
+
+class TestSolveSimpleCaptchaTool(unittest.TestCase):
+    def _make_ctx(self, with_screenshot=True):
+        from ouroboros.tools.registry import ToolContext, BrowserState
+        ctx = MagicMock(spec=ToolContext)
+        ctx.browser_state = BrowserState()
+        ctx.event_queue = None
+        ctx.task_id = "test-task"
+        ctx.current_task_type = "task"
+        ctx.browser_state.last_screenshot_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            if with_screenshot else None
+        )
+        return ctx
+
+    def test_solve_simple_captcha_uses_screenshot_by_default(self):
+        from ouroboros.tools.vision import _solve_simple_captcha
+
+        ctx = self._make_ctx(with_screenshot=True)
+        with patch("ouroboros.tools.vision._get_llm_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.vision_query.return_value = ("AB12", {})
+            mock_get_client.return_value = mock_client
+
+            result = json.loads(_solve_simple_captcha(ctx))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["text"], "AB12")
+        images = mock_client.vision_query.call_args[1]["images"]
+        self.assertIn("base64", images[0])
+
+    def test_solve_simple_captcha_marks_uncertain_on_long_answer(self):
+        from ouroboros.tools.vision import _solve_simple_captcha
+
+        ctx = self._make_ctx(with_screenshot=True)
+        with patch("ouroboros.tools.vision._get_llm_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.vision_query.return_value = ("captcha looks like ABC123XYZ", {})
+            mock_get_client.return_value = mock_client
+
+            result = json.loads(_solve_simple_captcha(ctx, max_length=6))
+
+        self.assertEqual(result["status"], "uncertain")
+
+    def test_solve_simple_captcha_requires_image(self):
+        from ouroboros.tools.vision import _solve_simple_captcha
+
+        ctx = self._make_ctx(with_screenshot=False)
+        result = json.loads(_solve_simple_captcha(ctx))
+        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["reason"], "no_image")
 
 
 if __name__ == "__main__":

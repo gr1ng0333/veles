@@ -95,7 +95,7 @@ EXPECTED_TOOLS = [
     "request_restart", "promote_to_stable", "request_review",
     "schedule_task", "cancel_task",
     "switch_model", "toggle_evolution", "toggle_consciousness",
-    "send_owner_message", "send_photo", "send_document",
+    "send_owner_message", "send_photo", "send_browser_screenshot", "send_document",
     "switch_codex_account",
     "codebase_digest", "codebase_health",
     "knowledge_read", "knowledge_write", "knowledge_list",
@@ -108,7 +108,7 @@ EXPECTED_TOOLS = [
     "get_task_result", "wait_for_task",
     "generate_evolution_stats",
     # VLM / Vision
-    "analyze_screenshot", "vlm_query",
+    "analyze_screenshot", "vlm_query", "solve_simple_captcha",
     # Message routing
     "forward_to_worker",
     # Context management
