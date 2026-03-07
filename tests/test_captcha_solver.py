@@ -42,6 +42,19 @@ def _make_color_captcha(text: str = "Xy34", size=(140, 50)) -> bytes:
 # Tests
 # ---------------------------------------------------------------------------
 
+
+def _ocr_backend_available() -> bool:
+    try:
+        from ouroboros.tools.captcha_solver import solve_captcha_image
+        probe = solve_captcha_image(_make_captcha_image("HELLO"))
+        return bool(probe.get("text"))
+    except Exception:
+        return False
+
+
+OCR_BACKEND_AVAILABLE = _ocr_backend_available()
+
+
 class TestPreprocessImage:
     def test_returns_bytes(self):
         from ouroboros.tools.captcha_solver import preprocess_image
@@ -74,6 +87,7 @@ class TestSolveCaptchaImage:
         assert "confidence" in result
         assert "method" in result
 
+    @pytest.mark.skipif(not OCR_BACKEND_AVAILABLE, reason="optional OCR backend unavailable")
     def test_text_non_empty_on_clean_captcha(self):
         from ouroboros.tools.captcha_solver import solve_captcha_image
         raw = _make_captcha_image("HELLO")
