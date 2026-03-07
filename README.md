@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.11 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.12 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.12 (2026-03-07)
+
+- Made `send_browser_screenshot` atomic: when an active browser page exists it now captures a fresh screenshot itself before queueing Telegram delivery, instead of requiring a separate prior screenshot step.
+- Preserved fallback behavior for already-stored screenshots, so delivery still works when the page is gone but the last screenshot is available.
+- Added regression tests for the live-page capture path, stored-screenshot fallback, and the explicit no-page/no-screenshot failure case.
 
 ## v6.11.11 (2026-03-07)
 

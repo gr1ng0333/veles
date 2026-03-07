@@ -225,13 +225,18 @@ class TestScreenshotSendTools(unittest.TestCase):
         )
         return ctx
 
-    def test_send_browser_screenshot_queues_photo_event_with_metadata(self):
+    def test_send_browser_screenshot_captures_live_page_before_queueing_photo(self):
         from ouroboros.tools.core import _send_browser_screenshot
 
-        ctx = self._make_ctx(with_screenshot=True)
+        ctx = self._make_ctx(with_screenshot=False)
+        ctx.browser_state.page = MagicMock()
+        ctx.browser_state.page.screenshot.return_value = b"fake-png-bytes" * 16
+
         result = _send_browser_screenshot(ctx, caption="captcha")
 
         self.assertIn("photo queued for delivery", result)
+        ctx.browser_state.page.screenshot.assert_called_once_with(type="png", full_page=False)
+        self.assertTrue(ctx.browser_state.last_screenshot_b64)
         self.assertEqual(len(ctx.pending_events), 1)
         evt = ctx.pending_events[0]
         self.assertEqual(evt["type"], "send_photo")
@@ -242,13 +247,24 @@ class TestScreenshotSendTools(unittest.TestCase):
         self.assertEqual(evt["task_type"], "task")
         self.assertTrue(evt["is_direct_chat"])
 
-    def test_send_browser_screenshot_requires_stored_screenshot(self):
+    def test_send_browser_screenshot_falls_back_to_stored_screenshot(self):
+        from ouroboros.tools.core import _send_browser_screenshot
+
+        ctx = self._make_ctx(with_screenshot=True)
+        result = _send_browser_screenshot(ctx, caption="captcha")
+
+        self.assertIn("photo queued for delivery", result)
+        self.assertEqual(len(ctx.pending_events), 1)
+        evt = ctx.pending_events[0]
+        self.assertEqual(evt["source"], "browser_last_screenshot")
+
+    def test_send_browser_screenshot_requires_page_or_stored_screenshot(self):
         from ouroboros.tools.core import _send_browser_screenshot
 
         ctx = self._make_ctx(with_screenshot=False)
         result = _send_browser_screenshot(ctx)
 
-        self.assertIn("No screenshot stored", result)
+        self.assertIn("No screenshot stored and no active browser page", result)
         self.assertEqual(ctx.pending_events, [])
 
 

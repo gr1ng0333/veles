@@ -136,9 +136,17 @@ def _send_photo(ctx: ToolContext, image_base64: str, caption: str = "") -> str:
     )
 
 def _send_browser_screenshot(ctx: ToolContext, caption: str = "") -> str:
-    """Send the last browser screenshot to Telegram without manually passing base64."""
+    """Capture the current browser page if possible, then send it to Telegram."""
+    page = getattr(ctx.browser_state, "page", None)
+    if page is not None:
+        try:
+            data = page.screenshot(type="png", full_page=False)
+            ctx.browser_state.last_screenshot_b64 = base64.b64encode(data).decode()
+        except Exception as e:
+            return f"⚠️ Failed to capture browser screenshot: {e}"
+
     if not ctx.browser_state.last_screenshot_b64:
-        return "⚠️ No screenshot stored. Take one first with browse_page(output='screenshot') or browser_action(action='screenshot')."
+        return "⚠️ No screenshot stored and no active browser page. Open a page first with browse_page(...) or browser_action(...)."
     return _send_photo(ctx, image_base64="__last_screenshot__", caption=caption)
 
 
