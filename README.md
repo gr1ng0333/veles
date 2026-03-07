@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.8 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.9 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.9 (2026-03-07)
+
+- Added a durable post-restart notification handoff in supervisor state so both owner-triggered and agent-triggered restarts survive `execv` and explicitly confirm successful boot to the owner.
+- New launcher startup now consumes that handoff, sends a one-shot `restart completed` message, and logs delivery/error events for restart observability.
+- Added a regression test that asserts restart flow persists the post-restart acknowledgement state before process replacement.
 
 ## v6.11.8 (2026-03-06)
 
