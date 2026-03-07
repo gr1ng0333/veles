@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.7 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.8 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.8 (2026-03-06)
+
+- Moved supervisor restart handling behind a thin event entrypoint into `supervisor/restart_flow.py` so restart-policy fixes are resolved from live code on the next request instead of being trapped in a stale in-memory handler.
+- Added a focused regression test that asserts `_handle_restart_request` delegates to the live restart-flow module.
+- This closes the observed gap where advisor verdict `no_restart` could be logged while the already-running supervisor still proceeded with restart behavior from an older handler body.
 
 ## v6.11.7 (2026-03-06)
 
