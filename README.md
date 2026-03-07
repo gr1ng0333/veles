@@ -12,9 +12,15 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.11.17 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.11.18 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
+
+## v6.11.18 (2026-03-07)
+
+- Fixed Codex pseudo-tool-call recovery for the exact leak shape that escaped into chat: JSON `tool_uses` entries that carry `recipient_name`/`parameters` now recover into real tool calls instead of surfacing as plain assistant text.
+- Unified the Responses output formatter with the shared recovery helper so the same recovery logic applies consistently across Codex formatting paths instead of diverging by module.
+- Added regression tests that lock both the raw recovery function and the output formatter against leaking `to=multi_tool_use.parallel` plus embedded tool JSON into owner-visible chat.
 
 ## v6.11.17 (2026-03-07)
 
