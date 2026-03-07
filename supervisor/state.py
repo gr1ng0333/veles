@@ -153,6 +153,10 @@ def ensure_state_defaults(st: Dict[str, Any]) -> Dict[str, Any]:
     st.setdefault("resume_snapshot_pending_count", 0)
     st.setdefault("resume_snapshot_running_count", 0)
     st.setdefault("suppress_auto_resume_until_owner_message", False)
+    st.setdefault("restart_notify_pending", False)
+    st.setdefault("restart_notify_reason", "")
+    st.setdefault("restart_notify_requested_at", "")
+    st.setdefault("restart_notify_source", "")
     for legacy_key in ("approvals", "idle_cursor", "idle_stats", "last_idle_task_at",
                         "last_auto_review_at", "last_review_task_id", "session_daily_snapshot"):
         st.pop(legacy_key, None)

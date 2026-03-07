@@ -289,8 +289,52 @@ append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
 })
 
 # ----------------------------
+# 6.0.1) Post-restart owner notification
+# ----------------------------
+def _notify_owner_after_restart() -> None:
+    try:
+        st = load_state()
+        if not bool(st.get("restart_notify_pending")):
+            return
+        chat_id = int(st.get("owner_chat_id") or 0)
+        if not chat_id:
+            return
+
+        reason = str(st.get("restart_notify_reason") or "").strip() or "unspecified"
+        source = str(st.get("restart_notify_source") or "").strip() or "restart"
+        sha = str(st.get("current_sha") or "").strip()
+        branch = str(st.get("current_branch") or "").strip()
+        sha_short = sha[:8] if sha else "unknown"
+        branch_part = branch or "unknown"
+
+        send_with_budget(
+            chat_id,
+            f"✅ Перезапуск завершён: {reason} [{source}] · {branch_part}@{sha_short}",
+        )
+
+        st["restart_notify_pending"] = False
+        st["restart_notify_reason"] = ""
+        st["restart_notify_requested_at"] = ""
+        st["restart_notify_source"] = ""
+        save_state(st)
+        append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "type": "restart_notify_delivered",
+            "reason": reason,
+            "source": source,
+            "launcher_session_id": _launcher_session_id,
+        })
+    except Exception as e:
+        append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "type": "restart_notify_error",
+            "error": repr(e),
+        })
+
+# ----------------------------
 # 6.1) Auto-resume after restart
 # ----------------------------
+_notify_owner_after_restart()
 auto_resume_after_restart()
 
 # ----------------------------
@@ -438,6 +482,10 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             st2["resume_reason"] = "owner_restart_busy_state"
             st2["resume_snapshot_pending_count"] = len(PENDING)
             st2["resume_snapshot_running_count"] = len(RUNNING)
+        st2["restart_notify_pending"] = True
+        st2["restart_notify_reason"] = "owner_restart"
+        st2["restart_notify_requested_at"] = now_iso
+        st2["restart_notify_source"] = "owner_restart_command"
         save_state(st2)
         send_with_budget(chat_id, "♻️ Restarting (soft).")
         ok, msg = safe_restart(reason="owner_restart", unsynced_policy="rescue_and_reset")

@@ -90,6 +90,10 @@ def handle_restart_request(evt: Dict[str, Any], ctx: Any) -> None:
     st2 = ctx.load_state()
     st2["session_id"] = uuid.uuid4().hex
     st2["tg_offset"] = int(st2.get("tg_offset") or st.get("tg_offset") or 0)
+    st2["restart_notify_pending"] = True
+    st2["restart_notify_reason"] = reason or "unspecified"
+    st2["restart_notify_requested_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    st2["restart_notify_source"] = "agent_restart_request"
     ctx.save_state(st2)
     ctx.persist_queue_snapshot(reason="pre_restart_exit")
     launcher = os.path.join(os.getcwd(), "colab_launcher.py")

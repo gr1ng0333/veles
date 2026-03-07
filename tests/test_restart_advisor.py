@@ -152,3 +152,57 @@ def test_events_restart_entrypoint_delegates_to_live_restart_flow(monkeypatch):
     _handle_restart_request(evt, ctx)
 
     assert called == [(evt, ctx)]
+
+
+def test_restart_request_persists_post_restart_notification_handoff(tmp_path, monkeypatch):
+    from supervisor.events import _handle_restart_request
+
+    logs = []
+    sent = []
+    killed = []
+    persisted = []
+    saved_states = []
+
+    monkeypatch.setattr("supervisor.restart_advisor.advise_restart", lambda **kwargs: {
+        "ok": True,
+        "verdict": "soft_restart_recommended",
+        "confidence": 0.77,
+    })
+    monkeypatch.setattr("os.execv", lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(0)))
+
+    state = {"owner_chat_id": 123, "tg_offset": 7}
+
+    def _load_state():
+        return dict(state)
+
+    def _save_state(st):
+        state.update(dict(st))
+        saved_states.append(dict(st))
+
+    ctx = types.SimpleNamespace(
+        DRIVE_ROOT=tmp_path,
+        PENDING=[],
+        RUNNING={},
+        WORKERS={},
+        load_state=_load_state,
+        save_state=_save_state,
+        append_jsonl=lambda path, row: logs.append(row),
+        send_with_budget=lambda chat_id, text, **kw: sent.append(text),
+        safe_restart=lambda **kw: (True, "OK: veles"),
+        kill_workers=lambda: killed.append(True),
+        persist_queue_snapshot=lambda **kw: persisted.append(kw),
+    )
+
+    try:
+        _handle_restart_request({"reason": "deploy post-restart ack"}, ctx)
+    except SystemExit:
+        pass
+
+    assert killed == [True]
+    assert persisted and persisted[-1].get("reason") == "pre_restart_exit"
+    assert saved_states, "restart flow must persist handoff state before execv"
+    assert state["restart_notify_pending"] is True
+    assert state["restart_notify_reason"] == "deploy post-restart ack"
+    assert state["restart_notify_source"] == "agent_restart_request"
+    assert state["tg_offset"] == 7
+    assert state.get("session_id")
