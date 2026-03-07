@@ -45,6 +45,7 @@ from ouroboros.tools.browser_login_helpers import (
     infer_login_state,
     plan_login_flow,
 )
+from ouroboros.tools.captcha_solver import solve_captcha_image
 
 
 def _ensure_playwright_installed():
@@ -696,6 +697,161 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
             raise
 
 
+# ---------------------------------------------------------------------------
+# JS helpers for captcha heuristics
+# ---------------------------------------------------------------------------
+
+_CAPTCHA_IMG_HEURISTIC_JS = r"""() => {
+    const keywords = ['captcha', 'verify', 'code', 'vcode', 'checkcode', 'seccode', 'imgcode'];
+    const imgs = Array.from(document.querySelectorAll('img'));
+    for (const img of imgs) {
+        const haystack = [
+            img.src || '',
+            img.className || '',
+            img.alt || '',
+            img.id || '',
+            img.getAttribute('name') || '',
+        ].join(' ').toLowerCase();
+        if (keywords.some(kw => haystack.includes(kw))) {
+            return window.__veles_build_selector
+                ? window.__veles_build_selector(img)
+                : (img.id ? '#' + img.id : null);
+        }
+    }
+    return null;
+}"""
+
+_CAPTCHA_INPUT_HEURISTIC_JS = r"""() => {
+    const keywords = ['captcha', 'verify', 'code', 'vcode', 'checkcode', 'seccode', 'imgcode'];
+    const inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
+    for (const inp of inputs) {
+        const haystack = [
+            inp.name || '',
+            inp.placeholder || '',
+            inp.id || '',
+            inp.className || '',
+            inp.getAttribute('aria-label') || '',
+        ].join(' ').toLowerCase();
+        if (keywords.some(kw => haystack.includes(kw))) {
+            return window.__veles_build_selector
+                ? window.__veles_build_selector(inp)
+                : (inp.id ? '#' + inp.id : null);
+        }
+    }
+    return null;
+}"""
+
+
+# ---------------------------------------------------------------------------
+# browser_solve_captcha implementation
+# ---------------------------------------------------------------------------
+
+def _browser_solve_captcha(
+    ctx: ToolContext,
+    captcha_image_selector: str = "",
+    captcha_input_selector: str = "",
+    submit_selector: str = "",
+    max_retries: int = 3,
+) -> str:
+    page = _ensure_browser(ctx)
+    page.evaluate(_SELECTOR_HELPERS_JS)
+
+    img_sel = _normalize_selector(captcha_image_selector)
+    input_sel = _normalize_selector(captcha_input_selector)
+    sub_sel = _normalize_selector(submit_selector)
+    max_retries = max(1, min(max_retries, 10))
+
+    # --- locate captcha image ---
+    if not img_sel:
+        img_sel = page.evaluate(_CAPTCHA_IMG_HEURISTIC_JS) or ""
+    if not img_sel:
+        return json.dumps({
+            "success": False, "text": "", "confidence": 0,
+            "method": "", "attempts": 0,
+            "error": "Cannot locate captcha image element on the page",
+        }, ensure_ascii=False)
+
+    # --- locate captcha input ---
+    if not input_sel:
+        input_sel = page.evaluate(_CAPTCHA_INPUT_HEURISTIC_JS) or ""
+    if not input_sel:
+        return json.dumps({
+            "success": False, "text": "", "confidence": 0,
+            "method": "", "attempts": 0,
+            "error": "Cannot locate captcha input field on the page",
+        }, ensure_ascii=False)
+
+    last_result: dict = {}
+    for attempt in range(1, max_retries + 1):
+        try:
+            el = page.wait_for_selector(img_sel, timeout=5000, state="visible")
+            if el is None:
+                last_result = {
+                    "success": False, "text": "", "confidence": 0,
+                    "method": "", "attempts": attempt,
+                    "error": f"Captcha image selector '{img_sel}' not visible",
+                }
+                continue
+            screenshot_bytes = el.screenshot(type="png")
+        except Exception as exc:
+            last_result = {
+                "success": False, "text": "", "confidence": 0,
+                "method": "", "attempts": attempt,
+                "error": f"Failed to screenshot captcha element: {exc}",
+            }
+            continue
+
+        result = solve_captcha_image(screenshot_bytes)
+        text = result.get("text", "")
+        confidence = result.get("confidence", 0)
+        method = result.get("method", "")
+
+        if confidence < 0.3 and attempt < max_retries:
+            # low confidence — try refreshing captcha by clicking the image
+            try:
+                page.click(img_sel, timeout=2000)
+                page.wait_for_timeout(1500)
+            except Exception:
+                log.debug("Failed to click captcha image to refresh", exc_info=True)
+            last_result = {
+                "success": False, "text": text, "confidence": confidence,
+                "method": method, "attempts": attempt,
+                "error": "Confidence too low, retrying",
+            }
+            continue
+
+        # --- fill input ---
+        try:
+            page.wait_for_selector(input_sel, timeout=3000, state="visible")
+            page.fill(input_sel, text, timeout=3000)
+        except Exception as exc:
+            return json.dumps({
+                "success": False, "text": text, "confidence": confidence,
+                "method": method, "attempts": attempt,
+                "error": f"Failed to fill captcha input: {exc}",
+            }, ensure_ascii=False)
+
+        # --- optional submit ---
+        if sub_sel:
+            try:
+                page.click(sub_sel, timeout=3000)
+                page.wait_for_timeout(1000)
+            except Exception as exc:
+                log.debug("Failed to click captcha submit: %s", exc)
+
+        return json.dumps({
+            "success": True, "text": text, "confidence": confidence,
+            "method": method, "attempts": attempt, "error": None,
+        }, ensure_ascii=False)
+
+    # exhausted retries
+    return json.dumps(last_result or {
+        "success": False, "text": "", "confidence": 0,
+        "method": "", "attempts": max_retries,
+        "error": "Max retries exhausted",
+    }, ensure_ascii=False)
+
+
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
@@ -851,6 +1007,41 @@ def get_tools() -> List[ToolEntry]:
                 },
             },
             handler=_browser_check_login_state,
+            timeout_sec=60,
+        ),
+        ToolEntry(
+            name="browser_solve_captcha",
+            schema={
+                "name": "browser_solve_captcha",
+                "description": (
+                    "Solve an image captcha on the current page using local OCR "
+                    "(ddddocr + tesseract fallback). Finds the captcha image and "
+                    "input field by explicit selectors or heuristics, recognises "
+                    "the text, fills the input, and optionally clicks submit."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "captcha_image_selector": {
+                            "type": "string",
+                            "description": "CSS selector for the captcha image element (auto-detected if empty)",
+                        },
+                        "captcha_input_selector": {
+                            "type": "string",
+                            "description": "CSS selector for the captcha text input (auto-detected if empty)",
+                        },
+                        "submit_selector": {
+                            "type": "string",
+                            "description": "CSS selector for the submit button (skipped if empty)",
+                        },
+                        "max_retries": {
+                            "type": "integer",
+                            "description": "Number of OCR attempts before giving up (default: 3)",
+                        },
+                    },
+                },
+            },
+            handler=_browser_solve_captcha,
             timeout_sec=60,
         ),
     ]
