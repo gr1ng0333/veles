@@ -4,6 +4,41 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+_SELECTOR_HELPERS_JS = r"""
+(function() {
+    if (window.__veles_build_selector) return;
+    window.__veles_build_selector = function(el, index) {
+        if (el.id) return '#' + CSS.escape(el.id);
+
+        var selector = el.tagName.toLowerCase();
+
+        if (el.name) {
+            selector += '[name="' + el.name.replace(/"/g, '\\"') + '"]';
+            if (document.querySelectorAll(selector).length === 1) return selector;
+        }
+
+        if (el.type && el.type !== 'text') {
+            selector += '[type="' + el.type + '"]';
+        }
+        if (el.placeholder) {
+            selector += '[placeholder="' + el.placeholder.replace(/"/g, '\\"') + '"]';
+        }
+        if (document.querySelectorAll(selector).length === 1) return selector;
+
+        if (el.autocomplete && el.autocomplete !== 'off') {
+            selector += '[autocomplete="' + el.autocomplete + '"]';
+            if (document.querySelectorAll(selector).length === 1) return selector;
+        }
+
+        if (typeof index === 'number') {
+            selector = el.tagName.toLowerCase() + ':nth-of-type(' + (index + 1) + ')';
+        }
+
+        return selector;
+    };
+})();
+"""  # noqa: E501
+
 
 def plan_login_flow(user_selector: str, password_selector: str, allow_multi_step: bool = False) -> Dict[str, Any]:
     """Plan whether login can proceed in one step, two steps, or not at all."""

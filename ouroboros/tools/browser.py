@@ -35,6 +35,7 @@ from ouroboros.tools.browser_login_helpers import (
     _FILL_INPUT_JS,
     _LOGIN_SIGNALS_JS,
     _PASSWORD_CANDIDATE_JS,
+    _SELECTOR_HELPERS_JS,
     _SUBMIT_LOGIN_FORM_JS,
     _USERNAME_CANDIDATE_JS,
     infer_login_state,

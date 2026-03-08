@@ -411,18 +411,27 @@ def _post_submit_wait(page: Any, wait_ms: int = 1200) -> None:
 
 
 def _check_session_alive_via_protected_url(ctx: ToolContext, protected_url: str, timeout: int = 5000) -> Dict[str, Any]:
-    probe_page = _replace_browser_context(ctx)
-    probe_page.set_default_timeout(timeout)
+    if not protected_url:
+        return {"checked": False, "alive": False, "reason": "no_url"}
+
     try:
-        probe_page.goto(protected_url, wait_until="domcontentloaded", timeout=timeout)
-        return {
-            "ok": True,
-            "url": probe_page.url,
-            "title": (probe_page.title() or "")[:200],
-            "body_excerpt": (probe_page.inner_text("body") or "")[:500],
-        }
+        page = ctx.browser_state.page
+        if not page or page.is_closed():
+            return {"checked": False, "alive": False, "reason": "no_page"}
+
+        probe_page = ctx.browser_state.context.new_page()
+        try:
+            resp = probe_page.goto(protected_url, timeout=timeout, wait_until="domcontentloaded")
+            final_url = probe_page.url
+            status = resp.status if resp else 0
+            alive = (status < 400) and ("login" not in final_url.lower()) and ("signin" not in final_url.lower())
+            return {
+                "checked": True,
+                "alive": alive,
+                "url": final_url,
+                "status": status,
+            }
+        finally:
+            probe_page.close()
     except Exception as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-        }
+        return {"checked": True, "alive": False, "reason": str(exc)}
