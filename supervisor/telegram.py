@@ -184,9 +184,14 @@ class TelegramClient:
 
             # Guess mime type from extension
             ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
-            mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                        "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp"}
-            mime = mime_map.get(ext, "image/jpeg")  # default to jpeg
+            mime_map = {
+                "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp",
+                "ogg": "audio/ogg", "oga": "audio/ogg", "opus": "audio/ogg",
+                "mp3": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav",
+                "mp4": "video/mp4",
+            }
+            mime = mime_map.get(ext, "application/octet-stream")
 
             return b64, mime
         except Exception:
