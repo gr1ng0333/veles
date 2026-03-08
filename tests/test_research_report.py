@@ -23,20 +23,29 @@ class DummyLLM:
         return {"content": json.dumps(payload, ensure_ascii=False)}, {"prompt_tokens": 10, "completion_tokens": 20, "cost": 0.01}
 
 
+class BrokenLLM:
+    def chat(self, messages, model, max_tokens):
+        return {"content": "not-json"}, {"prompt_tokens": 7, "completion_tokens": 9, "cost": 0.005}
+
+
 def make_ctx():
     tmp = pathlib.Path(tempfile.mkdtemp())
     return ToolContext(repo_dir=tmp, drive_root=tmp, current_chat_id=12345)
 
 
-def test_normalize_sources_from_structured_search_result():
+def test_normalize_sources_deduplicates_and_ranks_sources():
     raw_sources = [
-        {"title": "Source A", "url": "https://example.com/a", "snippet": "Alpha snippet."},
-        {"title": "Source B", "url": "https://example.com/b", "snippet": "Beta snippet."},
+        {"title": "Wiki", "url": "https://ru.wikipedia.org/wiki/Test", "snippet": "Alpha snippet."},
+        {"title": "", "url": "https://example.com/a", "snippet": "Beta snippet with some length."},
+        {"title": "Dup", "url": "https://example.com/a", "snippet": "dup"},
+        {"title": "Bad", "url": "ftp://example.com/file", "snippet": "bad"},
+        {"title": "Gov", "url": "https://data.gov/test", "snippet": "Official data source."},
     ]
     sources = _normalize_sources(raw_sources)
-    assert len(sources) == 2
-    assert sources[0].title == "Source A"
-    assert sources[1].url == "https://example.com/b"
+    assert len(sources) == 3
+    assert sources[0].url == "https://data.gov/test"
+    assert sources[1].url == "https://ru.wikipedia.org/wiki/Test"
+    assert sources[2].title == "https://example.com/a"
 
 
 @patch('ouroboros.tools.research_report._get_llm_client', return_value=DummyLLM())
@@ -61,6 +70,7 @@ def test_research_report_writes_html_and_queues_document(_search, _llm):
     html_text = report_path.read_text(encoding='utf-8')
     assert "Тестовый отчёт" in html_text
     assert "Диагностика поиска" in html_text
+    assert "Таблица источников" in html_text
     assert "searxng" in html_text
     doc_events = [event for event in ctx.pending_events if event.get("type") == "send_document"]
     assert doc_events
@@ -70,6 +80,47 @@ def test_research_report_writes_html_and_queues_document(_search, _llm):
     assert usage_events
     assert "usage" in usage_events[0]
     assert usage_events[0]["usage"]["prompt_tokens"] == 10
+
+
+@patch('ouroboros.tools.research_report._get_llm_client', return_value=DummyLLM())
+@patch('ouroboros.tools.research_report._search_web', return_value={
+    "status": "degraded",
+    "backend": "searxng+openai",
+    "error": "searx timeout",
+    "answer": "fallback answer",
+    "sources": [
+        {"title": "Source A", "url": "https://example.com/a", "snippet": "Alpha snippet."},
+    ],
+})
+def test_research_report_marks_degraded_but_still_builds_file(_search, _llm):
+    ctx = make_ctx()
+    raw = _research_report(ctx, topic="test topic")
+    result = json.loads(raw)
+    assert result["status"] == "degraded"
+    html_text = pathlib.Path(result["report_path"]).read_text(encoding='utf-8')
+    assert "Ограничения и надёжность" in html_text
+    assert "searxng+openai" in html_text
+    assert "fallback answer" in html_text
+
+
+@patch('ouroboros.tools.research_report._get_llm_client', return_value=BrokenLLM())
+@patch('ouroboros.tools.research_report._search_web', return_value={
+    "status": "ok",
+    "backend": "searxng",
+    "error": None,
+    "answer": "",
+    "sources": [
+        {"title": "Source A", "url": "https://example.com/a", "snippet": "Alpha snippet."},
+    ],
+})
+def test_research_report_falls_back_when_llm_json_is_invalid(_search, _llm):
+    ctx = make_ctx()
+    raw = _research_report(ctx, topic="test topic")
+    result = json.loads(raw)
+    assert result["status"] == "ok"
+    html_text = pathlib.Path(result["report_path"]).read_text(encoding='utf-8')
+    assert "Краткий отчёт: test topic" in html_text
+    assert "деградированном режиме" in html_text
 
 
 @patch('ouroboros.tools.research_report._search_web', return_value={
