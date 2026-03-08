@@ -80,7 +80,17 @@ def _score_candidate(text: str, *, backend: str, variant: str) -> float:
     if variant in {"threshold_140", "autocontrast_threshold_160", "upscale_threshold_160"}:
         score += 0.03
 
-    return min(score, 0.99)
+    # Penalties for suspicious results
+    if len(set(cleaned)) == 1 and length > 2:
+        score -= 0.4
+    if re.search(r'(.)\1{2,}', cleaned):
+        score -= 0.3
+    if length == 1:
+        score -= 0.3
+    if ' ' in text:
+        score -= 0.2
+
+    return max(min(score, 0.99), 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -206,10 +216,20 @@ def solve_captcha_image(image_bytes: bytes) -> dict:
     if float(tess_best["confidence"]) > float(dddd_best["confidence"]):
         best = tess_best
 
+    # Cross-backend agreement bonus
+    dddd_text = _clean_text(str(dddd_best.get("text", "")))
+    tess_text = _clean_text(str(tess_best.get("text", "")))
+    agreement_bonus = 0.0
+    if dddd_text and tess_text and dddd_text == tess_text:
+        agreement_bonus = 0.15
+        best = dddd_best  # prefer ddddocr when they agree
+
+    final_confidence = min(float(best["confidence"]) + agreement_bonus, 0.99)
+
     return {
         "text": str(best["text"]),
-        "confidence": float(best["confidence"]),
-        "method": str(best["method"]),
+        "confidence": final_confidence,
+        "method": str(best["method"]) + ("+agreement" if agreement_bonus else ""),
         "variant": str(best.get("variant") or ""),
         "attempts": len(variants),
     }
