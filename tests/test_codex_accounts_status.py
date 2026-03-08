@@ -89,10 +89,9 @@ def test_bootstrap_refresh_missing_access_tokens(monkeypatch, tmp_path):
     def fake_refresh(acc, idx, auth_endpoint, urlopen):
         calls.append(idx)
         if idx == 0:
-            with cpa._accounts_lock:
-                cpa._accounts[idx]["access"] = "fresh-0"
-                cpa._accounts[idx]["expires"] = time.time() + 7200
-                cpa._save_accounts_state(cpa._accounts)
+            acc["access"] = "fresh-0"
+            acc["expires"] = time.time() + 7200
+            cpa._save_accounts_state(cpa._accounts)
             return "fresh-0"
         return ""
 
@@ -105,6 +104,10 @@ def test_bootstrap_refresh_missing_access_tokens(monkeypatch, tmp_path):
     assert result["failed"] == [2]
     assert result["skipped"] == [1]
     assert calls == [0, 2]
+
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["accounts"][0]["access"] == "fresh-0"
+    assert persisted["accounts"][2]["access"] == ""
 
     statuses = cpa.get_accounts_status(force_reload=True)
     assert statuses[0]["has_access"] is True
