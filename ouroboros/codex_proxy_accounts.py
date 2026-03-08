@@ -375,9 +375,9 @@ def force_switch_account(target_idx: int = -1) -> Dict[str, Any]:
         return {"ok": False, "active_idx": _active_idx, "total": len(_accounts), "message": "All other accounts dead or on cooldown"}
 
 
-def get_accounts_status() -> List[Dict[str, Any]]:
+def get_accounts_status(force_reload: bool = True) -> List[Dict[str, Any]]:
     with _accounts_lock:
-        _init_accounts()
+        _init_accounts(force=force_reload)
         now = time.time()
         result = []
         for i, acc in enumerate(_accounts):
