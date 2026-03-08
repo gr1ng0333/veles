@@ -402,6 +402,85 @@ def _browser_check_login_state(
     return json.dumps(result, ensure_ascii=False)
 
 
+def _auto_solve_captcha_if_present(ctx, page):
+    """Silently detect and solve captcha on page before submit. No-op if none found."""
+    img_sel = page.evaluate(_CAPTCHA_IMG_HEURISTIC_JS)
+    if not img_sel:
+        return
+    input_sel = page.evaluate(_CAPTCHA_INPUT_HEURISTIC_JS)
+    if not input_sel:
+        return
+    # Check input is empty
+    current_value = page.evaluate(f'''
+        (function() {{
+            var el = document.querySelector({json.dumps(input_sel)});
+            return el ? el.value : null;
+        }})()
+    ''')
+    if current_value:
+        return
+
+    log.info("Auto-captcha: found empty captcha input, solving")
+    try:
+        page.evaluate(f'''
+            (function() {{
+                var el = document.querySelector({json.dumps(img_sel)});
+                if (el) el.scrollIntoView({{behavior: "instant", block: "center"}});
+            }})()
+        ''')
+        page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+    try:
+        el = page.wait_for_selector(img_sel, timeout=5000, state="visible")
+    except Exception:
+        return
+    if not el:
+        return
+    try:
+        screenshot_bytes = el.screenshot(type="png")
+    except Exception:
+        return
+
+    from ouroboros.tools.captcha_solver import solve_captcha_image
+    try:
+        result = solve_captcha_image(screenshot_bytes)
+    except Exception:
+        result = {"text": "", "confidence": 0.0}
+
+    text = result.get("text", "")
+    confidence = result.get("confidence", 0.0)
+
+    if not text or confidence < 0.3:
+        try:
+            from ouroboros.tools.captcha_solver import solve_captcha_vision
+            vr = solve_captcha_vision(screenshot_bytes)
+            if vr.get("text") and vr.get("status") == "ok":
+                text = vr["text"]
+                confidence = vr.get("confidence", 0.7)
+        except Exception:
+            pass
+
+    if not text:
+        log.warning("auto-captcha: could not solve, leaving empty")
+        return
+
+    log.info("auto-captcha: entering '%s' (confidence: %.2f)", text, confidence)
+    try:
+        page.fill(input_sel, text, timeout=3000)
+    except Exception:
+        try:
+            page.evaluate(f'''
+                (function() {{
+                    var el = document.querySelector({json.dumps(input_sel)});
+                    if (el) {{ el.value = {json.dumps(text)}; el.dispatchEvent(new Event('input', {{bubbles:true}})); }}
+                }})()
+            ''')
+        except Exception as e:
+            log.warning("auto-captcha: failed to fill input: %s", e)
+
+
 def _browser_action(ctx: ToolContext, action: str, selector: str = "",
                     value: str = "", timeout: int = 5000) -> str:
     def _do_action():
@@ -410,6 +489,11 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
         if action == "click":
             if not selector:
                 return "Error: selector required for click"
+            try:
+                if page.evaluate("!!document.querySelector('form')"):
+                    _auto_solve_captcha_if_present(ctx, page)
+            except Exception:
+                pass
             page.click(selector, timeout=timeout)
             page.wait_for_timeout(500)
             return f"Clicked: {selector}"
