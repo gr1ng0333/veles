@@ -4,9 +4,10 @@ Supervisor — Telegram audio transcription (voice/audio/video_note -> text).
 MVP pipeline:
 - save Telegram media locally
 - convert to wav via ffmpeg
-- transcribe via OpenAI speech API
+- transcribe via Google Web Speech through SpeechRecognition
 
-If transcription fails, caller gets a structured error instead of silent drop.
+This path is intentionally keyless/free-ish for MVP, but less stable than
+an official paid API. Errors are surfaced explicitly instead of dropping audio.
 """
 
 from __future__ import annotations
@@ -14,13 +15,11 @@ from __future__ import annotations
 import base64
 import datetime
 import mimetypes
-import os
 import pathlib
 import subprocess
-import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from openai import OpenAI
+import speech_recognition as sr
 
 from supervisor.state import append_jsonl
 
@@ -81,22 +80,19 @@ def _convert_to_wav(src_path: pathlib.Path, dst_path: pathlib.Path) -> None:
         )
 
 
-def _transcribe_wav_openai(wav_path: pathlib.Path, language: str = "ru") -> str:
-    api_key = str(os.environ.get("OPENAI_API_KEY") or "").strip()
-    if not api_key:
-        raise AudioTranscriptionError("OPENAI_API_KEY is not configured for speech transcription")
-
-    client = OpenAI(api_key=api_key)
-    with wav_path.open("rb") as audio_file:
-        resp = client.audio.transcriptions.create(
-            model="gpt-4o-mini-transcribe",
-            file=audio_file,
-            language=language,
-        )
-    text = getattr(resp, "text", None) or ""
-    text = str(text).strip()
+def _transcribe_wav_google(wav_path: pathlib.Path, language: str = "ru-RU") -> str:
+    recognizer = sr.Recognizer()
+    with sr.AudioFile(str(wav_path)) as source:
+        audio = recognizer.record(source)
+    try:
+        text = recognizer.recognize_google(audio, language=language)
+    except sr.UnknownValueError as e:
+        raise AudioTranscriptionError("google stt could not recognize speech") from e
+    except sr.RequestError as e:
+        raise AudioTranscriptionError(f"google stt request failed: {e}") from e
+    text = str(text or "").strip()
     if not text:
-        raise AudioTranscriptionError("speech API returned empty transcription")
+        raise AudioTranscriptionError("google stt returned empty transcription")
     return text
 
 
@@ -107,7 +103,7 @@ def transcribe_telegram_audio(
     mime_type: str,
     kind: str,
     file_name: str = "",
-    language: str = "ru",
+    language: str = "ru-RU",
 ) -> Dict[str, Any]:
     """Decode Telegram audio bytes, convert to wav, transcribe, return metadata + text."""
     media_dir = _media_dir(drive_root)
@@ -125,12 +121,13 @@ def transcribe_telegram_audio(
 
     try:
         _convert_to_wav(src_path, wav_path)
-        text = _transcribe_wav_openai(wav_path, language=language)
+        text = _transcribe_wav_google(wav_path, language=language)
         result = {
             "ok": True,
             "text": text,
             "kind": kind,
             "mime_type": mime_type,
+            "provider": "google-web-speech",
             "src_path": str(src_path),
             "wav_path": str(wav_path),
         }
@@ -139,6 +136,7 @@ def transcribe_telegram_audio(
             {
                 "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "type": "voice_transcribed",
+                "provider": "google-web-speech",
                 "kind": kind,
                 "mime_type": mime_type,
                 "src_path": str(src_path),
@@ -153,6 +151,7 @@ def transcribe_telegram_audio(
             {
                 "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "type": "voice_transcription_error",
+                "provider": "google-web-speech",
                 "kind": kind,
                 "mime_type": mime_type,
                 "src_path": str(src_path),

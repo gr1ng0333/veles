@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 # ----------------------------
 def install_launcher_deps() -> None:
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "openai>=1.0.0", "requests"],
+        [sys.executable, "-m", "pip", "install", "-q", "requests", "SpeechRecognition"],
         check=True,
     )
 
@@ -694,7 +694,7 @@ while True:
                             mime_type=mime_type or audio_mime,
                             kind=audio_kind,
                             file_name=file_name,
-                            language="ru",
+                            language="ru-RU",
                         )
                         transcribed = str(tr.get("text") or "").strip()
                         voice_prefix_map = {

@@ -6,3 +6,4 @@ playwright-stealth
 pdfplumber
 ddddocr
 Pillow
+SpeechRecognition
