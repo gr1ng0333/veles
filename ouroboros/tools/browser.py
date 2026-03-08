@@ -434,7 +434,10 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
 # ---------------------------------------------------------------------------
 
 _CAPTCHA_IMG_HEURISTIC_JS = r"""() => {
-    const keywords = ['captcha', 'verify', 'code', 'vcode', 'checkcode', 'seccode', 'imgcode'];
+    const keywords = ['captcha', 'verify', 'code', 'vcode', 'checkcode', 'seccode', 'imgcode',
+        'yzm', 'yanzhengma', 'kaptcha', 'securimage', 'validation',
+        'captcha-image', 'verify-code', 'img-code', 'auth-code', 'pic-code'];
+    var found = null;
     const imgs = Array.from(document.querySelectorAll('img'));
     for (const img of imgs) {
         const haystack = [
@@ -445,16 +448,36 @@ _CAPTCHA_IMG_HEURISTIC_JS = r"""() => {
             img.getAttribute('name') || '',
         ].join(' ').toLowerCase();
         if (keywords.some(kw => haystack.includes(kw))) {
-            return window.__veles_build_selector
-                ? window.__veles_build_selector(img)
-                : (img.id ? '#' + img.id : null);
+            found = img; break;
         }
     }
-    return null;
+    if (!found) {
+        var canvases = document.querySelectorAll('canvas');
+        for (var i = 0; i < canvases.length; i++) {
+            var c = canvases[i];
+            var attrs = ((c.id || '') + ' ' + (c.className || '') + ' ' + (c.getAttribute('data-role') || '')).toLowerCase();
+            if (/captcha|verify|code|auth/.test(attrs)) { found = c; break; }
+        }
+    }
+    if (!found) {
+        var divs = document.querySelectorAll('div[style*="background"], span[style*="background"]');
+        for (var i = 0; i < divs.length; i++) {
+            var d = divs[i];
+            var style = d.getAttribute('style') || '';
+            var dattrs = ((d.id || '') + ' ' + (d.className || '')).toLowerCase();
+            if (/captcha|verify|code/.test(dattrs) && /url\(/.test(style)) { found = d; break; }
+        }
+    }
+    if (!found) return null;
+    return window.__veles_build_selector
+        ? window.__veles_build_selector(found)
+        : (found.id ? '#' + found.id : null);
 }"""
 
 _CAPTCHA_INPUT_HEURISTIC_JS = r"""() => {
-    const keywords = ['captcha', 'verify', 'code', 'vcode', 'checkcode', 'seccode', 'imgcode'];
+    const keywords = ['captcha', 'verify', 'code', 'vcode', 'checkcode', 'seccode', 'imgcode',
+        'yzm', 'yanzhengma', 'kaptcha', 'securimage', 'validation',
+        'captcha-image', 'verify-code', 'img-code', 'auth-code', 'pic-code'];
     const inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
     for (const inp of inputs) {
         const haystack = [
@@ -516,6 +539,18 @@ def _browser_solve_captcha(
 
     last_result: dict = {}
     for attempt in range(1, max_retries + 1):
+        # Scroll captcha into view before waiting for visibility
+        try:
+            page.evaluate(f'''
+                (function() {{
+                    var el = document.querySelector({json.dumps(img_sel)});
+                    if (el) el.scrollIntoView({{behavior: "instant", block: "center"}});
+                }})()
+            ''')
+            page.wait_for_timeout(300)
+        except Exception:
+            pass
+
         try:
             el = page.wait_for_selector(img_sel, timeout=5000, state="visible")
             if el is None:
@@ -589,6 +624,16 @@ def _browser_solve_captcha(
             }, ensure_ascii=False)
 
         # --- fill input ---
+        try:
+            page.evaluate(f'''
+                (function() {{
+                    var el = document.querySelector({json.dumps(input_sel)});
+                    if (el) el.scrollIntoView({{behavior: "instant", block: "center"}});
+                }})()
+            ''')
+            page.wait_for_timeout(300)
+        except Exception:
+            pass
         try:
             page.wait_for_selector(input_sel, timeout=3000, state="visible")
             page.fill(input_sel, text, timeout=3000)
