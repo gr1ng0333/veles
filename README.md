@@ -1,14 +1,14 @@
 ﻿# Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.11.21-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.11.22-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.11.21 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.11.22 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -268,6 +268,10 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### v6.11.22 (2026-03-08)
+- Вынесён Codex startup prewarm из `colab_launcher.py` в `supervisor/codex_bootstrap.py`, чтобы вернуть launcher под лимит размера модуля.
+- Сохранён startup refresh для аккаунтов с `refresh token`, но без `access token`.
 
 ### v6.11.21 (2026-03-08)
 - При старте launcher теперь автоматически пытается refresh'нуть Codex-аккаунты, у которых есть `refresh token`, но ещё нет `access token`.
