@@ -55,3 +55,58 @@ def test_get_accounts_status_reloads_state_file(monkeypatch, tmp_path):
     assert fresh_statuses[1]["has_access"] is True
     assert fresh_statuses[1]["active"] is True
     assert fresh_statuses[1]["requests_7d"] == 3
+
+
+def test_bootstrap_refresh_missing_access_tokens(monkeypatch, tmp_path):
+    from ouroboros import codex_proxy_accounts as cpa
+
+    state_path = tmp_path / "codex_accounts_state.json"
+    monkeypatch.setattr(cpa, "ACCOUNTS_STATE_FILE", state_path)
+    monkeypatch.setenv(
+        "CODEX_ACCOUNTS",
+        json.dumps([
+            {"refresh": "r0"},
+            {"access": "already", "refresh": "r1", "expires": time.time() + 7200},
+            {"refresh": "r2"},
+        ]),
+    )
+
+    cpa._accounts = []
+    cpa._active_idx = 0
+
+    initial = {
+        "active_idx": 0,
+        "accounts": [
+            {"access": "", "refresh": "r0", "expires": 0, "cooldown_until": 0, "dead": False, "last_429_at": 0, "request_timestamps": []},
+            {"access": "already", "refresh": "r1", "expires": time.time() + 7200, "cooldown_until": 0, "dead": False, "last_429_at": 0, "request_timestamps": []},
+            {"access": "", "refresh": "r2", "expires": 0, "cooldown_until": 0, "dead": False, "last_429_at": 0, "request_timestamps": []},
+        ],
+    }
+    state_path.write_text(json.dumps(initial), encoding="utf-8")
+
+    calls = []
+
+    def fake_refresh(acc, idx, auth_endpoint, urlopen):
+        calls.append(idx)
+        if idx == 0:
+            with cpa._accounts_lock:
+                cpa._accounts[idx]["access"] = "fresh-0"
+                cpa._accounts[idx]["expires"] = time.time() + 7200
+                cpa._save_accounts_state(cpa._accounts)
+            return "fresh-0"
+        return ""
+
+    monkeypatch.setattr(cpa, "_refresh_account", fake_refresh)
+
+    result = cpa.bootstrap_refresh_missing_access_tokens("https://auth.example/token", object())
+
+    assert result["total"] == 3
+    assert result["refreshed"] == [0]
+    assert result["failed"] == [2]
+    assert result["skipped"] == [1]
+    assert calls == [0, 2]
+
+    statuses = cpa.get_accounts_status(force_reload=True)
+    assert statuses[0]["has_access"] is True
+    assert statuses[1]["has_access"] is True
+    assert statuses[2]["has_access"] is False

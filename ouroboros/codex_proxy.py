@@ -110,6 +110,10 @@ def force_switch_account(target_idx: int = -1) -> Dict[str, Any]:
     return _accounts_impl.force_switch_account(target_idx)
 
 
+def bootstrap_refresh_missing_access_tokens() -> Dict[str, Any]:
+    return _accounts_impl.bootstrap_refresh_missing_access_tokens(AUTH_ENDPOINT, urllib.request.urlopen)
+
+
 def get_accounts_status() -> List[Dict[str, Any]]:
     return _accounts_impl.get_accounts_status()
 

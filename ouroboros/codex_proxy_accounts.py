@@ -375,6 +375,38 @@ def force_switch_account(target_idx: int = -1) -> Dict[str, Any]:
         return {"ok": False, "active_idx": _active_idx, "total": len(_accounts), "message": "All other accounts dead or on cooldown"}
 
 
+def bootstrap_refresh_missing_access_tokens(auth_endpoint: str, urlopen) -> Dict[str, Any]:
+    refreshed: List[int] = []
+    failed: List[int] = []
+    skipped: List[int] = []
+
+    with _accounts_lock:
+        _init_accounts(force=True)
+        snapshot = [dict(acc) for acc in _accounts]
+
+    if not snapshot:
+        return {"total": 0, "refreshed": refreshed, "failed": failed, "skipped": skipped}
+
+    for idx, acc in enumerate(snapshot):
+        if acc.get("dead"):
+            skipped.append(idx)
+            continue
+        if acc.get("access"):
+            skipped.append(idx)
+            continue
+        if not acc.get("refresh"):
+            failed.append(idx)
+            continue
+        token = _refresh_account(acc, idx, auth_endpoint, urlopen)
+        if token:
+            refreshed.append(idx)
+        else:
+            failed.append(idx)
+
+    return {"total": len(snapshot), "refreshed": refreshed, "failed": failed, "skipped": skipped}
+
+
+
 def get_accounts_status(force_reload: bool = True) -> List[Dict[str, Any]]:
     with _accounts_lock:
         _init_accounts(force=force_reload)
