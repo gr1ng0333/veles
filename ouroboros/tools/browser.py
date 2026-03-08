@@ -595,20 +595,13 @@ def _browser_solve_captcha(
         # --- vision fallback + low confidence guard ---
         if not text or confidence < 0.3:
             try:
-                img_b64 = base64.b64encode(screenshot_bytes).decode()
-                from ouroboros.tools.vision import _solve_simple_captcha
-                vision_raw = _solve_simple_captcha(
-                    ctx,
-                    image_base64=img_b64,
-                    prompt="Read the characters in this image. Return ONLY the text characters, nothing else.",
-                    max_length=8,
-                )
-                vision_result = json.loads(vision_raw) if isinstance(vision_raw, str) else vision_raw
+                from ouroboros.tools.captcha_solver import solve_captcha_vision
+                vision_result = solve_captcha_vision(screenshot_bytes)
                 vision_text = vision_result.get("text", "")
                 if vision_text and vision_result.get("status") == "ok":
                     text = vision_text
-                    confidence = 0.7
-                    method = "vision_fallback"
+                    confidence = vision_result.get("confidence", 0.7)
+                    method = "vision_isolated"
                     log.info("captcha vision fallback succeeded: %s", text)
             except Exception as e:
                 log.warning("captcha vision fallback failed: %s", e)
@@ -827,10 +820,8 @@ def get_tools() -> List[ToolEntry]:
             schema={
                 "name": "browser_solve_captcha",
                 "description": (
-                    "Solve an image captcha on the current page using local OCR "
-                    "(ddddocr + tesseract fallback). Finds the captcha image and "
-                    "input field by explicit selectors or heuristics, recognises "
-                    "the text, fills the input, and optionally clicks submit."
+                    "Read and enter text from a verification image on the current page. "
+                    "Uses local OCR with vision fallback."
                 ),
                 "parameters": {
                     "type": "object",

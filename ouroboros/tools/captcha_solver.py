@@ -233,3 +233,37 @@ def solve_captcha_image(image_bytes: bytes) -> dict:
         "variant": str(best.get("variant") or ""),
         "attempts": len(variants),
     }
+
+
+def solve_captcha_vision(image_bytes: bytes, model: str | None = None) -> dict:
+    """Solve using vision model via isolated API call (no conversation context)."""
+    import base64
+    import os
+
+    b64 = base64.b64encode(image_bytes).decode()
+    if model is None:
+        model = os.environ.get("OUROBOROS_MODEL", "codex/gpt-5.4")
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                {"type": "text", "text": "What characters are shown in this image? Return ONLY the characters, nothing else. No explanation."},
+            ],
+        }
+    ]
+
+    try:
+        from ouroboros.llm import LLMClient
+        client = LLMClient()
+        msg, _usage = client.chat(messages=messages, model=model)
+        raw_text = (msg.get("content") or "").strip()
+        cleaned = re.sub(r"[^A-Za-z0-9]", "", raw_text)
+
+        if cleaned and len(cleaned) <= 10:
+            return {"text": cleaned, "confidence": 0.75, "method": "vision_isolated", "status": "ok"}
+        return {"text": "", "confidence": 0.0, "method": "vision_isolated", "status": "uncertain"}
+    except Exception as e:
+        log.warning("vision captcha failed: %s", e)
+        return {"text": "", "confidence": 0.0, "method": "vision_isolated", "status": "error", "error": str(e)}
