@@ -44,6 +44,7 @@ TOOL_MODULES = [
     "ouroboros.tools.browser",
     "ouroboros.tools.browser_runtime",
     "ouroboros.tools.review",
+    "ouroboros.tools.research_report",
 ]
 
 SUPERVISOR_MODULES = [
@@ -120,6 +121,7 @@ EXPECTED_TOOLS = [
     "doctor",
     "monitor_snapshot",
     "time_status",
+    "research_report",
 ]
 
 
