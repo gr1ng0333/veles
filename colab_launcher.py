@@ -241,8 +241,7 @@ workers_init(
 
 from supervisor.events import dispatch_event
 from supervisor.audio_stt import transcribe_telegram_audio, AudioTranscriptionError
-from ouroboros.codex_proxy import bootstrap_refresh_missing_access_tokens
-
+from supervisor.codex_bootstrap import prewarm_codex_accounts
 # ----------------------------
 # 5) Bootstrap repo
 # ----------------------------
@@ -250,19 +249,7 @@ ensure_repo_present()
 ok, msg = safe_restart(reason="bootstrap", unsynced_policy="rescue_and_reset")
 assert ok, f"Bootstrap failed: {msg}"
 
-try:
-    _codex_bootstrap = bootstrap_refresh_missing_access_tokens()
-    append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
-        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "type": "codex_accounts_bootstrap_refresh",
-        **_codex_bootstrap,
-    })
-except Exception as e:
-    append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
-        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "type": "codex_accounts_bootstrap_refresh_failed",
-        "error": repr(e),
-    })
+prewarm_codex_accounts(DRIVE_ROOT)
 
 # ----------------------------
 # 6) Start workers
