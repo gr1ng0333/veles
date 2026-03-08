@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
@@ -23,6 +24,8 @@ class ReportSource:
     title: str
     url: str
     snippet: str
+    domain: str
+    score: int
 
 
 @dataclass
@@ -35,6 +38,7 @@ class SearchDiagnostics:
 
 def _get_llm_client():
     from ouroboros.llm import LLMClient
+
     return LLMClient()
 
 
@@ -84,27 +88,62 @@ def _search_web(query: str) -> Dict[str, Any]:
     }
 
 
+def _domain_from_url(url: str) -> str:
+    try:
+        return urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+
+
+def _score_source(title: str, url: str, snippet: str) -> int:
+    score = 0
+    domain = _domain_from_url(url)
+    if domain:
+        score += 20
+        if domain.endswith(".edu") or ".edu." in domain:
+            score += 15
+        if domain.endswith(".gov") or ".gov." in domain:
+            score += 15
+        if domain.endswith(".org"):
+            score += 8
+        if domain.startswith("en.wikipedia.org") or domain.startswith("ru.wikipedia.org"):
+            score += 5
+    if title:
+        score += min(len(title.strip()), 80) // 8
+    if snippet:
+        score += min(len(snippet.strip()), 240) // 24
+    if url.startswith("https://"):
+        score += 5
+    return score
+
+
 def _normalize_sources(raw_sources: Any) -> List[ReportSource]:
-    sources: List[ReportSource] = []
+    normalized: List[ReportSource] = []
+    seen_urls: set[str] = set()
     for item in raw_sources or []:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "").strip()
         url = str(item.get("url") or "").strip()
         snippet = str(item.get("snippet") or item.get("content") or "").strip()
-        if not url:
+        if not url or not (url.startswith("http://") or url.startswith("https://")):
+            continue
+        if url in seen_urls:
             continue
         if not title:
             title = url
-        sources.append(ReportSource(title=title, url=url, snippet=snippet))
-        if len(sources) >= _MAX_SOURCES:
-            break
-    return sources
+        domain = _domain_from_url(url)
+        score = _score_source(title, url, snippet)
+        normalized.append(ReportSource(title=title, url=url, snippet=snippet, domain=domain, score=score))
+        seen_urls.add(url)
+
+    normalized.sort(key=lambda src: (-src.score, src.url))
+    return normalized[:_MAX_SOURCES]
 
 
 def _build_prompt(topic: str, sources: List[ReportSource], audience: str, report_style: str) -> str:
     source_block = "\n\n".join(
-        f"Source {i+1}:\nTitle: {s.title}\nURL: {s.url}\nSnippet: {s.snippet}"
+        f"Source {i+1}:\nTitle: {s.title}\nURL: {s.url}\nDomain: {s.domain}\nQuality score: {s.score}\nSnippet: {s.snippet}"
         for i, s in enumerate(sources)
     )
     return (
@@ -138,11 +177,9 @@ def _fallback_payload(topic: str, sources: List[ReportSource], diagnostics: Sear
     return {
         "title": f"Краткий отчёт: {topic}",
         "summary": "Автоматический синтез не сработал, поэтому отдаю базовую сводку по найденным источникам.",
-        "key_findings": [s.snippet or s.title for s in sources[:3]] or ["Источники найдены, но краткие выводы нужно перечитать вручную."],
-        "source_notes": [
-            {"title": s.title, "url": s.url, "note": s.snippet or "Без дополнительной заметки."}
-            for s in sources
-        ],
+        "key_findings": [s.snippet or s.title for s in sources[:3]]
+        or ["Источники найдены, но краткие выводы нужно перечитать вручную."],
+        "source_notes": [{"title": s.title, "url": s.url, "note": s.snippet or "Без дополнительной заметки."} for s in sources],
         "limitations": limitations,
         "conclusion": "Для MVP это приемлемо: файл всё равно доставляется, а источники и диагностика не теряются.",
     }
@@ -199,16 +236,13 @@ def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource
     limitations_html = "".join(f"<li>{html.escape(str(item))}</li>" for item in limitations)
 
     notes_rows = []
-    for item in source_notes:
-        url = html.escape(str(item.get("url", "")))
-        src_title = html.escape(str(item.get("title", "Источник")))
-        note = html.escape(str(item.get("note", "")))
-        notes_rows.append(f"<tr><td><a href='{url}'>{src_title}</a></td><td>{note}</td></tr>")
-    if not notes_rows:
-        for s in sources:
-            notes_rows.append(
-                f"<tr><td><a href='{html.escape(s.url)}'>{html.escape(s.title)}</a></td><td>{html.escape(s.snippet)}</td></tr>"
-            )
+    notes_by_url = {str(item.get("url", "")): item for item in source_notes if isinstance(item, dict)}
+    for s in sources:
+        item = notes_by_url.get(s.url, {})
+        note = html.escape(str(item.get("note") or s.snippet or "Без дополнительной заметки."))
+        notes_rows.append(
+            f"<tr><td><a href='{html.escape(s.url)}'>{html.escape(s.title)}</a><br><small>{html.escape(s.domain or 'unknown')}</small></td><td>{s.score}</td><td>{note}</td></tr>"
+        )
 
     diagnostics_items = [
         ("Статус поиска", diagnostics.status),
@@ -217,9 +251,16 @@ def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource
         ("Сырой answer", diagnostics.answer or "—"),
     ]
     diagnostics_rows = "".join(
-        f"<tr><th>{html.escape(label)}</th><td>{html.escape(value)}</td></tr>"
-        for label, value in diagnostics_items
+        f"<tr><th>{html.escape(label)}</th><td>{html.escape(value)}</td></tr>" for label, value in diagnostics_items
     )
+
+    reliability = "Высокая" if diagnostics.status == "ok" and len(sources) >= 4 else "Средняя" if sources else "Низкая"
+    limitation_notice = (
+        "Поиск дал достаточную основу для короткого отчёта."
+        if diagnostics.status == "ok"
+        else "Поиск работал с деградацией; выводы стоит перепроверить по источникам."
+    )
+    diagnostic_class = "good" if diagnostics.status == "ok" else "bad"
 
     return f"""<!doctype html>
 <html lang='ru'>
@@ -227,53 +268,71 @@ def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource
   <meta charset='utf-8'>
   <title>{title}</title>
   <style>
-    body {{ font-family: Inter, Arial, sans-serif; margin: 40px auto; max-width: 920px; color: #111827; line-height: 1.55; }}
+    body {{ font-family: Inter, Arial, sans-serif; margin: 40px auto; max-width: 960px; color: #111827; line-height: 1.6; background: #f8fafc; }}
+    .page {{ background: white; border-radius: 20px; padding: 36px 40px; box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08); }}
     h1, h2 {{ color: #0f172a; }}
+    h1 {{ margin-bottom: 8px; }}
     .meta {{ color: #475569; margin-bottom: 24px; }}
+    .hero {{ background: linear-gradient(135deg, #e0f2fe, #ede9fe); border: 1px solid #cbd5e1; border-radius: 18px; padding: 20px 24px; margin-bottom: 22px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }}
+    .metric {{ background: rgba(255,255,255,0.7); border-radius: 14px; padding: 12px 14px; border: 1px solid rgba(148,163,184,0.35); }}
     .card {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px 20px; margin: 18px 0; }}
+    .diagnostic.bad {{ border-color: #fca5a5; background: #fef2f2; }}
+    .diagnostic.good {{ border-color: #93c5fd; background: #eff6ff; }}
     table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
     th, td {{ border: 1px solid #cbd5e1; padding: 10px; vertical-align: top; text-align: left; }}
     th {{ background: #e2e8f0; }}
     code {{ background: #eef2ff; padding: 2px 6px; border-radius: 6px; }}
+    small {{ color: #64748b; }}
   </style>
 </head>
 <body>
-  <h1>{title}</h1>
-  <div class='meta'>Тема: <code>{html.escape(topic)}</code> · Сформировано: {now} · Источников: {len(sources)}</div>
+  <div class='page'>
+    <div class='hero'>
+      <h1>{title}</h1>
+      <div class='meta'>Тема: <code>{html.escape(topic)}</code> · Сформировано: {now}</div>
+      <div class='grid'>
+        <div class='metric'><strong>Источники</strong><br>{len(sources)}</div>
+        <div class='metric'><strong>Надёжность</strong><br>{html.escape(reliability)}</div>
+        <div class='metric'><strong>Поиск</strong><br>{html.escape(diagnostics.backend)} / {html.escape(diagnostics.status)}</div>
+      </div>
+    </div>
 
-  <div class='card'>
-    <h2>Краткое резюме</h2>
-    <p>{summary}</p>
-  </div>
+    <div class='card'>
+      <h2>Краткое резюме</h2>
+      <p>{summary}</p>
+    </div>
 
-  <div class='card'>
-    <h2>Ключевые выводы</h2>
-    <ul>{findings_html}</ul>
-  </div>
+    <div class='card'>
+      <h2>Ключевые выводы</h2>
+      <ul>{findings_html}</ul>
+    </div>
 
-  <div class='card'>
-    <h2>Разбор источников</h2>
-    <table>
-      <thead><tr><th>Источник</th><th>Заметка</th></tr></thead>
-      <tbody>{''.join(notes_rows)}</tbody>
-    </table>
-  </div>
+    <div class='card'>
+      <h2>Ограничения и надёжность</h2>
+      <p>{html.escape(limitation_notice)}</p>
+      <ul>{limitations_html}</ul>
+    </div>
 
-  <div class='card'>
-    <h2>Диагностика поиска</h2>
-    <table>
-      <tbody>{diagnostics_rows}</tbody>
-    </table>
-  </div>
+    <div class='card'>
+      <h2>Таблица источников</h2>
+      <table>
+        <thead><tr><th>Источник</th><th>Оценка</th><th>Заметка</th></tr></thead>
+        <tbody>{''.join(notes_rows)}</tbody>
+      </table>
+    </div>
 
-  <div class='card'>
-    <h2>Ограничения</h2>
-    <ul>{limitations_html}</ul>
-  </div>
+    <div class='card diagnostic {diagnostic_class}'>
+      <h2>Диагностика поиска</h2>
+      <table>
+        <tbody>{diagnostics_rows}</tbody>
+      </table>
+    </div>
 
-  <div class='card'>
-    <h2>Вывод</h2>
-    <p>{conclusion}</p>
+    <div class='card'>
+      <h2>Вывод</h2>
+      <p>{conclusion}</p>
+    </div>
   </div>
 </body>
 </html>
@@ -350,18 +409,20 @@ def _research_report(
 
     delivered = False
     if deliver and ctx.current_chat_id:
-        ctx.pending_events.append({
-            "type": "send_document",
-            "chat_id": int(ctx.current_chat_id or 0),
-            "filename": filename,
-            "caption": f"Research report: {topic}",
-            "mime_type": "text/html",
-            "file_base64": base64.b64encode(html_report.encode("utf-8")).decode("ascii"),
-        })
+        ctx.pending_events.append(
+            {
+                "type": "send_document",
+                "chat_id": int(ctx.current_chat_id or 0),
+                "filename": filename,
+                "caption": f"Research report: {topic}",
+                "mime_type": "text/html",
+                "file_base64": base64.b64encode(html_report.encode("utf-8")).decode("ascii"),
+            }
+        )
         delivered = True
 
     result = {
-        "status": "ok",
+        "status": "ok" if diagnostics.status == "ok" else "degraded",
         "topic": topic,
         "query": query,
         "model": chosen_model,
@@ -398,7 +459,11 @@ def get_tools() -> List[ToolEntry]:
                         "audience": {"type": "string", "description": "Target audience for tone/level"},
                         "report_style": {"type": "string", "description": "Desired report style"},
                         "search_query": {"type": "string", "description": "Optional custom web search query"},
-                        "deliver": {"type": "boolean", "description": "Whether to send the resulting HTML file to Telegram", "default": True},
+                        "deliver": {
+                            "type": "boolean",
+                            "description": "Whether to send the resulting HTML file to Telegram",
+                            "default": True,
+                        },
                         "model": {"type": "string", "description": "Optional LLM model override for synthesis"},
                     },
                     "required": ["topic"],
