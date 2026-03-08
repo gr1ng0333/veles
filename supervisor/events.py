@@ -26,7 +26,13 @@ def _format_done_summary(task_id: str, task_type: str, runtime_sec: float, round
 
 
 def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
-    usage = evt.get("usage") or {}
+    usage = evt.get("usage") or {
+        "prompt_tokens": evt.get("prompt_tokens", 0),
+        "completion_tokens": evt.get("completion_tokens", 0),
+        "cached_tokens": evt.get("cached_tokens", 0),
+        "cost": evt.get("cost", 0),
+        "shadow_cost": evt.get("shadow_cost", 0),
+    }
     ctx.update_budget_from_usage(usage)
 
     # Log to events.jsonl for audit trail
