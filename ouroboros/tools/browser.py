@@ -44,6 +44,28 @@ from ouroboros.tools.browser_login_helpers import (
 from ouroboros.tools.captcha_solver import solve_captcha_image
 
 
+def _with_thread_safety_retry(func):
+    """Retry browser operation if Playwright thread mismatch detected."""
+    import functools
+
+    @functools.wraps(func)
+    def wrapper(ctx, *args, **kwargs):
+        try:
+            return func(ctx, *args, **kwargs)
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "cannot switch" in err_msg or "different thread" in err_msg or "greenlet" in err_msg:
+                log.warning("Thread mismatch in %s, resetting Playwright", func.__name__)
+                try:
+                    cleanup_browser(ctx)
+                    _reset_playwright_greenlet()
+                except Exception:
+                    pass
+                return func(ctx, *args, **kwargs)
+            raise
+    return wrapper
+
+
 def _normalize_selector(value: Optional[str]) -> str:
     return (value or "").strip()
 
@@ -182,6 +204,7 @@ def _browse_page(ctx: ToolContext, url: str, output: str = "text",
         raise
 
 
+@_with_thread_safety_retry
 def _browser_fill_login_form(
     ctx: ToolContext,
     username: str,
@@ -277,6 +300,7 @@ def _browser_fill_login_form(
     )
 
 
+@_with_thread_safety_retry
 def _browser_check_login_state(
     ctx: ToolContext,
     success_selector: str = "",
@@ -454,6 +478,7 @@ _CAPTCHA_INPUT_HEURISTIC_JS = r"""() => {
 # browser_solve_captcha implementation
 # ---------------------------------------------------------------------------
 
+@_with_thread_safety_retry
 def _browser_solve_captcha(
     ctx: ToolContext,
     captcha_image_selector: str = "",
@@ -509,7 +534,11 @@ def _browser_solve_captcha(
             }
             continue
 
-        result = solve_captcha_image(screenshot_bytes)
+        try:
+            result = solve_captcha_image(screenshot_bytes)
+        except Exception as e:
+            log.warning("captcha OCR failed: %s", e)
+            result = {"text": "", "confidence": 0.0, "method": "error", "variant": "none", "attempts": 0}
         text = result.get("text", "")
         confidence = result.get("confidence", 0)
         method = result.get("method", "")
@@ -527,6 +556,37 @@ def _browser_solve_captcha(
                 "error": "Confidence too low, retrying",
             }
             continue
+
+        # --- vision fallback + low confidence guard ---
+        if not text or confidence < 0.3:
+            try:
+                img_b64 = base64.b64encode(screenshot_bytes).decode()
+                from ouroboros.tools.vision import _solve_simple_captcha
+                vision_raw = _solve_simple_captcha(
+                    ctx,
+                    image_base64=img_b64,
+                    prompt="Read the characters in this image. Return ONLY the text characters, nothing else.",
+                    max_length=8,
+                )
+                vision_result = json.loads(vision_raw) if isinstance(vision_raw, str) else vision_raw
+                vision_text = vision_result.get("text", "")
+                if vision_text and vision_result.get("status") == "ok":
+                    text = vision_text
+                    confidence = 0.7
+                    method = "vision_fallback"
+                    log.info("captcha vision fallback succeeded: %s", text)
+            except Exception as e:
+                log.warning("captcha vision fallback failed: %s", e)
+
+        if not text or confidence < 0.3:
+            return json.dumps({
+                "success": False,
+                "text": text,
+                "confidence": confidence,
+                "reason": "OCR confidence too low after all retries",
+                "method": method,
+                "attempts": attempt,
+            }, ensure_ascii=False)
 
         # --- fill input ---
         try:
