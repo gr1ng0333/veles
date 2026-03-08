@@ -240,6 +240,7 @@ workers_init(
 )
 
 from supervisor.events import dispatch_event
+from supervisor.audio_stt import transcribe_telegram_audio, AudioTranscriptionError
 
 # ----------------------------
 # 5) Bootstrap repo
@@ -667,7 +668,7 @@ while True:
         caption = str(msg.get("caption") or "")
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        # Extract image if present
+        # Extract image/audio/file payload if present
         image_data = None  # Will be (base64, mime_type, caption) or None
         if msg.get("photo"):
             # photo is array of PhotoSize, last one is largest
@@ -677,6 +678,40 @@ while True:
                 b64, mime = TG.download_file_base64(file_id)
                 if b64:
                     image_data = (b64, mime, caption)
+        elif msg.get("voice") or msg.get("audio") or msg.get("video_note"):
+            audio_obj = msg.get("voice") or msg.get("audio") or msg.get("video_note") or {}
+            audio_kind = "voice" if msg.get("voice") else ("audio" if msg.get("audio") else "video_note")
+            file_id = str(audio_obj.get("file_id") or "")
+            mime_type = str(audio_obj.get("mime_type") or "")
+            file_name = str(audio_obj.get("file_name") or f"{audio_kind}")
+            if file_id:
+                audio_b64, audio_mime = TG.download_file_base64(file_id, max_bytes=25_000_000)
+                if audio_b64:
+                    try:
+                        tr = transcribe_telegram_audio(
+                            drive_root=DRIVE_ROOT,
+                            audio_b64=audio_b64,
+                            mime_type=mime_type or audio_mime,
+                            kind=audio_kind,
+                            file_name=file_name,
+                            language="ru",
+                        )
+                        transcribed = str(tr.get("text") or "").strip()
+                        voice_prefix_map = {
+                            "voice": "[Голосовое сообщение]",
+                            "audio": "[Аудио]",
+                            "video_note": "[Кружок]",
+                        }
+                        prefix = voice_prefix_map.get(audio_kind, "[Аудио]")
+                        text = f"{prefix}\n{transcribed}" if transcribed else prefix
+                        if caption:
+                            text = f"{caption}\n\n{text}" if text else caption
+                    except AudioTranscriptionError as e:
+                        send_with_budget(chat_id, f"⚠️ Не удалось распознать голосовое: {e}")
+                        continue
+                else:
+                    send_with_budget(chat_id, "⚠️ Не удалось скачать голосовое из Telegram.")
+                    continue
         elif msg.get("document"):
             doc = msg["document"]
             mime_type = str(doc.get("mime_type") or "")
