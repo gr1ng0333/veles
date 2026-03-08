@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
+
 log = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "anthropic/claude-haiku-4.5"
@@ -24,6 +25,14 @@ class ReportSource:
     snippet: str
 
 
+@dataclass
+class SearchDiagnostics:
+    status: str
+    backend: str
+    error: str
+    answer: str
+
+
 def _get_llm_client():
     from ouroboros.llm import LLMClient
     return LLMClient()
@@ -34,13 +43,17 @@ def _emit_usage(ctx: ToolContext, usage: Dict[str, Any], model: str) -> None:
         return
     event = {
         "type": "llm_usage",
+        "ts": datetime.now(timezone.utc).isoformat(),
         "model": model,
-        "prompt_tokens": usage.get("prompt_tokens", 0),
-        "completion_tokens": usage.get("completion_tokens", 0),
-        "cached_tokens": usage.get("cached_tokens", 0),
-        "cost": usage.get("cost", 0.0),
         "task_id": ctx.task_id,
         "task_type": ctx.current_task_type or "task",
+        "category": "research_report",
+        "usage": {
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "cached_tokens": usage.get("cached_tokens", 0),
+            "cost": usage.get("cost", 0.0),
+        },
     }
     if ctx.event_queue is not None:
         try:
@@ -53,38 +66,40 @@ def _emit_usage(ctx: ToolContext, usage: Dict[str, Any], model: str) -> None:
 
 def _search_web(query: str) -> Dict[str, Any]:
     from ouroboros.tools.search import _web_search
+
     raw = _web_search(None, query)
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
     except Exception:
-        return {"answer": raw}
+        pass
+    return {
+        "query": query,
+        "status": "error",
+        "backend": "unknown",
+        "sources": [],
+        "answer": str(raw),
+        "error": "web_search returned non-JSON response",
+    }
 
 
-def _parse_sources(answer: str) -> List[ReportSource]:
-    lines = (answer or "").splitlines()
+def _normalize_sources(raw_sources: Any) -> List[ReportSource]:
     sources: List[ReportSource] = []
-    current: Dict[str, str] | None = None
-
-    for line in lines:
-        stripped = line.strip()
-        title_match = re.match(r"^\d+\.\s+\*\*(.+?)\*\*\s*$", stripped)
-        if title_match:
-            if current and current.get("title") and current.get("url"):
-                sources.append(ReportSource(**current))
-            current = {"title": title_match.group(1).strip(), "url": "", "snippet": ""}
+    for item in raw_sources or []:
+        if not isinstance(item, dict):
             continue
-        if current is None:
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        snippet = str(item.get("snippet") or item.get("content") or "").strip()
+        if not url:
             continue
-        if stripped.startswith("URL:"):
-            current["url"] = stripped.split(":", 1)[1].strip()
-            continue
-        if stripped:
-            current["snippet"] = (current.get("snippet", "") + " " + stripped).strip()
-
-    if current and current.get("title") and current.get("url"):
-        sources.append(ReportSource(**current))
-
-    return sources[:_MAX_SOURCES]
+        if not title:
+            title = url
+        sources.append(ReportSource(title=title, url=url, snippet=snippet))
+        if len(sources) >= _MAX_SOURCES:
+            break
+    return sources
 
 
 def _build_prompt(topic: str, sources: List[ReportSource], audience: str, report_style: str) -> str:
@@ -113,7 +128,13 @@ def _build_prompt(topic: str, sources: List[ReportSource], audience: str, report
     )
 
 
-def _fallback_payload(topic: str, sources: List[ReportSource]) -> Dict[str, Any]:
+def _fallback_payload(topic: str, sources: List[ReportSource], diagnostics: SearchDiagnostics) -> Dict[str, Any]:
+    limitations: List[str] = []
+    if diagnostics.status != "ok":
+        limitations.append(f"Поиск отработал со статусом {diagnostics.status} через backend {diagnostics.backend}.")
+    if diagnostics.error:
+        limitations.append(f"Ошибка поиска: {diagnostics.error}")
+    limitations.append("LLM-синтез не вернул валидный JSON, поэтому отчёт собран в деградированном режиме.")
     return {
         "title": f"Краткий отчёт: {topic}",
         "summary": "Автоматический синтез не сработал, поэтому отдаю базовую сводку по найденным источникам.",
@@ -122,12 +143,20 @@ def _fallback_payload(topic: str, sources: List[ReportSource]) -> Dict[str, Any]
             {"title": s.title, "url": s.url, "note": s.snippet or "Без дополнительной заметки."}
             for s in sources
         ],
-        "limitations": ["LLM-синтез не вернул валидный JSON, поэтому отчёт собран в деградированном режиме."],
-        "conclusion": "Для MVP это приемлемо: файл всё равно доставляется, а источники не теряются.",
+        "limitations": limitations,
+        "conclusion": "Для MVP это приемлемо: файл всё равно доставляется, а источники и диагностика не теряются.",
     }
 
 
-def _generate_payload(ctx: ToolContext, topic: str, sources: List[ReportSource], audience: str, report_style: str, model: str) -> Dict[str, Any]:
+def _generate_payload(
+    ctx: ToolContext,
+    topic: str,
+    sources: List[ReportSource],
+    audience: str,
+    report_style: str,
+    model: str,
+    diagnostics: SearchDiagnostics,
+) -> Dict[str, Any]:
     prompt = _build_prompt(topic, sources, audience, report_style)
     client = _get_llm_client()
     response, usage = client.chat(
@@ -138,7 +167,7 @@ def _generate_payload(ctx: ToolContext, topic: str, sources: List[ReportSource],
     _emit_usage(ctx, usage or {}, model)
     content = (response or {}).get("content", "")
     if not content:
-        return _fallback_payload(topic, sources)
+        return _fallback_payload(topic, sources, diagnostics)
     try:
         return json.loads(content)
     except Exception:
@@ -154,10 +183,10 @@ def _generate_payload(ctx: ToolContext, topic: str, sources: List[ReportSource],
                 return json.loads(inline.group(1))
             except Exception:
                 pass
-    return _fallback_payload(topic, sources)
+    return _fallback_payload(topic, sources, diagnostics)
 
 
-def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource]) -> str:
+def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource], diagnostics: SearchDiagnostics) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     title = html.escape(payload.get("title") or f"Отчёт: {topic}")
     summary = html.escape(payload.get("summary") or "")
@@ -174,14 +203,23 @@ def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource
         url = html.escape(str(item.get("url", "")))
         src_title = html.escape(str(item.get("title", "Источник")))
         note = html.escape(str(item.get("note", "")))
-        notes_rows.append(
-            f"<tr><td><a href='{url}'>{src_title}</a></td><td>{note}</td></tr>"
-        )
+        notes_rows.append(f"<tr><td><a href='{url}'>{src_title}</a></td><td>{note}</td></tr>")
     if not notes_rows:
         for s in sources:
             notes_rows.append(
                 f"<tr><td><a href='{html.escape(s.url)}'>{html.escape(s.title)}</a></td><td>{html.escape(s.snippet)}</td></tr>"
             )
+
+    diagnostics_items = [
+        ("Статус поиска", diagnostics.status),
+        ("Backend", diagnostics.backend),
+        ("Ошибка", diagnostics.error or "—"),
+        ("Сырой answer", diagnostics.answer or "—"),
+    ]
+    diagnostics_rows = "".join(
+        f"<tr><th>{html.escape(label)}</th><td>{html.escape(value)}</td></tr>"
+        for label, value in diagnostics_items
+    )
 
     return f"""<!doctype html>
 <html lang='ru'>
@@ -222,6 +260,13 @@ def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource
   </div>
 
   <div class='card'>
+    <h2>Диагностика поиска</h2>
+    <table>
+      <tbody>{diagnostics_rows}</tbody>
+    </table>
+  </div>
+
+  <div class='card'>
     <h2>Ограничения</h2>
     <ul>{limitations_html}</ul>
   </div>
@@ -255,17 +300,47 @@ def _research_report(
         return "⚠️ topic is required"
 
     search_result = _search_web(query)
-    answer = str(search_result.get("answer", "") or "")
-    if not answer:
-        return "⚠️ Поиск не вернул результатов"
+    diagnostics = SearchDiagnostics(
+        status=str(search_result.get("status") or "unknown"),
+        backend=str(search_result.get("backend") or "unknown"),
+        error=str(search_result.get("error") or "").strip(),
+        answer=str(search_result.get("answer") or "").strip(),
+    )
+    sources = _normalize_sources(search_result.get("sources"))
 
-    sources = _parse_sources(answer)
     if not sources:
-        return f"⚠️ Не удалось разобрать результаты поиска в источники. Raw answer:\n{answer[:1200]}"
+        result = {
+            "status": "degraded",
+            "topic": topic,
+            "query": query,
+            "model": "",
+            "sources": [],
+            "report_path": "",
+            "filename": "",
+            "delivered": False,
+            "title": "",
+            "summary": "",
+            "search": {
+                "status": diagnostics.status,
+                "backend": diagnostics.backend,
+                "error": diagnostics.error,
+                "answer": diagnostics.answer,
+            },
+            "error": "Поиск не вернул структурированных источников",
+        }
+        return json.dumps(result, ensure_ascii=False)
 
     chosen_model = model or os.environ.get("OUROBOROS_MODEL_LIGHT", _DEFAULT_MODEL) or _DEFAULT_MODEL
-    payload = _generate_payload(ctx, topic=topic, sources=sources, audience=audience, report_style=report_style, model=chosen_model)
-    html_report = _render_html(payload, topic=topic, sources=sources)
+    payload = _generate_payload(
+        ctx,
+        topic=topic,
+        sources=sources,
+        audience=audience,
+        report_style=report_style,
+        model=chosen_model,
+        diagnostics=diagnostics,
+    )
+    html_report = _render_html(payload, topic=topic, sources=sources, diagnostics=diagnostics)
     filename = _safe_filename(topic)
 
     report_dir = ctx.drive_path("reports")
@@ -296,6 +371,12 @@ def _research_report(
         "delivered": delivered,
         "title": payload.get("title", ""),
         "summary": payload.get("summary", ""),
+        "search": {
+            "status": diagnostics.status,
+            "backend": diagnostics.backend,
+            "error": diagnostics.error,
+            "answer": diagnostics.answer,
+        },
     }
     return json.dumps(result, ensure_ascii=False)
 

@@ -3,7 +3,7 @@ import pathlib
 import tempfile
 from unittest.mock import patch
 
-from ouroboros.tools.research_report import _parse_sources, _research_report
+from ouroboros.tools.research_report import _normalize_sources, _research_report
 from ouroboros.tools.registry import ToolContext
 
 
@@ -28,32 +28,28 @@ def make_ctx():
     return ToolContext(repo_dir=tmp, drive_root=tmp, current_chat_id=12345)
 
 
-def test_parse_sources_from_search_answer():
-    answer = """
-1. **Source A**
-   URL: https://example.com/a
-   Alpha snippet.
-
-2. **Source B**
-   URL: https://example.com/b
-   Beta snippet.
-"""
-    sources = _parse_sources(answer)
+def test_normalize_sources_from_structured_search_result():
+    raw_sources = [
+        {"title": "Source A", "url": "https://example.com/a", "snippet": "Alpha snippet."},
+        {"title": "Source B", "url": "https://example.com/b", "snippet": "Beta snippet."},
+    ]
+    sources = _normalize_sources(raw_sources)
     assert len(sources) == 2
     assert sources[0].title == "Source A"
     assert sources[1].url == "https://example.com/b"
 
 
 @patch('ouroboros.tools.research_report._get_llm_client', return_value=DummyLLM())
-@patch('ouroboros.tools.research_report._search_web', return_value={"answer": """
-1. **Source A**
-   URL: https://example.com/a
-   Alpha snippet.
-
-2. **Source B**
-   URL: https://example.com/b
-   Beta snippet.
-"""})
+@patch('ouroboros.tools.research_report._search_web', return_value={
+    "status": "ok",
+    "backend": "searxng",
+    "error": None,
+    "answer": "",
+    "sources": [
+        {"title": "Source A", "url": "https://example.com/a", "snippet": "Alpha snippet."},
+        {"title": "Source B", "url": "https://example.com/b", "snippet": "Beta snippet."},
+    ],
+})
 def test_research_report_writes_html_and_queues_document(_search, _llm):
     ctx = make_ctx()
     raw = _research_report(ctx, topic="test topic")
@@ -64,8 +60,30 @@ def test_research_report_writes_html_and_queues_document(_search, _llm):
     assert report_path.exists()
     html_text = report_path.read_text(encoding='utf-8')
     assert "Тестовый отчёт" in html_text
+    assert "Диагностика поиска" in html_text
+    assert "searxng" in html_text
     doc_events = [event for event in ctx.pending_events if event.get("type") == "send_document"]
     assert doc_events
     assert doc_events[0].get("file_base64")
     assert doc_events[0].get("mime_type") == "text/html"
-    assert any(event.get("type") == "llm_usage" for event in ctx.pending_events)
+    usage_events = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert usage_events
+    assert "usage" in usage_events[0]
+    assert usage_events[0]["usage"]["prompt_tokens"] == 10
+
+
+@patch('ouroboros.tools.research_report._search_web', return_value={
+    "status": "error",
+    "backend": "openai",
+    "error": "backend timeout",
+    "answer": "",
+    "sources": [],
+})
+def test_research_report_returns_degraded_result_without_sources(_search):
+    ctx = make_ctx()
+    raw = _research_report(ctx, topic="test topic")
+    result = json.loads(raw)
+
+    assert result["status"] == "degraded"
+    assert result["search"]["backend"] == "openai"
+    assert result["error"]

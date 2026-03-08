@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -15,8 +16,35 @@ SEARXNG_DEFAULT = "http://localhost:8888"
 MAX_RESULTS = 5
 
 
-def _search_searxng(query: str) -> Optional[str]:
-    """Try SearXNG. Returns formatted JSON string or None on failure."""
+def _make_result(
+    *,
+    query: str,
+    backend: str,
+    status: str,
+    sources: Optional[List[Dict[str, str]]] = None,
+    answer: str = "",
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "query": query,
+        "status": status,
+        "backend": backend,
+        "sources": sources or [],
+        "answer": answer or "",
+        "error": error,
+    }
+
+
+def _normalize_source(title: Any, url: Any, snippet: Any) -> Dict[str, str]:
+    return {
+        "title": str(title or "").strip(),
+        "url": str(url or "").strip(),
+        "snippet": str(snippet or "").strip(),
+    }
+
+
+def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
+    """Try SearXNG. Returns structured result or None on failure."""
     url = os.environ.get("SEARXNG_URL", SEARXNG_DEFAULT)
     if not url:
         return None
@@ -29,25 +57,95 @@ def _search_searxng(query: str) -> Optional[str]:
             data = json.loads(resp.read())
         results = data.get("results", [])[:MAX_RESULTS]
         if not results:
-            return None
-        lines = []
-        for i, r in enumerate(results, 1):
-            lines.append(f"{i}. **{r.get('title', '')}**")
-            lines.append(f"   URL: {r.get('url', '')}")
-            lines.append(f"   {r.get('content', '')}")
-            lines.append("")
-        answer = "\n".join(lines).strip()
-        return json.dumps({"answer": answer}, ensure_ascii=False, indent=2)
+            return _make_result(
+                query=query,
+                backend="searxng",
+                status="no_results",
+                sources=[],
+                answer="",
+                error="SearXNG returned no results.",
+            )
+
+        sources = [
+            _normalize_source(r.get("title", ""), r.get("url", ""), r.get("content", ""))
+            for r in results
+            if r.get("url")
+        ]
+        return _make_result(
+            query=query,
+            backend="searxng",
+            status="ok" if sources else "no_results",
+            sources=sources,
+            answer="",
+            error=None if sources else "SearXNG returned results without URLs.",
+        )
     except Exception as e:
         log.warning(f"SearXNG search failed: {e}")
         return None
 
 
-def _search_openai(query: str) -> str:
+def _extract_openai_output(resp_dump: Dict[str, Any]) -> tuple[str, List[Dict[str, str]]]:
+    text_parts: List[str] = []
+    sources: List[Dict[str, str]] = []
+    seen_urls: set[str] = set()
+
+    for item in resp_dump.get("output", []) or []:
+        if item.get("type") != "message":
+            continue
+        for block in item.get("content", []) or []:
+            if block.get("type") not in ("output_text", "text"):
+                continue
+            text = str(block.get("text") or "")
+            if text:
+                text_parts.append(text)
+
+            annotations = block.get("annotations") or []
+            for ann in annotations:
+                url = str(
+                    ann.get("url")
+                    or ann.get("source", {}).get("url")
+                    or ann.get("webpage", {}).get("url")
+                    or ""
+                ).strip()
+                if not url or url in seen_urls:
+                    continue
+                title = str(
+                    ann.get("title")
+                    or ann.get("source", {}).get("title")
+                    or ann.get("webpage", {}).get("title")
+                    or url
+                ).strip()
+                snippet = str(ann.get("text") or ann.get("quote") or "").strip()
+                sources.append(_normalize_source(title, url, snippet))
+                seen_urls.add(url)
+
+    full_text = "\n\n".join(part for part in text_parts if part).strip()
+
+    if not sources and full_text:
+        for url in re.findall(r"https?://\S+", full_text):
+            clean_url = url.rstrip(").,;]\"'")
+            if clean_url in seen_urls:
+                continue
+            sources.append(_normalize_source(clean_url, clean_url, "Extracted from model response text."))
+            seen_urls.add(clean_url)
+            if len(sources) >= MAX_RESULTS:
+                break
+
+    return full_text, sources[:MAX_RESULTS]
+
+
+def _search_openai(query: str) -> Dict[str, Any]:
     """Fallback: OpenAI Responses API web search."""
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
-        return json.dumps({"error": "Neither SearXNG nor OPENAI_API_KEY available."})
+        return _make_result(
+            query=query,
+            backend="unavailable",
+            status="error",
+            sources=[],
+            answer="",
+            error="Neither SearXNG nor OPENAI_API_KEY available.",
+        )
     try:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
@@ -57,32 +155,40 @@ def _search_openai(query: str) -> str:
             tool_choice="auto",
             input=query,
         )
-        d = resp.model_dump()
-        text = ""
-        for item in d.get("output", []) or []:
-            if item.get("type") == "message":
-                for block in item.get("content", []) or []:
-                    if block.get("type") in ("output_text", "text"):
-                        text += block.get("text", "")
-        return json.dumps({"answer": text or "(no answer)"}, ensure_ascii=False, indent=2)
+        dump = resp.model_dump()
+        answer, sources = _extract_openai_output(dump)
+        return _make_result(
+            query=query,
+            backend="openai",
+            status="ok" if (answer or sources) else "no_results",
+            sources=sources,
+            answer=answer,
+            error=None if (answer or sources) else "OpenAI web search returned empty output.",
+        )
     except Exception as e:
-        return json.dumps({"error": repr(e)}, ensure_ascii=False)
+        return _make_result(
+            query=query,
+            backend="openai",
+            status="error",
+            sources=[],
+            answer="",
+            error=repr(e),
+        )
 
 
 def _web_search(ctx: ToolContext, query: str) -> str:
     # Try SearXNG first (free, fast)
     result = _search_searxng(query)
-    if result:
-        return result
-    # Fallback to OpenAI
-    return _search_openai(query)
+    if result is None:
+        result = _search_openai(query)
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("web_search", {
             "name": "web_search",
-            "description": "Search the web. Returns JSON with answer + sources.",
+            "description": "Search the web. Returns structured JSON with status, backend, sources, answer, and error.",
             "parameters": {"type": "object", "properties": {
                 "query": {"type": "string"},
             }, "required": ["query"]},
