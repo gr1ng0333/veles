@@ -226,6 +226,45 @@ def _call_llm_with_fallback(
     if msg is not None:
         return msg
 
+    # --- Profile-aware fallback ---
+    from ouroboros.model_profiles import (
+        get_active_profile, get_profile, activate_codex_fallback,
+    )
+    profile = get_active_profile()
+    if profile.fallback_to:
+        fallback_profile = get_profile(profile.fallback_to)
+        if fallback_profile:
+            activate_codex_fallback(
+                reason="timeout" if primary_exc and "timeout" in str(primary_exc).lower() else "rate_limit",
+                cooldown_sec=3600,
+            )
+            fb_reason = f"timeout/error: {primary_exc}" if primary_exc else "empty response"
+            emit_progress(f"⚡ Profile fallback: {profile.name} → {fallback_profile.name} ({fb_reason})")
+            log.warning(
+                "[fallback] %s → %s (reason: %s)",
+                profile.name, fallback_profile.name, str(primary_exc)[:100] if primary_exc else "empty",
+            )
+            try:
+                msg, _ = _call_llm_with_retry(
+                    llm,
+                    messages,
+                    fallback_profile.model,
+                    tool_schemas if fallback_profile.tools_enabled else None,
+                    active_effort,
+                    max_retries,
+                    drive_logs,
+                    task_id,
+                    round_idx,
+                    event_queue,
+                    accumulated_usage,
+                    task_type,
+                )
+                if msg is not None:
+                    return msg
+            except Exception as profile_fb_exc:
+                log.warning("Profile fallback %s also failed: %s", fallback_profile.name, profile_fb_exc)
+
+    # --- Legacy env-based fallback (last resort) ---
     fallback_list_raw = os.environ.get(
         "OUROBOROS_MODEL_FALLBACK_LIST",
         "google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6",
@@ -719,11 +758,17 @@ def _run_single_round(
         return prepared
 
     round_idx = state["round_idx"]
+
+    # --- Profile-aware tools policy ---
+    from ouroboros.model_profiles import get_active_profile as _gap, switch_profile as _sp
+    _cur_profile = _gap()
+    effective_tools = tool_schemas if _cur_profile.tools_enabled else None
+
     msg = _call_llm_with_fallback(
         llm=llm,
         messages=messages,
         active_model=state["active_model"],
-        tool_schemas=tool_schemas,
+        tool_schemas=effective_tools,
         active_effort=state["active_effort"],
         max_retries=state["max_retries"],
         drive_logs=drive_logs,
@@ -740,6 +785,11 @@ def _run_single_round(
             state["accumulated_usage"],
             state["llm_trace"],
         )
+
+    # --- Profile auto_return (e.g. opus → codex) ---
+    if _cur_profile.auto_return_to and round_idx >= 1:
+        log.info("[profiles] Auto-return: %s → %s", _cur_profile.name, _cur_profile.auto_return_to)
+        _sp(_cur_profile.auto_return_to, manual=False)
 
     return _process_llm_response_or_continue(
         state=state,
@@ -775,6 +825,12 @@ def run_llm_loop_impl(
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
     max_rounds, anti, round_idx, no_progress_rounds, recent_progress, stagnation_check_injected, task_round_warn_emitted = _init_antistagnation_state()
+
+    # --- Profile-aware max_rounds cap ---
+    from ouroboros.model_profiles import get_active_profile as _gap
+    _profile = _gap()
+    if _profile.max_rounds > 0:
+        max_rounds = min(max_rounds, _profile.max_rounds)
 
     from ouroboros.tools import tool_discovery as _td
 
