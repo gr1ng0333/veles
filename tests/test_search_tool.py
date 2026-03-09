@@ -1,22 +1,22 @@
 import json
 from unittest.mock import patch
 
-from ouroboros.tools.search import _clean_sources, _merge_search_results, _web_search
+from ouroboros.tools.search import _clean_sources, _search_serper, _web_search
 
 
-@patch('ouroboros.tools.search._search_searxng', return_value={
+@patch('ouroboros.tools.search._search_serper', return_value={
     "query": "test",
     "status": "ok",
-    "backend": "searxng",
+    "backend": "serper",
     "sources": [{"title": "A", "url": "https://example.com", "snippet": "x"}],
     "answer": "",
     "error": None,
 })
-def test_web_search_returns_structured_json(_searx):
+def test_web_search_returns_structured_json(_serper):
     raw = _web_search(None, 'test')
     data = json.loads(raw)
     assert data['status'] == 'ok'
-    assert data['backend'] == 'searxng'
+    assert data['backend'] == 'serper'
     assert isinstance(data['sources'], list)
     assert data['sources'][0]['url'] == 'https://example.com'
 
@@ -32,67 +32,31 @@ def test_clean_sources_deduplicates_and_filters_invalid_rows():
     assert [row['url'] for row in cleaned] == ['https://example.com/a', 'https://example.com/b']
 
 
-def test_merge_search_results_marks_degraded_when_fallback_needed():
-    merged = _merge_search_results(
-        {
-            "query": "test",
-            "status": "no_results",
-            "backend": "searxng",
-            "sources": [],
-            "answer": "",
-            "error": "empty",
-        },
-        {
-            "query": "test",
-            "status": "ok",
-            "backend": "serper",
-            "sources": [{"title": "B", "url": "https://example.com/b", "snippet": "two"}],
-            "answer": "fallback answer",
-            "error": None,
-        },
-        'test',
-    )
-    assert merged['status'] == 'degraded'
-    assert merged['backend'] == 'searxng+serper'
-    assert merged['sources'][0]['url'] == 'https://example.com/b'
+@patch.dict('os.environ', {}, clear=True)
+def test_search_serper_returns_error_when_api_key_missing():
+    data = _search_serper('test')
+    assert data['status'] == 'error'
+    assert data['backend'] == 'serper'
+    assert data['error'] == 'SERPER_API_KEY is not configured.'
 
 
-@patch('ouroboros.tools.search._search_searxng', return_value=None)
-@patch('ouroboros.tools.search._search_api_fallback', return_value={
-    "query": "test",
-    "status": "ok",
-    "backend": "serper",
-    "sources": [{"title": "S", "url": "https://serper.example/result", "snippet": "serper snippet"}],
-    "answer": "serper answer",
-    "error": None,
+@patch('ouroboros.tools.search._http_json_request', return_value={
+    "answerBox": {
+        "title": "Diminishing returns",
+        "answer": "Output rises at a decreasing rate.",
+        "link": "https://example.com/answer",
+        "snippet": "Economics concept.",
+    },
+    "organic": [
+        {"title": "Result 1", "link": "https://example.com/1", "snippet": "One"},
+        {"title": "Result 2", "link": "https://example.com/2", "snippet": "Two"},
+    ],
 })
-def test_web_search_uses_serper_fallback_when_searxng_unavailable(_fallback, _searx):
-    raw = _web_search(None, 'test')
-    data = json.loads(raw)
+@patch.dict('os.environ', {'SERPER_API_KEY': 'test-key'}, clear=True)
+def test_search_serper_returns_non_empty_results(_http):
+    data = _search_serper('diminishing returns economics')
     assert data['status'] == 'ok'
     assert data['backend'] == 'serper'
-    assert data['sources'][0]['url'] == 'https://serper.example/result'
-
-
-@patch('ouroboros.tools.search._search_searxng', return_value={
-    "query": "test",
-    "status": "no_results",
-    "backend": "searxng",
-    "sources": [],
-    "answer": "",
-    "error": "empty",
-})
-@patch('ouroboros.tools.search._search_api_fallback', return_value={
-    "query": "test",
-    "status": "ok",
-    "backend": "serper",
-    "sources": [{"title": "B", "url": "https://example.com/b", "snippet": "two"}],
-    "answer": "fallback answer",
-    "error": None,
-})
-def test_web_search_merges_searxng_and_api_fallback(_fallback, _searx):
-    raw = _web_search(None, 'test')
-    data = json.loads(raw)
-    assert data['status'] == 'degraded'
-    assert data['backend'] == 'searxng+serper'
-    assert data['sources'][0]['url'] == 'https://example.com/b'
+    assert len(data['sources']) == 3
+    assert data['sources'][0]['url'] == 'https://example.com/answer'
+    assert 'decreasing rate' in data['answer']
