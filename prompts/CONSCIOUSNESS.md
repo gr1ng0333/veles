@@ -13,7 +13,7 @@ anyone — you are thinking. You can:
 - Decide when to wake up next via set_next_wakeup (in seconds)
 - Read your own code via repo_read/repo_list
 - Read/write knowledge base via knowledge_read/knowledge_write/knowledge_list
-- Search the web via web_search (free via SearXNG — use it)
+- Search the web via web_search (Serper.dev backend)
 - Access Drive files via drive_read/drive_list
 - Review chat history via chat_history
 

@@ -94,72 +94,40 @@ def _read_meminfo() -> Dict[str, int]:
     return info
 
 
-def _check_searxng(urls: list[str], timeout_sec: float) -> Dict[str, Any]:
-    details = []
-    active_url = None
-
-    for url in urls:
-        try:
-            req = urllib.request.Request(url, method='GET')
-            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-                status = getattr(resp, 'status', None) or resp.getcode()
-            healthy = 200 <= int(status) < 400
-            details.append({'url': url, 'ok': healthy, 'status': int(status)})
-            if healthy and active_url is None:
-                active_url = url
-                break
-        except Exception as e:
-            details.append({'url': url, 'ok': False, 'error': str(e)})
-
-    return {
-        'healthy': active_url is not None,
-        'active_url': active_url,
-        'checked': urls,
-        'details': details,
-    }
-
-
 def _vps_health_check(
     ctx: ToolContext,
     output_path: str = '/opt/veles-data/state/health_check.json',
-    searxng_urls: list[str] | None = None,
-    timeout_sec: float = 2.0,
 ) -> str:
     """Check VPS runtime health and persist JSON report."""
     try:
-        urls = searxng_urls or [
-            'http://127.0.0.1:8888',
-            'http://127.0.0.1:8080',
-            'http://localhost:8888',
-            'http://localhost:8080',
-        ]
+        del ctx
 
-        searxng = _check_searxng(urls, float(timeout_sec))
-
-        # Disk stats
         disk_total, disk_used, disk_free = shutil.disk_usage('/')
         disk_used_pct = (disk_used / disk_total * 100.0) if disk_total else 0.0
 
-        # RAM stats
         meminfo = _read_meminfo()
         mem_total = meminfo.get('MemTotal', 0)
         mem_available = meminfo.get('MemAvailable', 0)
         mem_used = max(mem_total - mem_available, 0)
         mem_used_pct = (mem_used / mem_total * 100.0) if mem_total else 0.0
 
-        # Uptime
         with open('/proc/uptime', 'r', encoding='utf-8') as f:
             uptime_seconds = float(f.read().split()[0])
 
+        serper_configured = bool(os.environ.get('SERPER_API_KEY', '').strip())
+
         overall_healthy = bool(
-            searxng['healthy']
+            serper_configured
             and disk_used_pct < 95.0
             and mem_used_pct < 98.0
         )
 
         report = {
             'timestamp_utc': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            'searxng': searxng,
+            'search_backend': {
+                'provider': 'serper',
+                'configured': serper_configured,
+            },
             'disk': {
                 'total_bytes': disk_total,
                 'used_bytes': disk_used,
@@ -186,7 +154,7 @@ def _vps_health_check(
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
 
-        searx_status = '✅' if searxng['healthy'] else '⚠️'
+        search_status = '✅' if serper_configured else '⚠️'
         disk_status = '✅' if disk_used_pct < 95.0 else '⚠️'
         ram_status = '✅' if mem_used_pct < 98.0 else '⚠️'
         overall_status = '✅' if overall_healthy else '⚠️'
@@ -194,7 +162,7 @@ def _vps_health_check(
         lines = [
             '## VPS Health Check',
             f"- **Timestamp (UTC):** {report['timestamp_utc']}",
-            f"- **SearXNG:** {searx_status} {'reachable at ' + searxng['active_url'] if searxng['healthy'] else 'unreachable'}",
+            f"- **Search backend:** {search_status} Serper {'configured' if serper_configured else 'not configured'}",
             f"- **Disk:** {disk_status} {disk_used_pct:.2f}% used ({disk_used / (1024 ** 3):.2f} GiB / {disk_total / (1024 ** 3):.2f} GiB)",
             f"- **RAM:** {ram_status} {mem_used_pct:.2f}% used ({mem_used / (1024 ** 3):.2f} GiB / {mem_total / (1024 ** 3):.2f} GiB)",
             f"- **Uptime:** ✅ {uptime_seconds:.0f} sec",
@@ -206,8 +174,6 @@ def _vps_health_check(
     except Exception as e:
         log.warning('vps_health_check failed: %s', e, exc_info=True)
         return f"⚠️ Failed to run VPS health check: {e}"
-
-
 
 
 def _doctor(
@@ -371,12 +337,12 @@ def _monitor_snapshot(
                 health_data = data
                 disk = data.get('disk') if isinstance(data.get('disk'), dict) else {}
                 ram = data.get('ram') if isinstance(data.get('ram'), dict) else {}
-                searx = data.get('searxng') if isinstance(data.get('searxng'), dict) else {}
+                search_backend = data.get('search_backend') if isinstance(data.get('search_backend'), dict) else {}
                 entry['summary'] = {
                     'overall_healthy': bool(data.get('overall_healthy', False)),
                     'disk_used_percent': disk.get('used_percent'),
                     'ram_used_percent': ram.get('used_percent'),
-                    'searxng_healthy': bool(searx.get('healthy', False)),
+                    'search_backend_configured': bool(search_backend.get('configured', False)),
                 }
             elif name == 'codex_accounts_state':
                 codex_data = data
@@ -458,13 +424,11 @@ def get_tools():
         }, _codebase_health),
         ToolEntry('vps_health_check', {
             'name': 'vps_health_check',
-            'description': 'Check VPS runtime health (SearXNG, disk, RAM, uptime), persist JSON report, and return a markdown summary.',
+            'description': 'Check VPS runtime health (Serper config, disk, RAM, uptime), persist JSON report, and return a markdown summary.',
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'output_path': {'type': 'string'},
-                    'searxng_urls': {'type': 'array', 'items': {'type': 'string'}},
-                    'timeout_sec': {'type': 'number'},
                 },
                 'required': [],
             },
