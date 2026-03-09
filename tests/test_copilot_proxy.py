@@ -20,8 +20,9 @@ def test_payload_passes_messages_and_tools_as_is(monkeypatch):
 
     captured = {}
 
-    def fake_do_request(token, payload):
+    def fake_do_request(token, payload, endpoint=""):
         captured.update(payload)
+        captured["_endpoint"] = endpoint
         return {
             "choices": [{"message": {"role": "assistant", "content": "ok"}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
@@ -61,7 +62,7 @@ def test_parse_response_with_tool_calls(monkeypatch):
     import ouroboros.copilot_proxy_accounts as cpa
     from ouroboros import copilot_proxy
 
-    def fake_do_request(token, payload):
+    def fake_do_request(token, payload, endpoint=""):
         return {
             "choices": [{
                 "message": {
@@ -127,15 +128,22 @@ def test_token_exchange_mock():
         called_with["url"] = req.full_url
         called_with["method"] = req.get_method()
         called_with["auth"] = req.get_header("Authorization")
-        return FakeResponse({"token": "tid=abc123", "expires_at": 9999999999})
+        called_with["user_agent"] = req.get_header("User-agent")
+        return FakeResponse({
+            "token": "tid=abc123",
+            "expires_at": 9999999999,
+            "endpoints": {"api": "https://api.individual.githubcopilot.com"},
+        })
 
     result = cpa._exchange_token("ghp_test123", fake_urlopen)
 
     assert result is not None
     assert result["copilot_token"] == "tid=abc123"
     assert result["expires_at"] == 9999999999
+    assert result["copilot_api_base"] == "https://api.individual.githubcopilot.com"
     assert called_with["method"] == "GET"
     assert "token ghp_test123" in (called_with.get("auth") or "")
+    assert called_with["user_agent"] == "GitHubCopilotChat/0.29.1"
 
 
 def test_token_exchange_failure_returns_none():

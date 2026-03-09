@@ -32,6 +32,9 @@ _active_idx: int = 0
 # Token exchange
 # ---------------------------------------------------------------------------
 
+COPILOT_DEFAULT_API_BASE = "https://api.individual.githubcopilot.com"
+
+
 def _exchange_token(github_token: str, urlopen) -> Optional[Dict[str, Any]]:
     """Exchange GitHub PAT for a short-lived Copilot API token."""
     try:
@@ -40,6 +43,7 @@ def _exchange_token(github_token: str, urlopen) -> Optional[Dict[str, Any]]:
             headers={
                 "Authorization": f"token {github_token}",
                 "Accept": "application/json",
+                "User-Agent": "GitHubCopilotChat/0.29.1",
             },
             method="GET",
         )
@@ -50,7 +54,13 @@ def _exchange_token(github_token: str, urlopen) -> Optional[Dict[str, Any]]:
         if not token:
             log.error("[copilot_token_exchange] Empty token in response")
             return None
-        return {"copilot_token": token, "expires_at": expires_at}
+        endpoints = data.get("endpoints", {})
+        api_base = endpoints.get("api", "") if isinstance(endpoints, dict) else ""
+        return {
+            "copilot_token": token,
+            "expires_at": expires_at,
+            "copilot_api_base": api_base or COPILOT_DEFAULT_API_BASE,
+        }
     except Exception as e:
         log.error("[copilot_token_exchange] Token exchange failed: %s", e)
         return None
@@ -262,10 +272,11 @@ def _ensure_copilot_token(acc: Dict[str, Any], account_idx: int, urlopen) -> str
         with _accounts_lock:
             acc["copilot_token"] = result["copilot_token"]
             acc["expires_at"] = result["expires_at"]
+            acc["copilot_api_base"] = result.get("copilot_api_base", COPILOT_DEFAULT_API_BASE)
             _save_accounts_state(_accounts)
         log.info(
-            "[copilot_token_exchange] Account #%d token exchanged, expires_at=%d",
-            account_idx, result["expires_at"],
+            "[copilot_token_exchange] Account #%d token exchanged, expires_at=%d, api_base=%s",
+            account_idx, result["expires_at"], acc["copilot_api_base"],
         )
         return acc["copilot_token"]
     return ""
