@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-COPILOT_ENDPOINT = "https://api.githubcopilot.com/chat/completions"
+COPILOT_DEFAULT_API_BASE = "https://api.individual.githubcopilot.com"
 TIMEOUT_SEC = 180
 MAX_RETRIES = 2
 
@@ -30,12 +30,14 @@ from ouroboros import copilot_proxy_accounts as _accounts_impl
 # HTTP request
 # ---------------------------------------------------------------------------
 
-def _do_request(copilot_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _do_request(copilot_token: str, payload: Dict[str, Any], endpoint: str = "") -> Dict[str, Any]:
     """Send POST to Copilot Chat Completions endpoint and return parsed JSON."""
+    url = endpoint or (COPILOT_DEFAULT_API_BASE + "/chat/completions")
     body = json.dumps(payload).encode()
     headers = {
         "Authorization": f"Bearer {copilot_token}",
         "Content-Type": "application/json",
+        "User-Agent": "GitHubCopilotChat/0.29.1",
         "Editor-Version": "vscode/1.96.0",
         "Editor-Plugin-Version": "copilot-chat/0.24.0",
         "Copilot-Integration-Id": "vscode-chat",
@@ -43,7 +45,7 @@ def _do_request(copilot_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         "Openai-Intent": "conversation-panel",
     }
     req = urllib.request.Request(
-        COPILOT_ENDPOINT, data=body, headers=headers, method="POST",
+        url, data=body, headers=headers, method="POST",
     )
     ctx = ssl.create_default_context()
     with urllib.request.urlopen(req, timeout=TIMEOUT_SEC, context=ctx) as resp:
@@ -79,9 +81,12 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
             _accounts_impl._on_dead_account(idx)
             continue
 
+        api_base = acc.get("copilot_api_base", COPILOT_DEFAULT_API_BASE)
+        endpoint = api_base.rstrip("/") + "/chat/completions"
+
         for attempt in range(MAX_RETRIES + 1):
             try:
-                data = _do_request(copilot_token, payload)
+                data = _do_request(copilot_token, payload, endpoint=endpoint)
                 log.info("Copilot request succeeded via account #%d", idx)
                 _accounts_impl._record_successful_request(idx)
                 return data
@@ -106,6 +111,8 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
                         if not copilot_token:
                             _accounts_impl._on_dead_account(idx)
                             break
+                        api_base = acc.get("copilot_api_base", COPILOT_DEFAULT_API_BASE)
+                        endpoint = api_base.rstrip("/") + "/chat/completions"
                         continue
                     _accounts_impl._on_dead_account(idx)
                     break
@@ -184,8 +191,11 @@ def call_copilot(
             if not copilot_token:
                 raise RuntimeError("No Copilot API token available")
 
+            api_base = acc.get("copilot_api_base", COPILOT_DEFAULT_API_BASE)
+            endpoint = api_base.rstrip("/") + "/chat/completions"
+
             try:
-                response_data = _do_request(copilot_token, payload)
+                response_data = _do_request(copilot_token, payload, endpoint=endpoint)
                 _accounts_impl._record_successful_request(idx)
                 break
             except urllib.error.HTTPError as e:
