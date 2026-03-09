@@ -176,6 +176,13 @@ class LLMClient:
             return call_codex(messages, tools=tools, model=actual_model,
                               token_prefix="CODEX_CONSCIOUSNESS")
 
+        # Copilot proxy: route "copilot/*" models through GitHub Copilot API
+        if model.startswith("copilot/"):
+            from ouroboros.copilot_proxy import call_copilot
+            actual_model = model[len("copilot/"):]
+            return call_copilot(messages, tools=tools, model=actual_model,
+                                max_tokens=max_tokens)
+
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
 
