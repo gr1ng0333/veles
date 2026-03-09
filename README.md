@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.12.5-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.12.6-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.12.5 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.12.6 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -267,6 +267,11 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### v6.12.6 (2026-03-09)
+- `research_report` получил быстрый query builder: русские и технические темы перед поиском переводятся/уплотняются в английский поисковый запрос через текущую light-модель.
+- Добавлен жёсткий Python-фильтр доменов: из выдачи выкидываются шумные домены (`facebook.com`, `vk.com`, `dzen.ru`, `pinterest.com`), а `github.com`, `docs.*` и `*.edu` поднимаются выше при сортировке.
+- Усилен synthesis prompt: отчёт теперь жёстко запрещает галлюцинации и требует цитаты `[1]`, `[2]` в summary, key findings и conclusion.
 
 ### v6.12.5 (2026-03-09)
 - `LLMClient` теперь нормализует bare Codex-модель из `OUROBOROS_MODEL_LIGHT` в маршрут `codex-consciousness/...`, если настроены отдельные consciousness-токены Codex.
