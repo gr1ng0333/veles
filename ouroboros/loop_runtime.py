@@ -172,6 +172,18 @@ def _apply_context_overrides_and_compaction(
     return messages, active_model, active_effort
 
 
+def _is_codex_timeout_error(exc: Exception) -> bool:
+    """Return True for Codex infrastructure errors that warrant a model fallback."""
+    msg = str(exc)
+    if isinstance(exc, RuntimeError) and "All Codex accounts tried" in msg:
+        return True
+    if "timed out" in msg.lower() or "TimeoutError" in type(exc).__name__:
+        return True
+    if "IncompleteRead" in type(exc).__name__ or "IncompleteRead" in msg:
+        return True
+    return False
+
+
 def _call_llm_with_fallback(
     *,
     llm: LLMClient,
@@ -188,20 +200,29 @@ def _call_llm_with_fallback(
     task_type: str,
     emit_progress: Callable[[str], None],
 ) -> Optional[Dict[str, Any]]:
-    msg, _ = _call_llm_with_retry(
-        llm,
-        messages,
-        active_model,
-        tool_schemas,
-        active_effort,
-        max_retries,
-        drive_logs,
-        task_id,
-        round_idx,
-        event_queue,
-        accumulated_usage,
-        task_type,
-    )
+    primary_exc: Optional[Exception] = None
+    try:
+        msg, _ = _call_llm_with_retry(
+            llm,
+            messages,
+            active_model,
+            tool_schemas,
+            active_effort,
+            max_retries,
+            drive_logs,
+            task_id,
+            round_idx,
+            event_queue,
+            accumulated_usage,
+            task_type,
+        )
+    except Exception as e:
+        if _is_codex_timeout_error(e):
+            primary_exc = e
+            msg = None
+        else:
+            raise
+
     if msg is not None:
         return msg
 
@@ -212,23 +233,33 @@ def _call_llm_with_fallback(
     fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
     fallback_model = next((m for m in fallback_candidates if m != active_model), None)
     if fallback_model is None:
+        if primary_exc is not None:
+            raise primary_exc
         return None
 
-    emit_progress(f"⚡ Fallback: {active_model} → {fallback_model} after empty response")
-    msg, _ = _call_llm_with_retry(
-        llm,
-        messages,
-        fallback_model,
-        tool_schemas,
-        active_effort,
-        max_retries,
-        drive_logs,
-        task_id,
-        round_idx,
-        event_queue,
-        accumulated_usage,
-        task_type,
-    )
+    reason = f"timeout/error: {primary_exc}" if primary_exc else "empty response"
+    emit_progress(f"⚡ Fallback: {active_model} → {fallback_model} ({reason})")
+    log.warning("Falling back from %s to %s: %s", active_model, fallback_model, primary_exc or "empty response")
+    try:
+        msg, _ = _call_llm_with_retry(
+            llm,
+            messages,
+            fallback_model,
+            tool_schemas,
+            active_effort,
+            max_retries,
+            drive_logs,
+            task_id,
+            round_idx,
+            event_queue,
+            accumulated_usage,
+            task_type,
+        )
+    except Exception as fallback_exc:
+        log.error("Fallback model %s also failed: %s", fallback_model, fallback_exc)
+        if primary_exc is not None:
+            raise primary_exc from fallback_exc
+        raise
     return msg
 
 
