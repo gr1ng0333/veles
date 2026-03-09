@@ -566,6 +566,7 @@ class TestAutoResumeControls:
         st = ensure_state_defaults({
             "owner_chat_id": 123,
             "launcher_session_id": "sess-1",
+            "resume_needed": True,
             "suppress_auto_resume_until_owner_message": True,
         })
         save_state(st)
@@ -617,12 +618,12 @@ class TestAutoResumeControls:
 
         w.auto_resume_after_restart()
         st1 = load_state()
-        assert calls["n"] == 1
+        assert calls["n"] == 0
         assert st1["auto_resume_consumed_session_id"] == "sess-1"
         assert st1["resume_needed"] is False
 
         w.auto_resume_after_restart()
-        assert calls["n"] == 1
+        assert calls["n"] == 0
 
 
 # ===========================================================================
@@ -717,7 +718,7 @@ class TestAutoResumeAfterRestart:
 
         assert calls == []
 
-    def test_triggers_once_and_clears_resume_needed(self, tmp_drive, monkeypatch):
+    def test_disables_auto_resume_and_clears_resume_needed(self, tmp_drive, monkeypatch):
         from supervisor.state import save_state, load_state, ensure_state_defaults
         w, calls = self._prepare_workers(tmp_drive, monkeypatch)
         st = ensure_state_defaults({
@@ -729,13 +730,13 @@ class TestAutoResumeAfterRestart:
         save_state(st)
 
         w.auto_resume_after_restart()
-        assert len(calls) == 1
+        assert len(calls) == 0
         st2 = load_state()
         assert st2["resume_needed"] is False
         assert st2["auto_resume_consumed_session_id"] == "sess-2"
 
         w.auto_resume_after_restart()
-        assert len(calls) == 1
+        assert len(calls) == 0
 
     def test_respects_suppress_flag(self, tmp_drive, monkeypatch):
         from supervisor.state import save_state, ensure_state_defaults

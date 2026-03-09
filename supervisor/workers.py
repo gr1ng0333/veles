@@ -223,66 +223,36 @@ def owner_message_allows_auto_resume_release(text: str) -> bool:
 
 
 def auto_resume_after_restart() -> None:
-    """Fire one-shot auto-resume only when interrupted work explicitly needs resume."""
+    """Auto-resume is intentionally disabled; keep restart state observable without self-triggering work."""
     try:
         st = load_state()
-        chat_id = st.get("owner_chat_id")
-        if not chat_id:
-            return
-
         launcher_session_id = str(st.get("launcher_session_id") or "").strip()
         consumed_session_id = str(st.get("auto_resume_consumed_session_id") or "").strip()
         if launcher_session_id and launcher_session_id == consumed_session_id:
             return
 
-        if bool(st.get("suppress_auto_resume_until_owner_message")):
-            append_jsonl(
-                DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "type": "auto_resume_suppressed",
-                    "reason": "suppressed_until_owner_message",
-                    "launcher_session_id": launcher_session_id or None,
-                },
-            )
+        had_resume_signal = bool(st.get("resume_needed"))
+        pending_count = int(st.get("resume_snapshot_pending_count") or 0)
+        running_count = int(st.get("resume_snapshot_running_count") or 0)
+        had_snapshot = pending_count > 0 or running_count > 0
+        if not had_resume_signal and not had_snapshot:
             return
 
-        if not bool(st.get("resume_needed")):
-            return
-
-        scratchpad_path = DRIVE_ROOT / "memory" / "scratchpad.md"
-        if not _scratchpad_has_meaningful_content(scratchpad_path):
-            return
-
-        time.sleep(2)
-        agent = _get_chat_agent()
-        if agent._busy:
-            return
-
-        resume_reason = str(st.get("resume_reason") or "").strip() or "interrupted_work"
         if launcher_session_id:
             st["auto_resume_consumed_session_id"] = launcher_session_id
         st["resume_needed"] = False
         st["resume_reason"] = ""
         save_state(st)
 
-        import threading
-        threading.Thread(
-            target=handle_chat_direct,
-            args=(
-                int(chat_id),
-                "[auto-resume after restart] Resume interrupted work. Read scratchpad and identity — they contain context of what you were doing.",
-                None,
-            ),
-            daemon=True,
-        ).start()
         append_jsonl(
             DRIVE_ROOT / "logs" / "supervisor.jsonl",
             {
                 "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "type": "auto_resume_triggered",
+                "type": "auto_resume_disabled",
                 "launcher_session_id": launcher_session_id or None,
-                "resume_reason": resume_reason,
+                "had_resume_signal": had_resume_signal,
+                "resume_snapshot_pending_count": pending_count,
+                "resume_snapshot_running_count": running_count,
             },
         )
     except Exception as e:
