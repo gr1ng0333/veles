@@ -1,11 +1,10 @@
-"""Web search tool — SearXNG primary, OpenAI fallback."""
+"""Web search tool — SearXNG primary, API fallback."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
-import re
 from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -93,31 +92,54 @@ def _merge_search_results(primary: Dict[str, Any], fallback: Dict[str, Any], que
     )
 
 
+def _http_json_request(url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = None, payload: Optional[Dict[str, Any]] = None, timeout: int = 10) -> Dict[str, Any]:
+    import urllib.request
+
+    data = None
+    request_headers = dict(headers or {})
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        request_headers.setdefault("Content-Type", "application/json")
+    req = urllib.request.Request(url, data=data, headers=request_headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
 def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
-    """Try SearXNG. Returns structured result or None on failure."""
+    """Try SearXNG. Returns structured result or None on transport failure."""
     url = os.environ.get("SEARXNG_URL", SEARXNG_DEFAULT)
     if not url:
         return None
     try:
         import urllib.parse
-        import urllib.request
 
         params = urllib.parse.urlencode({"q": query, "format": "json"})
-        req = urllib.request.Request(f"{url}/search?{params}", headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
+        data = _http_json_request(
+            f"{url}/search?{params}",
+            headers={"Accept": "application/json"},
+            timeout=10,
+        )
         results = data.get("results", [])[:MAX_RESULTS]
         sources = _clean_sources(
             [_normalize_source(r.get("title", ""), r.get("url", ""), r.get("content", "")) for r in results]
         )
         if not sources:
+            engine_notes = []
+            for item in data.get("unresponsive_engines") or []:
+                if isinstance(item, list) and len(item) >= 2:
+                    engine_notes.append(f"{item[0]}: {item[1]}")
+                elif isinstance(item, str):
+                    engine_notes.append(item)
+            error = "SearXNG returned no usable results."
+            if engine_notes:
+                error = f"{error} Unresponsive engines: {'; '.join(engine_notes[:5])}"
             return _make_result(
                 query=query,
                 backend="searxng",
                 status="no_results",
                 sources=[],
                 answer="",
-                error="SearXNG returned no usable results.",
+                error=error,
             )
         return _make_result(
             query=query,
@@ -128,96 +150,70 @@ def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
             error=None,
         )
     except Exception as e:
-        log.warning(f"SearXNG search failed: {e}")
+        log.warning("SearXNG search failed: %s", e)
         return None
 
 
-def _extract_openai_output(resp_dump: Dict[str, Any]) -> tuple[str, List[Dict[str, str]]]:
-    text_parts: List[str] = []
-    sources: List[Dict[str, str]] = []
-    seen_urls: set[str] = set()
-
-    for item in resp_dump.get("output", []) or []:
-        if item.get("type") != "message":
-            continue
-        for block in item.get("content", []) or []:
-            if block.get("type") not in ("output_text", "text"):
-                continue
-            text = str(block.get("text") or "")
-            if text:
-                text_parts.append(text)
-
-            annotations = block.get("annotations") or []
-            for ann in annotations:
-                url = str(
-                    ann.get("url")
-                    or ann.get("source", {}).get("url")
-                    or ann.get("webpage", {}).get("url")
-                    or ""
-                ).strip()
-                if not url or url in seen_urls:
-                    continue
-                title = str(
-                    ann.get("title")
-                    or ann.get("source", {}).get("title")
-                    or ann.get("webpage", {}).get("title")
-                    or url
-                ).strip()
-                snippet = str(ann.get("text") or ann.get("quote") or "").strip()
-                sources.append(_normalize_source(title, url, snippet))
-                seen_urls.add(url)
-
-    full_text = "\n\n".join(part for part in text_parts if part).strip()
-
-    if not sources and full_text:
-        for url in re.findall(r"https?://\S+", full_text):
-            clean_url = url.rstrip(").,;]\"'")
-            if clean_url in seen_urls:
-                continue
-            sources.append(_normalize_source(clean_url, clean_url, "Extracted from model response text."))
-            seen_urls.add(clean_url)
-            if len(sources) >= MAX_RESULTS:
-                break
-
-    return full_text, _clean_sources(sources)
-
-
-def _search_openai(query: str) -> Dict[str, Any]:
-    """Fallback: OpenAI Responses API web search."""
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+def _search_serper(query: str) -> Dict[str, Any]:
+    api_key = os.environ.get("SERPER_API_KEY", "").strip()
     if not api_key:
         return _make_result(
             query=query,
-            backend="unavailable",
+            backend="serper",
             status="error",
             sources=[],
             answer="",
-            error="Neither SearXNG nor OPENAI_API_KEY available.",
+            error="SERPER_API_KEY is not configured.",
         )
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=api_key)
-        resp = client.responses.create(
-            model=os.environ.get("OUROBOROS_WEBSEARCH_MODEL", "gpt-5"),
-            tools=[{"type": "web_search"}],
-            tool_choice="auto",
-            input=query,
+        data = _http_json_request(
+            "https://google.serper.dev/search",
+            method="POST",
+            headers={"X-API-KEY": api_key},
+            payload={"q": query, "num": MAX_RESULTS},
+            timeout=15,
         )
-        dump = resp.model_dump()
-        answer, sources = _extract_openai_output(dump)
+        raw_sources: List[Dict[str, Any]] = []
+        answer_parts: List[str] = []
+
+        answer_box = data.get("answerBox")
+        if isinstance(answer_box, dict):
+            answer_text = answer_box.get("answer") or answer_box.get("snippet") or answer_box.get("title") or ""
+            if answer_text:
+                answer_parts.append(str(answer_text).strip())
+            link = answer_box.get("link") or answer_box.get("url")
+            if link:
+                raw_sources.append(
+                    _normalize_source(answer_box.get("title") or link, link, answer_box.get("snippet") or answer_text)
+                )
+
+        knowledge_graph = data.get("knowledgeGraph")
+        if isinstance(knowledge_graph, dict):
+            kg_url = knowledge_graph.get("website") or knowledge_graph.get("url")
+            kg_snippet = knowledge_graph.get("description") or knowledge_graph.get("title") or ""
+            if kg_snippet:
+                answer_parts.append(str(kg_snippet).strip())
+            if kg_url:
+                raw_sources.append(_normalize_source(knowledge_graph.get("title") or kg_url, kg_url, kg_snippet))
+
+        for item in data.get("organic") or []:
+            if not isinstance(item, dict):
+                continue
+            raw_sources.append(_normalize_source(item.get("title"), item.get("link"), item.get("snippet")))
+
+        sources = _clean_sources(raw_sources)
         return _make_result(
             query=query,
-            backend="openai",
-            status="ok" if (answer or sources) else "no_results",
+            backend="serper",
+            status="ok" if sources or answer_parts else "no_results",
             sources=sources,
-            answer=answer,
-            error=None if (answer or sources) else "OpenAI web search returned empty output.",
+            answer="\n\n".join(part for part in answer_parts if part),
+            error=None if sources or answer_parts else "Serper returned no usable results.",
         )
     except Exception as e:
         return _make_result(
             query=query,
-            backend="openai",
+            backend="serper",
             status="error",
             sources=[],
             answer="",
@@ -225,10 +221,82 @@ def _search_openai(query: str) -> Dict[str, Any]:
         )
 
 
+def _search_brave(query: str) -> Dict[str, Any]:
+    api_key = os.environ.get("BRAVE_API_KEY", "").strip()
+    if not api_key:
+        return _make_result(
+            query=query,
+            backend="brave",
+            status="error",
+            sources=[],
+            answer="",
+            error="BRAVE_API_KEY is not configured.",
+        )
+    try:
+        import urllib.parse
+
+        params = urllib.parse.urlencode({"q": query, "count": MAX_RESULTS, "text_decorations": False})
+        data = _http_json_request(
+            f"https://api.search.brave.com/res/v1/web/search?{params}",
+            headers={"Accept": "application/json", "X-Subscription-Token": api_key},
+            timeout=15,
+        )
+        raw_sources: List[Dict[str, Any]] = []
+        web_results = ((data.get("web") or {}).get("results") or [])
+        for item in web_results:
+            if not isinstance(item, dict):
+                continue
+            raw_sources.append(_normalize_source(item.get("title"), item.get("url"), item.get("description") or item.get("snippet")))
+        sources = _clean_sources(raw_sources)
+        return _make_result(
+            query=query,
+            backend="brave",
+            status="ok" if sources else "no_results",
+            sources=sources,
+            answer="",
+            error=None if sources else "Brave Search returned no usable results.",
+        )
+    except Exception as e:
+        return _make_result(
+            query=query,
+            backend="brave",
+            status="error",
+            sources=[],
+            answer="",
+            error=repr(e),
+        )
+
+
+def _search_api_fallback(query: str) -> Dict[str, Any]:
+    serper_key = os.environ.get("SERPER_API_KEY", "").strip()
+    brave_key = os.environ.get("BRAVE_API_KEY", "").strip()
+
+    if serper_key:
+        serper_result = _search_serper(query)
+        if serper_result.get("status") in {"ok", "no_results"}:
+            return serper_result
+        if brave_key:
+            brave_result = _search_brave(query)
+            return _merge_search_results(serper_result, brave_result, query)
+        return serper_result
+
+    if brave_key:
+        return _search_brave(query)
+
+    return _make_result(
+        query=query,
+        backend="unavailable",
+        status="error",
+        sources=[],
+        answer="",
+        error="No API fallback configured. Set SERPER_API_KEY or BRAVE_API_KEY.",
+    )
+
+
 def _web_search(ctx: ToolContext, query: str) -> str:
     primary = _search_searxng(query)
     if primary is None:
-        result = _search_openai(query)
+        result = _search_api_fallback(query)
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     primary_sources = _clean_sources(primary.get("sources"))
@@ -237,7 +305,7 @@ def _web_search(ctx: ToolContext, query: str) -> str:
         primary["sources"] = primary_sources
         return json.dumps(primary, ensure_ascii=False, indent=2)
 
-    fallback = _search_openai(query)
+    fallback = _search_api_fallback(query)
     result = _merge_search_results(primary, fallback, query)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
