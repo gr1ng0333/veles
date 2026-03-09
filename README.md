@@ -269,6 +269,11 @@ python colab_launcher.py
 
 ## Changelog
 
+### v6.13.1 (2026-03-09)
+- Model Profiles system: 4 profiles (codex, haiku, sonnet, opus) with automatic codex→haiku fallback, cooldown, and auto-return.
+- Telegram commands `/codex`, `/haiku`, `/sonnet`, `/opus`, `/model` updated for profile switching with persistence across restarts.
+- Extracted Telegram media processing into `supervisor/telegram_media.py`.
+
 ### v6.12.2 (2026-03-08)
 - `web_search` теперь чистит и дедуплицирует источники, а при слабом/пустом результате SearXNG умеет деградированно добирать их через fallback backend.
 - `research_report` ранжирует источники, помечает degraded-режим в результате и генерирует более честный HTML с блоком надёжности, таблицей источников и диагностикой.

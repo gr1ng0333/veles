@@ -491,6 +491,15 @@ def _persist_profile(name: str) -> None:
     save_state(st)
 
 
+def _do_profile_switch(name: str, chat_id: int) -> bool:
+    """Switch profile and send service message. Returns True (terminal command)."""
+    from ouroboros.model_profiles import switch_profile
+    p = switch_profile(name, manual=True)
+    _persist_profile(name)
+    send_with_budget(chat_id, _format_profile_switch_msg(p))
+    return True
+
+
 def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
     """Handle supervisor slash-commands.
 
@@ -586,18 +595,10 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         return f"[Supervisor handled /bg {action}]\n"
 
     if lowered.startswith("/sonnet"):
-        from ouroboros.model_profiles import switch_profile, get_active_profile
-        p = switch_profile("sonnet", manual=True)
-        _persist_profile("sonnet")
-        send_with_budget(chat_id, _format_profile_switch_msg(p))
-        return True
+        return _do_profile_switch("sonnet", chat_id)
 
     if lowered.startswith("/haiku"):
-        from ouroboros.model_profiles import switch_profile, get_active_profile
-        p = switch_profile("haiku", manual=True)
-        _persist_profile("haiku")
-        send_with_budget(chat_id, _format_profile_switch_msg(p))
-        return True
+        return _do_profile_switch("haiku", chat_id)
 
     if lowered.startswith("/qwen"):
         os.environ["OUROBOROS_MODEL"] = "qwen/qwen3.5-flash-02-23"
@@ -605,11 +606,7 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         return True
 
     if lowered.startswith("/opus"):
-        from ouroboros.model_profiles import switch_profile, get_active_profile
-        p = switch_profile("opus", manual=True)
-        _persist_profile("opus")
-        send_with_budget(chat_id, _format_profile_switch_msg(p))
-        return True
+        return _do_profile_switch("opus", chat_id)
 
     if lowered.startswith("/codex"):
         from ouroboros.model_profiles import switch_profile, get_codex_cooldown_remaining
@@ -756,137 +753,11 @@ while True:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Extract image/audio/file payload if present
-        image_data = None  # Will be (base64, mime_type, caption) or None
-        if msg.get("photo"):
-            # photo is array of PhotoSize, last one is largest
-            best_photo = msg["photo"][-1]
-            file_id = best_photo.get("file_id")
-            if file_id:
-                b64, mime = TG.download_file_base64(file_id)
-                if b64:
-                    image_data = (b64, mime, caption)
-        elif msg.get("voice") or msg.get("audio") or msg.get("video_note"):
-            audio_obj = msg.get("voice") or msg.get("audio") or msg.get("video_note") or {}
-            audio_kind = "voice" if msg.get("voice") else ("audio" if msg.get("audio") else "video_note")
-            file_id = str(audio_obj.get("file_id") or "")
-            mime_type = str(audio_obj.get("mime_type") or "")
-            file_name = str(audio_obj.get("file_name") or f"{audio_kind}")
-            if file_id:
-                audio_b64, audio_mime = TG.download_file_base64(file_id, max_bytes=25_000_000)
-                if audio_b64:
-                    try:
-                        tr = transcribe_telegram_audio(
-                            drive_root=DRIVE_ROOT,
-                            audio_b64=audio_b64,
-                            mime_type=mime_type or audio_mime,
-                            kind=audio_kind,
-                            file_name=file_name,
-                            language="ru-RU",
-                        )
-                        transcribed = str(tr.get("text") or "").strip()
-                        voice_prefix_map = {
-                            "voice": "[Голосовое сообщение]",
-                            "audio": "[Аудио]",
-                            "video_note": "[Кружок]",
-                        }
-                        prefix = voice_prefix_map.get(audio_kind, "[Аудио]")
-                        text = f"{prefix}\n{transcribed}" if transcribed else prefix
-                        if caption:
-                            text = f"{caption}\n\n{text}" if text else caption
-                    except AudioTranscriptionError as e:
-                        send_with_budget(chat_id, f"⚠️ Не удалось распознать голосовое: {e}")
-                        continue
-                else:
-                    send_with_budget(chat_id, "⚠️ Не удалось скачать голосовое из Telegram.")
-                    continue
-        elif msg.get("document"):
-            doc = msg["document"]
-            mime_type = str(doc.get("mime_type") or "")
-            file_name = str(doc.get("file_name") or "file")
-            file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-
-            _TEXT_EXTENSIONS = {
-                "py", "txt", "md", "json", "csv", "yaml", "yml", "toml",
-                "cfg", "ini", "sh", "bash", "js", "ts", "html", "css",
-                "xml", "sql", "log", "env", "gitignore", "dockerfile",
-            }
-            _IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp"}
-
-            if mime_type.startswith("image/") or file_ext in _IMAGE_EXTENSIONS:
-                # Image sent as document — handle like a photo
-                file_id = doc.get("file_id")
-                if file_id:
-                    b64, mime = TG.download_file_base64(file_id)
-                    if b64:
-                        image_data = (b64, mime, caption)
-
-            elif file_ext in _TEXT_EXTENSIONS or mime_type.startswith("text/"):
-                # Text file — read content and inject into message text
-                file_id = doc.get("file_id")
-                if file_id:
-                    _raw_b64, _ = TG.download_file_base64(file_id)
-                    if _raw_b64:
-                        import base64 as _b64mod
-                        _file_bytes = _b64mod.b64decode(_raw_b64)
-                        try:
-                            _text_content = _file_bytes.decode("utf-8")
-                        except UnicodeDecodeError:
-                            _text_content = _file_bytes.decode("latin-1")
-                        _MAX_FILE_CONTENT = 80000
-                        if len(_text_content) > _MAX_FILE_CONTENT:
-                            _text_content = _text_content[:_MAX_FILE_CONTENT] + f"\n\n... (обрезано, всего {len(_text_content)} символов)"
-                        _user_text = caption or ""
-                        text = f"{_user_text}\n\n📎 Файл: {file_name}\n```{file_ext}\n{_text_content}\n```"
-
-            elif file_ext == "pdf":
-                # PDF — extract text
-                file_id = doc.get("file_id")
-                if file_id:
-                    _raw_b64, _ = TG.download_file_base64(file_id)
-                    if _raw_b64:
-                        import base64 as _b64mod
-                        import tempfile as _tmpmod
-                        _file_bytes = _b64mod.b64decode(_raw_b64)
-                        _pdf_text = None
-                        _tmp_path = None
-                        try:
-                            with _tmpmod.NamedTemporaryFile(suffix=".pdf", delete=False) as _tmp:
-                                _tmp.write(_file_bytes)
-                                _tmp_path = _tmp.name
-                            try:
-                                import pdfplumber
-                                with pdfplumber.open(_tmp_path) as _pdf:
-                                    _pdf_text = "\n\n".join(
-                                        page.extract_text() or "" for page in _pdf.pages
-                                    )
-                            except ImportError:
-                                try:
-                                    from PyPDF2 import PdfReader
-                                    _reader = PdfReader(_tmp_path)
-                                    _pdf_text = "\n\n".join(
-                                        page.extract_text() or "" for page in _reader.pages
-                                    )
-                                except ImportError:
-                                    _pdf_text = None
-                        finally:
-                            if _tmp_path:
-                                try:
-                                    os.unlink(_tmp_path)
-                                except OSError:
-                                    pass
-                        if _pdf_text:
-                            _MAX_FILE_CONTENT = 80000
-                            if len(_pdf_text) > _MAX_FILE_CONTENT:
-                                _pdf_text = _pdf_text[:_MAX_FILE_CONTENT] + "\n\n... (обрезано)"
-                            _user_text = caption or ""
-                            text = f"{_user_text}\n\n📎 PDF: {file_name}\n{_pdf_text}"
-                        else:
-                            send_with_budget(chat_id, f"⚠️ Не удалось извлечь текст из PDF. Установите pdfplumber или PyPDF2.")
-                            continue
-
-            else:
-                send_with_budget(chat_id, f"⚠️ Формат .{file_ext} не поддерживается. Поддерживаются: текст, PDF, картинки.")
-                continue
+        from supervisor.telegram_media import extract_media
+        image_data, text, _media_err = extract_media(msg, caption, text, TG, DRIVE_ROOT)
+        if _media_err:
+            send_with_budget(chat_id, _media_err)
+            continue
 
         st = load_state()
         if st.get("owner_id") is None:
