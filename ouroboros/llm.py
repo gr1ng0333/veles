@@ -17,6 +17,35 @@ log = logging.getLogger(__name__)
 DEFAULT_LIGHT_MODEL = "google/gemini-3-pro-preview"
 
 
+def _looks_like_codex_model(model: str) -> bool:
+    value = str(model or "").strip().lower()
+    if not value:
+        return False
+    return value.startswith("codex/") or value.startswith("codex-consciousness/") or "codex" in value
+
+
+def _has_consciousness_tokens() -> bool:
+    return bool(
+        os.environ.get("CODEX_CONSCIOUSNESS_ACCESS")
+        or os.environ.get("CODEX_CONSCIOUSNESS_REFRESH")
+    )
+
+
+def normalize_requested_model(model: str) -> str:
+    """Normalize env-selected model aliases into concrete routing prefixes."""
+    requested = str(model or "").strip()
+    if not requested:
+        return requested
+    if requested.startswith("codex/") or requested.startswith("codex-consciousness/"):
+        return requested
+
+    light_model = str(os.environ.get("OUROBOROS_MODEL_LIGHT") or "").strip()
+    if requested == light_model and _looks_like_codex_model(requested) and _has_consciousness_tokens():
+        return f"codex-consciousness/{requested}"
+
+    return requested
+
+
 def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
     allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
     v = str(value or "").strip().lower()
@@ -163,6 +192,8 @@ class LLMClient:
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
+        model = normalize_requested_model(model)
+
         # Codex proxy: route "codex/*" models through ChatGPT OAuth endpoint
         if model.startswith("codex/"):
             from ouroboros.codex_proxy import call_codex
