@@ -269,17 +269,17 @@ python colab_launcher.py
 ## Changelog
 
 ### v6.12.4 (2026-03-09)
-- `web_search` полностью переведён на `Serper.dev`; логика `SearXNG` и API fallback-цепочки удалена из живого поискового контура.
+- `web_search` полностью переведён на `Serper.dev`; старый локальный поисковый контур и прежняя fallback-цепочка удалены из живого поискового контура.
 - Контракт инструмента сохранён: `status`, `backend="serper"`, `sources`, `answer`, `error`.
 - Обновлены targeted tests поиска и ожидания `research_report` под Serper-only backend.
 
 ### v6.12.3 (2026-03-09)
-- `web_search` получил API fallback без OpenAI: сначала локальный `SearXNG`, затем `Serper.dev`, а при наличии второго ключа — резервно `Brave Search`.
+- `web_search` получил API fallback без OpenAI: на том этапе сначала использовался локальный backend, затем `Serper.dev`, а при наличии второго ключа — резервно `Brave Search`.
 - Fallback возвращает тот же структурированный JSON-контракт (`status`, `backend`, `sources`, `answer`, `error`) и честно помечает деградацию через composite backend.
-- Добавлены targeted tests на ветки API fallback и merge после пустого ответа `SearXNG`.
+- Добавлены targeted tests на ветки API fallback и merge после пустого ответа старого локального backend.
 
 ### v6.12.2 (2026-03-08)
-- `web_search` теперь чистит и дедуплицирует источники, а при слабом/пустом результате SearXNG умеет деградированно добирать их через fallback backend.
+- `web_search` теперь чистит и дедуплицирует источники, а при слабом/пустом результате прежнего локального backend умел деградированно добирать их через fallback backend.
 - `research_report` ранжирует источники, помечает degraded-режим в результате и генерирует более честный HTML с блоком надёжности, таблицей источников и диагностикой.
 - Добавлены targeted tests на дубли/мусор в search, degraded fallback path и LLM fallback при невалидном JSON.
 

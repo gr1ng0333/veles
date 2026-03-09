@@ -68,48 +68,6 @@ def main():
             "Step 1g: Install Playwright system deps", timeout=180)
         print("\n✅ Step 1 complete: repo cloned, venv ready")
 
-    # ---- Step 2: SearXNG via Docker ----
-    if step <= 2:
-        searxng_compose = r"""version: '3'
-services:
-  searxng:
-    image: searxng/searxng:latest
-    container_name: searxng
-    ports:
-      - "8888:8080"
-    volumes:
-      - ./settings.yml:/etc/searxng/settings.yml
-    restart: unless-stopped"""
-
-        searxng_settings = r"""use_default_settings: true
-server:
-  secret_key: "veles-searxng-secret-2026"
-  bind_address: "0.0.0.0"
-  port: 8080
-search:
-  formats:
-    - html
-    - json"""
-
-        run(ssh, "mkdir -p /opt/searxng", "Step 2a: Create SearXNG dir")
-        run(ssh, f"cat > /opt/searxng/docker-compose.yml << 'DCEOF'\n{searxng_compose}\nDCEOF",
-            "Step 2b: Write docker-compose.yml")
-        run(ssh, f"cat > /opt/searxng/settings.yml << 'STEOF'\n{searxng_settings}\nSTEOF",
-            "Step 2c: Write settings.yml")
-        # Check if docker-compose or docker compose is available
-        rc, _, _ = run(ssh, "command -v docker-compose && echo 'has-compose' || (docker compose version && echo 'has-plugin')")
-        if "has-compose" in _:
-            compose_cmd = "docker-compose"
-        else:
-            compose_cmd = "docker compose"
-        run(ssh, f"cd /opt/searxng && {compose_cmd} up -d",
-            "Step 2d: Start SearXNG", timeout=120)
-        print("Waiting 8s for SearXNG to start...")
-        time.sleep(8)
-        run(ssh, 'curl -s "http://localhost:8888/search?q=test&format=json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\'SearXNG OK: {len(d.get(chr(114)+chr(101)+chr(115)+chr(117)+chr(108)+chr(116)+chr(115),[]))} results\')" 2>&1 || echo "SearXNG check failed"',
-            "Step 2e: Verify SearXNG")
-        print("\n✅ Step 2 complete: SearXNG running")
-
     # ---- Step 3: Data directories ----
     if step <= 3:
         run(ssh, "mkdir -p /opt/veles-data/{state,logs,memory/knowledge}",
@@ -132,7 +90,6 @@ GITHUB_TOKEN={GITHUB_TOKEN}
 GITHUB_USER=gr1ng0333
 GITHUB_REPO=veles
 OUROBOROS_BRANCH_DEV=veles
-SEARXNG_URL=http://localhost:8888
 
 OUROBOROS_MODEL=codex/gpt-5.3-codex
 OUROBOROS_MODEL_LIGHT=anthropic/claude-haiku-4.5
@@ -176,12 +133,10 @@ OUROBOROS_HARD_TIMEOUT_SEC=600
     if step <= 6:
         print("\nWaiting 10s for launcher to initialize...")
         time.sleep(10)
-        run(ssh, 'curl -s "http://localhost:8888/search?q=test&format=json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\'SearXNG: {len(d.get(chr(114)+chr(101)+chr(115)+chr(117)+chr(108)+chr(116)+chr(115),[]))} results\')" 2>&1 || echo "SearXNG FAILED"',
-            "Step 6a: Check SearXNG")
         run(ssh, "tail -30 /opt/veles-data/logs/launcher.log 2>/dev/null || echo 'No log yet'",
-            "Step 6b: Check launcher log")
+            "Step 6a: Check launcher log")
         run(ssh, "ps aux | grep -E 'colab_launcher|python3' | grep -v grep",
-            "Step 6c: Check process")
+            "Step 6b: Check process")
         print("\n✅ Step 6 complete: verification done")
 
     ssh.close()
