@@ -157,6 +157,7 @@ def ensure_state_defaults(st: Dict[str, Any]) -> Dict[str, Any]:
     st.setdefault("restart_notify_reason", "")
     st.setdefault("restart_notify_requested_at", "")
     st.setdefault("restart_notify_source", "")
+    st.setdefault("active_profile", "codex")
     for legacy_key in ("approvals", "idle_cursor", "idle_stats", "last_idle_task_at",
                         "last_auto_review_at", "last_review_task_id", "session_daily_snapshot"):
         st.pop(legacy_key, None)

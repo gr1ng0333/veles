@@ -279,6 +279,20 @@ _launcher_session_id = uuid.uuid4().hex
 _st_launch = load_state()
 _st_launch["launcher_session_id"] = _launcher_session_id
 save_state(_st_launch)
+
+# --- Restore active profile from state ---
+try:
+    from ouroboros.model_profiles import switch_profile as _switch_profile, PROFILES as _PROFILES
+    _saved_profile = _st_launch.get("active_profile", "codex")
+    if _saved_profile in _PROFILES:
+        _switch_profile(_saved_profile, manual=True)
+        log.info("[profiles] Restored profile: %s", _saved_profile)
+    else:
+        _switch_profile("codex", manual=True)
+        log.warning("[profiles] Invalid saved profile %r, defaulting to codex", _saved_profile)
+except Exception as _prof_err:
+    log.warning("[profiles] Failed to restore profile: %s", _prof_err)
+
 append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "type": "launcher_start",
@@ -455,6 +469,28 @@ def _safe_qsize(q: Any) -> int:
         return -1
 
 
+def _format_profile_switch_msg(p) -> str:
+    """Format service message for manual profile switch (type A)."""
+    lines = [
+        f"\U0001f504 Profile: {p.name}",
+        f"Model: {p.display_name}",
+        f"Tools: {'enabled' if p.tools_enabled else 'disabled'}",
+        f"Rounds: {p.max_rounds if p.max_rounds > 0 else int(os.environ.get('OUROBOROS_MAX_ROUNDS', '200'))}",
+    ]
+    if p.fallback_to:
+        lines.append(f"Fallback \u2192 {p.fallback_to}")
+    if p.auto_return_to:
+        lines.append(f"Auto-return \u2192 {p.auto_return_to} after response")
+    return "\n".join(lines)
+
+
+def _persist_profile(name: str) -> None:
+    """Save active profile name to persistent state."""
+    st = load_state()
+    st["active_profile"] = name
+    save_state(st)
+
+
 def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
     """Handle supervisor slash-commands.
 
@@ -550,13 +586,17 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         return f"[Supervisor handled /bg {action}]\n"
 
     if lowered.startswith("/sonnet"):
-        os.environ["OUROBOROS_MODEL"] = "anthropic/claude-sonnet-4.6"
-        send_with_budget(chat_id, "🧠 Switched to Claude Sonnet 4.6. Deep conversation mode.")
+        from ouroboros.model_profiles import switch_profile, get_active_profile
+        p = switch_profile("sonnet", manual=True)
+        _persist_profile("sonnet")
+        send_with_budget(chat_id, _format_profile_switch_msg(p))
         return True
 
     if lowered.startswith("/haiku"):
-        os.environ["OUROBOROS_MODEL"] = "anthropic/claude-haiku-4.5"
-        send_with_budget(chat_id, "⚡ Switched to Claude Haiku 4.5. Fast & cheap mode.")
+        from ouroboros.model_profiles import switch_profile, get_active_profile
+        p = switch_profile("haiku", manual=True)
+        _persist_profile("haiku")
+        send_with_budget(chat_id, _format_profile_switch_msg(p))
         return True
 
     if lowered.startswith("/qwen"):
@@ -564,15 +604,60 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         send_with_budget(chat_id, "⚡ Switched to Qwen 3.5 Flash. Ultra-cheap mode.")
         return True
 
+    if lowered.startswith("/opus"):
+        from ouroboros.model_profiles import switch_profile, get_active_profile
+        p = switch_profile("opus", manual=True)
+        _persist_profile("opus")
+        send_with_budget(chat_id, _format_profile_switch_msg(p))
+        return True
+
     if lowered.startswith("/codex"):
-        os.environ["OUROBOROS_MODEL"] = "codex/gpt-5.3-codex"
-        send_with_budget(chat_id, "🤖 Switched to GPT-5.3 Codex (free via OAuth)")
+        from ouroboros.model_profiles import switch_profile, get_codex_cooldown_remaining
+        was_cooldown = get_codex_cooldown_remaining() > 0
+        p = switch_profile("codex", manual=True)
+        _persist_profile("codex")
+        restore_note = "\nCooldown cleared manually" if was_cooldown else ""
+        send_with_budget(chat_id, f"✅ Codex restored{restore_note}\nModel: {p.display_name}")
         return True
 
     if lowered.startswith("/model"):
-        current = os.environ.get("OUROBOROS_MODEL", "unknown")
-        light = os.environ.get("OUROBOROS_MODEL_LIGHT", "unknown")
-        send_with_budget(chat_id, f"🔧 Current models:\n• Main: {current}\n• Light: {light}")
+        from ouroboros.model_profiles import get_status_dict
+        sd = get_status_dict()
+        lines = [
+            f"🔧 Profile: {sd['profile']}",
+            f"Model: {sd['display_name']} ({sd['model']})",
+            f"Tools: {'enabled' if sd['tools'] else 'disabled'}",
+            f"Max rounds: {sd['max_rounds']}",
+        ]
+        if sd['fallback_to']:
+            lines.append(f"Fallback → {sd['fallback_to']}")
+        if sd['auto_return_to']:
+            lines.append(f"Auto-return → {sd['auto_return_to']} after response")
+        if sd['manual']:
+            lines.append("Switch: manual")
+        if sd['fallback_reason']:
+            lines.append(f"Fallback reason: {sd['fallback_reason']}")
+        if sd['codex_cooldown_sec'] > 0:
+            lines.append(f"Codex cooldown: {sd['codex_cooldown_human']}")
+        # Brief account status
+        try:
+            from ouroboros.codex_proxy import get_accounts_status as _codex_acc
+            codex_accs = _codex_acc()
+            active_codex = sum(1 for a in codex_accs if a['has_access'] and not a['dead'] and not a['in_cooldown'])
+            lines.append(f"Codex accounts: {active_codex}/{len(codex_accs)} active")
+        except Exception:
+            pass
+        try:
+            from ouroboros.copilot_proxy_accounts import get_accounts_status as _cop_acc
+            cop_accs = _cop_acc()
+            active_cop = sum(1 for a in cop_accs if a.get('has_access') and not a.get('dead') and not a.get('in_cooldown'))
+            lines.append(f"Copilot accounts: {active_cop}/{len(cop_accs)} active")
+        except Exception:
+            pass
+        light = os.environ.get("OUROBOROS_MODEL_LIGHT", "")
+        if light:
+            lines.append(f"Light model: {light}")
+        send_with_budget(chat_id, "\n".join(lines))
         return True
 
     if lowered.startswith("/accounts"):

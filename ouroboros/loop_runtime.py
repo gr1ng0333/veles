@@ -234,12 +234,20 @@ def _call_llm_with_fallback(
     if profile.fallback_to:
         fallback_profile = get_profile(profile.fallback_to)
         if fallback_profile:
+            fb_reason_tag = "timeout" if primary_exc and "timeout" in str(primary_exc).lower() else "rate_limit"
             activate_codex_fallback(
-                reason="timeout" if primary_exc and "timeout" in str(primary_exc).lower() else "rate_limit",
+                reason=fb_reason_tag,
                 cooldown_sec=3600,
             )
-            fb_reason = f"timeout/error: {primary_exc}" if primary_exc else "empty response"
-            emit_progress(f"⚡ Profile fallback: {profile.name} → {fallback_profile.name} ({fb_reason})")
+            from ouroboros.model_profiles import get_codex_cooldown_remaining
+            cooldown_min = get_codex_cooldown_remaining() // 60
+            emit_progress(
+                f"⚠️ Codex fallback activated\n"
+                f"Reason: {fb_reason_tag}\n"
+                f"Switched to: {fallback_profile.display_name} ({fallback_profile.model})\n"
+                f"Cooldown: {cooldown_min}m\n"
+                f"Auto-return to Codex after cooldown"
+            )
             log.warning(
                 "[fallback] %s → %s (reason: %s)",
                 profile.name, fallback_profile.name, str(primary_exc)[:100] if primary_exc else "empty",
