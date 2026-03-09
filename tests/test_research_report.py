@@ -51,7 +51,7 @@ def test_normalize_sources_deduplicates_and_ranks_sources():
 @patch('ouroboros.tools.research_report._get_llm_client', return_value=DummyLLM())
 @patch('ouroboros.tools.research_report._search_web', return_value={
     "status": "ok",
-    "backend": "searxng",
+    "backend": "serper",
     "error": None,
     "answer": "",
     "sources": [
@@ -71,7 +71,7 @@ def test_research_report_writes_html_and_queues_document(_search, _llm):
     assert "Тестовый отчёт" in html_text
     assert "Диагностика поиска" in html_text
     assert "Таблица источников" in html_text
-    assert "searxng" in html_text
+    assert "serper" in html_text
     doc_events = [event for event in ctx.pending_events if event.get("type") == "send_document"]
     assert doc_events
     assert doc_events[0].get("file_base64")
@@ -85,7 +85,7 @@ def test_research_report_writes_html_and_queues_document(_search, _llm):
 @patch('ouroboros.tools.research_report._get_llm_client', return_value=DummyLLM())
 @patch('ouroboros.tools.research_report._search_web', return_value={
     "status": "degraded",
-    "backend": "searxng+openai",
+    "backend": "serper",
     "error": "searx timeout",
     "answer": "fallback answer",
     "sources": [
@@ -99,14 +99,14 @@ def test_research_report_marks_degraded_but_still_builds_file(_search, _llm):
     assert result["status"] == "degraded"
     html_text = pathlib.Path(result["report_path"]).read_text(encoding='utf-8')
     assert "Ограничения и надёжность" in html_text
-    assert "searxng+openai" in html_text
+    assert "serper" in html_text
     assert "fallback answer" in html_text
 
 
 @patch('ouroboros.tools.research_report._get_llm_client', return_value=BrokenLLM())
 @patch('ouroboros.tools.research_report._search_web', return_value={
     "status": "ok",
-    "backend": "searxng",
+    "backend": "serper",
     "error": None,
     "answer": "",
     "sources": [
@@ -125,7 +125,7 @@ def test_research_report_falls_back_when_llm_json_is_invalid(_search, _llm):
 
 @patch('ouroboros.tools.research_report._search_web', return_value={
     "status": "error",
-    "backend": "openai",
+    "backend": "serper",
     "error": "backend timeout",
     "answer": "",
     "sources": [],
@@ -136,5 +136,5 @@ def test_research_report_returns_degraded_result_without_sources(_search):
     result = json.loads(raw)
 
     assert result["status"] == "degraded"
-    assert result["search"]["backend"] == "openai"
+    assert result["search"]["backend"] == "serper"
     assert result["error"]
