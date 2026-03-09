@@ -3,22 +3,31 @@ import pathlib
 import tempfile
 from unittest.mock import patch
 
-from ouroboros.tools.research_report import _normalize_sources, _research_report
+from ouroboros.tools.research_report import (
+    _build_prompt,
+    _build_search_query,
+    _normalize_sources,
+    _research_report,
+)
 from ouroboros.tools.registry import ToolContext
 
 
 class DummyLLM:
     def chat(self, messages, model, max_tokens):
+        prompt = messages[0]['content']
+        if 'Преобразуй тему для веб-поиска' in prompt:
+            payload = {"query": "openclaw web search skills", "reason": "translate and add key terms"}
+            return {"content": json.dumps(payload, ensure_ascii=False)}, {"prompt_tokens": 5, "completion_tokens": 7, "cost": 0.001}
         payload = {
             "title": "Тестовый отчёт",
-            "summary": "Короткое резюме по теме.",
-            "key_findings": ["Вывод 1", "Вывод 2", "Вывод 3"],
+            "summary": "Короткое резюме по теме. [1]",
+            "key_findings": ["Вывод 1 [1]", "Вывод 2 [2]", "Вывод 3 [1][2]"],
             "source_notes": [
                 {"title": "Source A", "url": "https://example.com/a", "note": "Наблюдение A"},
                 {"title": "Source B", "url": "https://example.com/b", "note": "Наблюдение B"},
             ],
             "limitations": ["Источники ограничены."],
-            "conclusion": "Итоговый вывод.",
+            "conclusion": "Итоговый вывод. [1]",
         }
         return {"content": json.dumps(payload, ensure_ascii=False)}, {"prompt_tokens": 10, "completion_tokens": 20, "cost": 0.01}
 
@@ -46,6 +55,45 @@ def test_normalize_sources_deduplicates_and_ranks_sources():
     assert sources[0].url == "https://data.gov/test"
     assert sources[1].url == "https://ru.wikipedia.org/wiki/Test"
     assert sources[2].title == "https://example.com/a"
+
+def test_normalize_sources_filters_blocked_domains_and_prioritizes_docs_and_edu():
+    raw_sources = [
+        {"title": "Pinterest", "url": "https://pinterest.com/pin/1", "snippet": "noise"},
+        {"title": "VK", "url": "https://vk.com/page", "snippet": "noise"},
+        {"title": "GitHub Repo", "url": "https://github.com/org/repo", "snippet": "official code"},
+        {"title": "Docs", "url": "https://docs.example.com/guide", "snippet": "official docs"},
+        {"title": "University", "url": "https://cs.mit.edu/paper", "snippet": "research"},
+        {"title": "Example", "url": "https://example.com/article", "snippet": "generic"},
+    ]
+    sources = _normalize_sources(raw_sources)
+    urls = [source.url for source in sources]
+    assert "https://pinterest.com/pin/1" not in urls
+    assert "https://vk.com/page" not in urls
+    assert urls[0] == "https://github.com/org/repo"
+    assert "https://docs.example.com/guide" in urls
+
+
+def test_normalize_sources_handles_empty_list():
+    assert _normalize_sources([]) == []
+
+
+@patch('ouroboros.tools.research_report._get_llm_client', return_value=DummyLLM())
+def test_build_search_query_translates_russian_topic_via_llm(_llm):
+    query = _build_search_query('скилы openclaw для веб поиска', 'anthropic/claude-haiku-4.5')
+    assert query == 'openclaw web search skills'
+
+
+def test_build_prompt_demands_citations_and_no_hallucinations():
+    sources = _normalize_sources([
+        {"title": "GitHub Repo", "url": "https://github.com/org/repo", "snippet": "official repo"},
+        {"title": "Docs", "url": "https://docs.example.com/guide", "snippet": "official docs"},
+    ])
+    prompt = _build_prompt('test topic', sources, 'Андрей', 'briefing')
+    assert 'Не галлюцинируй' in prompt
+    assert 'обязан содержать ссылку вида [1], [2]' in prompt
+    assert '[1] GitHub Repo — https://github.com/org/repo' in prompt
+
+
 
 
 @patch('ouroboros.tools.research_report._get_llm_client', return_value=DummyLLM())

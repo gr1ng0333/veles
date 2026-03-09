@@ -19,6 +19,10 @@ _DEFAULT_MODEL = "anthropic/claude-haiku-4.5"
 _MAX_SOURCES = 5
 
 
+_BLOCKED_DOMAINS = ("facebook.com", "vk.com", "dzen.ru", "pinterest.com")
+_PRIORITY_DOMAIN_MARKERS = ("github.com", ".edu", ".edu.", "docs.")
+
+
 @dataclass
 class ReportSource:
     title: str
@@ -66,6 +70,90 @@ def _emit_usage(ctx: ToolContext, usage: Dict[str, Any], model: str) -> None:
         except Exception:
             log.debug("Failed to emit llm_usage to event_queue", exc_info=True)
     ctx.pending_events.append(event)
+
+
+def _extract_json_object(content: str) -> Dict[str, Any] | None:
+    if not content:
+        return None
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    fenced = re.search(r"```json\s*(\{.*?\})\s*```", content, re.S)
+    if fenced:
+        try:
+            data = json.loads(fenced.group(1))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    inline = re.search(r"(\{.*\})", content, re.S)
+    if inline:
+        try:
+            data = json.loads(inline.group(1))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return None
+
+
+def _looks_technical(topic: str) -> bool:
+    value = str(topic or '').lower()
+    technical_markers = (
+        'api', 'sdk', 'llm', 'agent', 'python', 'javascript', 'typescript', 'node', 'react', 'github',
+        'search', 'web', 'browser', 'openclaw', 'open source', 'oauth', 'token', 'model', 'dataset',
+        'framework', 'benchmark', 'inference', 'prompt', 'rag', 'vector', 'serper', 'codex', 'gpt',
+    )
+    return any(marker in value for marker in technical_markers)
+
+
+def _should_translate_query(topic: str) -> bool:
+    has_cyrillic = bool(re.search(r'[А-Яа-яЁё]', str(topic or '')))
+    return has_cyrillic or _looks_technical(topic)
+
+
+def _build_search_query(topic: str, model: str) -> str:
+    base_query = str(topic or '').strip()
+    if not base_query or not _should_translate_query(base_query):
+        return base_query
+
+    prompt = (
+        'Преобразуй тему для веб-поиска в один короткий поисковый запрос на английском языке. '
+        'Сохрани смысл исходной темы. Если тема техническая, добавь 2-5 уместных английских key terms. '
+        'Не объясняй решение. Верни только JSON вида '
+        '{"query": "...", "reason": "..."}. '
+        f'Исходная тема: {base_query}'
+    )
+    client = _get_llm_client()
+    response, _usage = client.chat(
+        messages=[{'role': 'user', 'content': prompt}],
+        model=model,
+        max_tokens=220,
+    )
+    content = (response or {}).get('content', '')
+    parsed = _extract_json_object(content) or {}
+    query = str(parsed.get('query') or '').strip()
+    return query or base_query
+
+
+def _is_blocked_domain(domain: str) -> bool:
+    host = str(domain or '').lower()
+    return any(host == blocked or host.endswith('.' + blocked) for blocked in _BLOCKED_DOMAINS)
+
+
+def _priority_bonus(domain: str) -> int:
+    host = str(domain or '').lower()
+    bonus = 0
+    if host == 'github.com' or host.endswith('.github.com'):
+        bonus += 60
+    if host.startswith('docs.') or '.docs.' in host:
+        bonus += 35
+    if host.endswith('.edu') or '.edu.' in host:
+        bonus += 20
+    return bonus
 
 
 def _search_web(query: str) -> Dict[str, Any]:
@@ -133,7 +221,9 @@ def _normalize_sources(raw_sources: Any) -> List[ReportSource]:
         if not title:
             title = url
         domain = _domain_from_url(url)
-        score = _score_source(title, url, snippet)
+        if _is_blocked_domain(domain):
+            continue
+        score = _score_source(title, url, snippet) + _priority_bonus(domain)
         normalized.append(ReportSource(title=title, url=url, snippet=snippet, domain=domain, score=score))
         seen_urls.add(url)
 
@@ -146,14 +236,21 @@ def _build_prompt(topic: str, sources: List[ReportSource], audience: str, report
         f"Source {i+1}:\nTitle: {s.title}\nURL: {s.url}\nDomain: {s.domain}\nQuality score: {s.score}\nSnippet: {s.snippet}"
         for i, s in enumerate(sources)
     )
+    citation_index = "\n".join(f"[{i+1}] {s.title} — {s.url}" for i, s in enumerate(sources))
     return (
-        "Ты готовишь краткий исследовательский отчёт на русском языке. "
-        "Работай строго по источникам ниже, не выдумывай факты. "
-        "Если данных мало или есть сомнения — прямо скажи это.\n\n"
+        "Ты готовишь краткий исследовательский HTML-отчёт на русском языке. "
+        "Работай строго по источникам ниже и не добавляй фактов, которых нет в материалах. "
+        "Если подтверждения недостаточно, прямо пиши об ограничении, а не заполняй пробелы догадками.\n\n"
         f"Тема: {topic}\n"
         f"Аудитория: {audience}\n"
         f"Стиль: {report_style}\n\n"
-        "Верни JSON-объект со структурой:\n"
+        "ЖЁСТКИЕ ПРАВИЛА:\n"
+        "1. Не галлюцинируй. Никаких фактов, дат, метрик и сравнений без опоры на источники ниже.\n"
+        "2. Каждый тезис в summary, key_findings и conclusion обязан содержать ссылку вида [1], [2] по номеру источника.\n"
+        "3. Если тезис опирается на несколько источников, укажи несколько ссылок: [1][3].\n"
+        "4. source_notes должны соответствовать источникам и не ссылаться на несуществующие материалы.\n"
+        "5. Если данных мало, явно перечисли это в limitations.\n\n"
+        "Верни только JSON-объект со структурой:\n"
         "{\n"
         '  "title": string,\n'
         '  "summary": string,\n'
@@ -162,6 +259,8 @@ def _build_prompt(topic: str, sources: List[ReportSource], audience: str, report
         '  "limitations": [string],\n'
         '  "conclusion": string\n'
         "}\n\n"
+        "Нумерация источников для цитирования:\n"
+        f"{citation_index}\n\n"
         "Источники:\n"
         f"{source_block}"
     )
@@ -205,21 +304,9 @@ def _generate_payload(
     content = (response or {}).get("content", "")
     if not content:
         return _fallback_payload(topic, sources, diagnostics)
-    try:
-        return json.loads(content)
-    except Exception:
-        fenced = re.search(r"```json\s*(\{.*?\})\s*```", content, re.S)
-        if fenced:
-            try:
-                return json.loads(fenced.group(1))
-            except Exception:
-                pass
-        inline = re.search(r"(\{.*\})", content, re.S)
-        if inline:
-            try:
-                return json.loads(inline.group(1))
-            except Exception:
-                pass
+    parsed = _extract_json_object(content)
+    if isinstance(parsed, dict):
+        return parsed
     return _fallback_payload(topic, sources, diagnostics)
 
 
@@ -358,7 +445,9 @@ def _research_report(
     if not query:
         return "⚠️ topic is required"
 
-    search_result = _search_web(query)
+    chosen_model = model or os.environ.get("OUROBOROS_MODEL_LIGHT", _DEFAULT_MODEL) or _DEFAULT_MODEL
+    effective_query = search_query.strip() if search_query.strip() else _build_search_query(topic, chosen_model)
+    search_result = _search_web(effective_query)
     diagnostics = SearchDiagnostics(
         status=str(search_result.get("status") or "unknown"),
         backend=str(search_result.get("backend") or "unknown"),
@@ -371,7 +460,7 @@ def _research_report(
         result = {
             "status": "degraded",
             "topic": topic,
-            "query": query,
+            "query": effective_query,
             "model": "",
             "sources": [],
             "report_path": "",
@@ -389,7 +478,6 @@ def _research_report(
         }
         return json.dumps(result, ensure_ascii=False)
 
-    chosen_model = model or os.environ.get("OUROBOROS_MODEL_LIGHT", _DEFAULT_MODEL) or _DEFAULT_MODEL
     payload = _generate_payload(
         ctx,
         topic=topic,
@@ -424,7 +512,7 @@ def _research_report(
     result = {
         "status": "ok" if diagnostics.status == "ok" else "degraded",
         "topic": topic,
-        "query": query,
+        "query": effective_query,
         "model": chosen_model,
         "sources": [s.__dict__ for s in sources],
         "report_path": str(out_path),
