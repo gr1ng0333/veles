@@ -204,6 +204,31 @@ def test_external_repo_commit_push_uses_work_branch_and_pushes_to_origin():
     assert "refs/heads/veles/demo" in ls_remote.stdout
 
 
+
+
+def test_external_repo_commit_push_bootstraps_repo_local_git_identity_when_missing():
+    ctx = make_ctx()
+    repo, origin = make_git_repo(with_origin=True)
+    subprocess.run(["git", "config", "--unset", "user.name"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "--unset", "user.email"], cwd=repo, check=True)
+    _external_repo_register(ctx, alias="demo", repo_path=str(repo), default_work_branch="veles/demo")
+    _external_repo_prepare_work_branch(ctx, alias="demo")
+    _external_repo_write(ctx, alias="demo", path="notes.txt", content="hello push")
+
+    payload = json.loads(
+        _external_repo_commit_push(
+            ctx,
+            alias="demo",
+            commit_message="Bootstrap identity",
+            paths=["notes.txt"],
+        )
+    )
+    assert payload["status"] == "ok"
+    assert payload["git_identity"]["user.name"] == "Veles"
+    assert payload["git_identity"]["user.email"] == "veles@users.noreply.github.com"
+    assert payload["git_identity"]["configured_locally"] == "yes"
+    assert origin is not None
+
 def test_external_repo_commit_push_refuses_protected_target_branch():
     ctx = make_ctx()
     repo, origin = make_git_repo(with_origin=True)
