@@ -264,6 +264,37 @@ def _stage_paths(repo_dir: pathlib.Path, paths: Optional[List[str]]) -> None:
         raise RuntimeError(res.stderr.strip() or res.stdout.strip() or "git add failed")
 
 
+def _git_get_config(repo_dir: pathlib.Path, key: str) -> str:
+    res = _git(["config", "--get", key], repo_dir)
+    if res.returncode != 0:
+        return ""
+    return res.stdout.strip()
+
+
+def _ensure_external_repo_git_identity(repo_dir: pathlib.Path) -> Dict[str, str]:
+    name = _git_get_config(repo_dir, "user.name")
+    email = _git_get_config(repo_dir, "user.email")
+    changed: Dict[str, str] = {}
+    if not name:
+        name = "Veles"
+        res = _git(["config", "user.name", name], repo_dir, timeout=30)
+        if res.returncode != 0:
+            raise RuntimeError(res.stderr.strip() or res.stdout.strip() or "git config user.name failed")
+        changed["user.name"] = name
+    if not email:
+        email = "veles@users.noreply.github.com"
+        res = _git(["config", "user.email", email], repo_dir, timeout=30)
+        if res.returncode != 0:
+            raise RuntimeError(res.stderr.strip() or res.stdout.strip() or "git config user.email failed")
+        changed["user.email"] = email
+    return {
+        "user.name": name,
+        "user.email": email,
+        "configured_locally": "yes" if changed else "no",
+        "changed": ", ".join(sorted(changed.keys())),
+    }
+
+
 def _external_repo_register(
     ctx: ToolContext,
     alias: str,
@@ -618,6 +649,7 @@ def _external_repo_commit_push(
             return f"⚠️ GIT_ERROR (status): {status.stderr.strip() or status.stdout.strip()}"
         if not status.stdout.strip():
             return "⚠️ GIT_NO_CHANGES: nothing to commit."
+        git_identity = _ensure_external_repo_git_identity(repo_dir)
         commit_res = _git(["commit", "-m", commit_message], repo_dir, timeout=60)
         if commit_res.returncode != 0:
             return f"⚠️ GIT_ERROR (commit): {commit_res.stderr.strip() or commit_res.stdout.strip()}"
@@ -653,6 +685,7 @@ def _external_repo_commit_push(
         "push_stdout": _shorten(push_res.stdout.strip()),
         "push_stderr": _shorten(push_res.stderr.strip()),
         "protected_branches": policy["protected_branches"],
+        "git_identity": git_identity,
     }
     if pull_warning:
         payload["pull_warning"] = _shorten(pull_warning)
