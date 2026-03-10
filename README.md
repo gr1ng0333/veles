@@ -8,7 +8,7 @@
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.12.10 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.12.11 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -268,6 +268,11 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### v6.12.11 (2026-03-10)
+- Fixed post-restart acknowledgement formatting to match the older 6.6.0-style rhythm more closely without bringing back auto-resume.
+- Removed manually inlined budget text from restart notifications; budget footer is again emitted by the standard Telegram `send_with_budget` path.
+- Clarified post-restart wording: context is re-read, restart metadata is shown, and work does not continue automatically.
 
 ### v6.12.10 (2026-03-10)
 - Added HTML-formatted post-restart acknowledgement with inline code styling for `scratchpad`, `identity`, and `HEAD`.

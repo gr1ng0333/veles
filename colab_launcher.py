@@ -298,30 +298,23 @@ def _notify_owner_after_restart() -> None:
         reason = str(st.get("restart_notify_reason") or "").strip() or "unspecified"
         source = str(st.get("restart_notify_source") or "").strip() or "restart"
         sha = str(st.get("current_sha") or "").strip()
-        branch = str(st.get("current_branch") or "").strip()
         sha_short = sha[:8] if sha else "unknown"
-        branch_part = branch or "unknown"
         requested_at = str(st.get("restart_notify_requested_at") or "").strip()
         ts_text = requested_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
-        spent = float(st.get("spent_usd") or 0.0)
-        total = float(TOTAL_BUDGET_LIMIT or 0.0)
-        pct = (spent / total * 100.0) if total > 0 else 0.0
-        budget_line = f"Budget: ${spent:.4f} / ${total:.2f} ({pct:.2f}%) | {branch_part}@{sha_short}"
 
         message = "\n".join([
-            f"<code>{budget_line}</code>",
             f"[{ts_text}] Veles: Контекст поднял и продолжил после рестарта ✅",
             "",
             "Сделано по факту:",
             "• перечитал <code>scratchpad</code> и <code>identity</code>;",
             f"• проверил состояние репо: HEAD <code>{sha_short}</code>, дерево чистое;",
-            f"• дата и причина рестарта: <code>{ts_text}</code> · <code>{reason}</code>;",
+            f"• зафиксировал дату и причину рестарта: <code>{ts_text}</code> · <code>{reason}</code>;",
             f"• источник рестарта: <code>{source}</code>;",
-            "• состояние после рестарта поднято;",
-            "• авто-продолжение отключено — жду следующего сообщения.",
+            "• авто-продолжение после рестарта отключено;",
+            "• жду следующего сообщения, ничего не продолжаю сам.",
         ])
 
-        send_with_budget(chat_id, message, fmt="html")
+        send_with_budget(chat_id, message, fmt="html", force_budget=True)
 
         st["restart_notify_pending"] = False
         st["restart_notify_reason"] = ""
