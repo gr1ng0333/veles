@@ -305,18 +305,27 @@ def _notify_owner_after_restart() -> None:
         branch = str(st.get("current_branch") or "").strip()
         sha_short = sha[:8] if sha else "unknown"
         branch_part = branch or "unknown"
+        requested_at = str(st.get("restart_notify_requested_at") or "").strip()
+        ts_text = requested_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+        spent = float(st.get("spent_usd") or 0.0)
+        total = float(TOTAL_BUDGET_LIMIT or 0.0)
+        pct = (spent / total * 100.0) if total > 0 else 0.0
+        budget_line = f"Budget: ${spent:.4f} / ${total:.2f} ({pct:.2f}%) | {branch_part}@{sha_short}"
 
-        send_with_budget(
-            chat_id,
-            (
-                f"✅ Перезапуск завершён: {reason} [{source}] · {branch_part}@{sha_short}\n\n"
-                "Контекст поднял и продолжил после рестарта ✅\nСделано по факту:\n"
-                "• перечитал scratchpad и identity;\n"
-                f"• проверил состояние репо: HEAD {sha_short}, дерево чистое;\n"
-                "• состояние после рестарта поднято;\n"
-                "• авто-продолжение отключено — жду следующего сообщения."
-            ),
-        )
+        message = "\n".join([
+            f"<code>{budget_line}</code>",
+            f"[{ts_text}] Veles: Контекст поднял и продолжил после рестарта ✅",
+            "",
+            "Сделано по факту:",
+            "• перечитал <code>scratchpad</code> и <code>identity</code>;",
+            f"• проверил состояние репо: HEAD <code>{sha_short}</code>, дерево чистое;",
+            f"• дата и причина рестарта: <code>{ts_text}</code> · <code>{reason}</code>;",
+            f"• источник рестарта: <code>{source}</code>;",
+            "• состояние после рестарта поднято;",
+            "• авто-продолжение отключено — жду следующего сообщения.",
+        ])
+
+        send_with_budget(chat_id, message, fmt="html")
 
         st["restart_notify_pending"] = False
         st["restart_notify_reason"] = ""
@@ -336,7 +345,6 @@ def _notify_owner_after_restart() -> None:
             "type": "restart_notify_error",
             "error": repr(e),
         })
-
 # ----------------------------
 # 6.1) Post-restart acknowledgement only
 # ----------------------------
