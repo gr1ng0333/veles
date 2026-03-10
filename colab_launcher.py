@@ -225,7 +225,7 @@ from supervisor.queue import (
 from supervisor.workers import (
     init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
     spawn_workers, kill_workers, assign_tasks, ensure_workers_healthy,
-    handle_chat_direct, _get_chat_agent, owner_message_allows_auto_resume_release,
+    handle_chat_direct, handle_post_restart_ack, _get_chat_agent, owner_message_allows_auto_resume_release,
 )
 workers_init(
     repo_dir=REPO_DIR, drive_root=DRIVE_ROOT, max_workers=MAX_WORKERS,
@@ -286,7 +286,7 @@ append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
 # ----------------------------
 # 6.0.1) Post-restart owner notification
 # ----------------------------
-def _notify_owner_after_restart() -> None:
+def _dispatch_agent_post_restart_ack() -> None:
     try:
         st = load_state()
         if not bool(st.get("restart_notify_pending")):
@@ -297,24 +297,16 @@ def _notify_owner_after_restart() -> None:
 
         reason = str(st.get("restart_notify_reason") or "").strip() or "unspecified"
         source = str(st.get("restart_notify_source") or "").strip() or "restart"
-        sha = str(st.get("current_sha") or "").strip()
-        sha_short = sha[:8] if sha else "unknown"
         requested_at = str(st.get("restart_notify_requested_at") or "").strip()
-        ts_text = requested_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        message = "\n".join([
-            f"[{ts_text}] Veles: Контекст поднял и продолжил после рестарта ✅",
-            "",
-            "Сделано по факту:",
-            "• перечитал <code>scratchpad</code> и <code>identity</code>;",
-            f"• проверил состояние репо: HEAD <code>{sha_short}</code>, дерево чистое;",
-            f"• зафиксировал дату и причину рестарта: <code>{ts_text}</code> · <code>{reason}</code>;",
-            f"• источник рестарта: <code>{source}</code>;",
-            "• авто-продолжение после рестарта отключено;",
-            "• жду следующего сообщения, ничего не продолжаю сам.",
-        ])
-
-        send_with_budget(chat_id, message, fmt="html", force_budget=True)
+        ok = handle_post_restart_ack(
+            chat_id=chat_id,
+            restart_reason=reason,
+            restart_source=source,
+            restart_requested_at=requested_at,
+        )
+        if not ok:
+            return
 
         st["restart_notify_pending"] = False
         st["restart_notify_reason"] = ""
@@ -323,7 +315,7 @@ def _notify_owner_after_restart() -> None:
         save_state(st)
         append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "type": "restart_notify_delivered",
+            "type": "restart_ack_dispatched",
             "reason": reason,
             "source": source,
             "launcher_session_id": _launcher_session_id,
@@ -331,11 +323,13 @@ def _notify_owner_after_restart() -> None:
     except Exception as e:
         append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "type": "restart_notify_error",
+            "type": "restart_ack_dispatch_error",
             "error": repr(e),
         })
-# 6.1) Post-restart acknowledgement only
-_notify_owner_after_restart()
+
+
+# 6.1) Post-restart acknowledgement from the agent itself
+_dispatch_agent_post_restart_ack()
 
 # ----------------------------
 # 6.2) Direct-mode watchdog

@@ -140,6 +140,55 @@ def _get_chat_agent():
     return _chat_agent
 
 
+def handle_post_restart_ack(chat_id: int, restart_reason: str = "", restart_source: str = "", restart_requested_at: str = "") -> bool:
+    """Have the agent itself send the first conscious post-restart message."""
+    try:
+        agent = _get_chat_agent()
+        reason = str(restart_reason or "").strip() or "unspecified"
+        source = str(restart_source or "").strip() or "restart"
+        requested_at = str(restart_requested_at or "").strip()
+        task = {
+            "id": uuid.uuid4().hex[:8],
+            "type": "restart_ack",
+            "chat_id": chat_id,
+            "text": (
+                "Internal restart event. You have just restarted and must write the first conscious "
+                "message to the owner yourself. Read the current context honestly before replying.\n\n"
+                f"Restart requested at: {requested_at or 'unknown'}\n"
+                f"Restart reason: {reason}\n"
+                f"Restart source: {source}\n\n"
+                "Requirements:\n"
+                "- Write in Russian.\n"
+                "- This is NOT a continuation of previous work and NOT an auto-resume.\n"
+                "- Do not pretend to have done things you did not do.\n"
+                "- Confirm that you reread scratchpad and identity and recovered context.\n"
+                "- Briefly say what line of work was active before restart, based on real recent context.\n"
+                "- State clearly that auto-continuation is disabled and you are waiting for the next owner message.\n"
+                "- Use the 6.6.0-style rhythm: short heading line, then 'Сделано по факту:' with concise bullets.\n"
+                "- Mention repository HEAD in monospace and keep the tone alive, not infrastructural.\n"
+                "- Do not use tools unless truly necessary; context already contains what you need."
+            ),
+            "_is_direct_chat": True,
+            "_is_post_restart_ack": True,
+        }
+        events = agent.handle_task(task)
+        for e in events:
+            get_event_q().put(e)
+        return True
+    except Exception as e:
+        import traceback
+        append_jsonl(
+            DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "type": "post_restart_ack_error",
+                "error": repr(e),
+                "traceback": str(traceback.format_exc())[:2000],
+            },
+        )
+        return False
+
+
 def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None) -> None:
     try:
         agent = _get_chat_agent()
