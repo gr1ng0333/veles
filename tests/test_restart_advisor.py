@@ -63,26 +63,24 @@ def test_evaluate_restart_policy_allows_hard_restart_for_interrupted_work():
     assert decision["hard_restart_allowed"] is True
 
 
-def test_restart_request_fail_open_when_advisor_errors(tmp_path, monkeypatch):
+def test_restart_request_runs_simple_flow_without_advisor(tmp_path, monkeypatch):
     from supervisor.events import _handle_restart_request
 
     logs = []
     sent = []
     killed = []
-    saved = []
     persisted = []
 
-    monkeypatch.setattr("supervisor.restart_advisor.advise_restart", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("advisor boom")))
     monkeypatch.setattr("os.execv", lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(0)))
 
     state = {"owner_chat_id": 123, "tg_offset": 7}
     ctx = types.SimpleNamespace(
         DRIVE_ROOT=tmp_path,
-        PENDING=[],
-        RUNNING={},
+        PENDING=[{"id": "p1"}],
+        RUNNING={"t1": {"task": {"text": "still working"}}},
         WORKERS={},
         load_state=lambda: dict(state),
-        save_state=lambda st: saved.append(dict(st)),
+        save_state=lambda st: state.update(dict(st)),
         append_jsonl=lambda path, row: logs.append(row),
         send_with_budget=lambda chat_id, text, **kw: sent.append(text),
         safe_restart=lambda **kw: (True, "OK: veles"),
@@ -95,46 +93,10 @@ def test_restart_request_fail_open_when_advisor_errors(tmp_path, monkeypatch):
     except SystemExit:
         pass
 
-    assert any(row.get("type") == "restart_advisor_error" for row in logs)
+    assert any(row.get("type") == "restart_flow_simple" for row in logs)
     assert any("Restart requested by agent" in msg for msg in sent)
     assert killed == [True]
     assert persisted and persisted[-1].get("reason") == "pre_restart_exit"
-
-
-def test_restart_request_policy_can_suppress_restart(tmp_path, monkeypatch):
-    from supervisor.events import _handle_restart_request
-
-    logs = []
-    sent = []
-    safe_restart_calls = []
-
-    monkeypatch.setattr("supervisor.restart_advisor.advise_restart", lambda **kwargs: {
-        "ok": True,
-        "verdict": "hard_restart_recommended",
-        "confidence": 0.91,
-    })
-
-    state = {"owner_chat_id": 123, "tg_offset": 7, "resume_needed": False}
-    ctx = types.SimpleNamespace(
-        DRIVE_ROOT=tmp_path,
-        PENDING=[],
-        RUNNING={"t1": {"task": {"text": "still working"}}},
-        WORKERS={},
-        load_state=lambda: dict(state),
-        save_state=lambda st: None,
-        append_jsonl=lambda path, row: logs.append(row),
-        send_with_budget=lambda chat_id, text, **kw: sent.append(text),
-        safe_restart=lambda **kw: safe_restart_calls.append(kw) or (True, "OK: veles"),
-        kill_workers=lambda: (_ for _ in ()).throw(AssertionError("kill_workers should not be called")),
-        persist_queue_snapshot=lambda **kw: (_ for _ in ()).throw(AssertionError("persist_queue_snapshot should not be called")),
-    )
-
-    _handle_restart_request({"reason": "manual restart test"}, ctx)
-
-    assert safe_restart_calls == []
-    assert any(row.get("type") == "restart_advisor_verdict" for row in logs)
-    assert any(row.get("type") == "restart_advisor_policy_decision" for row in logs)
-    assert any("Restart suppressed by policy" in msg for msg in sent)
 
 
 def test_events_restart_entrypoint_delegates_to_live_restart_flow(monkeypatch):
