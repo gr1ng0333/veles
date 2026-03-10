@@ -182,16 +182,12 @@ CHAT_LOG_PATH = DRIVE_ROOT / "logs" / "chat.jsonl"
 if not CHAT_LOG_PATH.exists():
     CHAT_LOG_PATH.write_text("", encoding="utf-8")
 
-# ----------------------------
 # 3) Git constants
-# ----------------------------
 BRANCH_DEV = "veles"
 BRANCH_STABLE = "veles-stable"
 REMOTE_URL = f"https://{GITHUB_TOKEN}:x-oauth-basic@github.com/{GITHUB_USER}/{GITHUB_REPO}.git"
 
-# ----------------------------
 # 4) Initialize supervisor modules
-# ----------------------------
 from supervisor.state import (
     init as state_init, load_state, save_state, append_jsonl,
     update_budget_from_usage, status_text, rotate_chat_log_if_needed,
@@ -345,9 +341,7 @@ def _notify_owner_after_restart() -> None:
             "type": "restart_notify_error",
             "error": repr(e),
         })
-# ----------------------------
 # 6.1) Post-restart acknowledgement only
-# ----------------------------
 _notify_owner_after_restart()
 
 # ----------------------------
@@ -400,9 +394,7 @@ def _chat_watchdog_loop():
 _watchdog_thread = threading.Thread(target=_chat_watchdog_loop, daemon=True)
 _watchdog_thread.start()
 
-# ----------------------------
 # 6.3) Background consciousness
-# ----------------------------
 from ouroboros.consciousness import BackgroundConsciousness
 
 def _get_owner_chat_id() -> Optional[int]:
