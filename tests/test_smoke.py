@@ -118,6 +118,12 @@ EXPECTED_TOOLS = [
     "list_available_tools",
     "enable_tools",
     "vps_health_check",
+    # External repos phase 1/2
+    "external_repo_register", "external_repo_list", "external_repo_sync",
+    "external_repo_read", "external_repo_list_files", "external_repo_search",
+    "external_repo_run_shell", "external_repo_git_status", "external_repo_git_diff",
+    "external_repo_write", "external_repo_prepare_work_branch",
+    "external_repo_set_branch_policy", "external_repo_commit_push",
     "doctor",
     "monitor_snapshot",
     "time_status",
