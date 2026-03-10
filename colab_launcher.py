@@ -300,9 +300,9 @@ def _dispatch_agent_post_restart_ack() -> None:
         requested_at = str(st.get("restart_notify_requested_at") or "").strip()
 
         service_text = (
-            "♻️ Перезапуск завершён: служебный контур поднят.\n"
-            f"Время рестарта: <code>{requested_at or 'unknown'}</code>\n"
-            f"Источник: <code>{source}</code>"
+            "♻️ Restart completed: service layer is up.\n"
+            f"Restart time: <code>{requested_at or 'unknown'}</code>\n"
+            f"Source: <code>{source}</code>"
         )
         send_with_budget(chat_id, service_text, force_budget=True, fmt="html")
 
