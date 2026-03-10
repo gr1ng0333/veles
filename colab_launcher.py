@@ -298,36 +298,53 @@ def _dispatch_agent_post_restart_ack() -> None:
         reason = str(st.get("restart_notify_reason") or "").strip() or "unspecified"
         source = str(st.get("restart_notify_source") or "").strip() or "restart"
         requested_at = str(st.get("restart_notify_requested_at") or "").strip()
+        current_sha = str(st.get("current_sha") or "").strip()
+        launcher_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         service_text = (
             "♻️ Restart completed: service layer is up.\n"
             f"Restart time: <code>{requested_at or 'unknown'}</code>\n"
             f"Source: <code>{source}</code>\n\n"
-            f"<code>launcher_start: {datetime.datetime.now(datetime.timezone.utc).isoformat()} branch={BRANCH_DEV} sha={(_git_sha or '')[:12]}...</code>"
+            f"<code>launcher_start: {launcher_started_at} branch={BRANCH_DEV} sha={(current_sha or 'unknown')[:12]}...</code>"
         )
         send_with_budget(chat_id, service_text, force_budget=True, fmt="html")
 
-        ok = handle_post_restart_ack(
-            chat_id=chat_id,
-            restart_reason=reason,
-            restart_source=source,
-            restart_requested_at=requested_at,
-        )
-        if not ok:
-            return
+        def _run_agent_ack() -> None:
+            ok = handle_post_restart_ack(
+                chat_id=chat_id,
+                restart_reason=reason,
+                restart_source=source,
+                restart_requested_at=requested_at,
+            )
+            if not ok:
+                return
 
-        st["restart_notify_pending"] = False
-        st["restart_notify_reason"] = ""
-        st["restart_notify_requested_at"] = ""
-        st["restart_notify_source"] = ""
-        save_state(st)
-        append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
-            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "type": "restart_ack_dispatched",
-            "reason": reason,
-            "source": source,
-            "launcher_session_id": _launcher_session_id,
-        })
+            try:
+                st_done = load_state()
+                st_done["restart_notify_pending"] = False
+                st_done["restart_notify_reason"] = ""
+                st_done["restart_notify_requested_at"] = ""
+                st_done["restart_notify_source"] = ""
+                save_state(st_done)
+                append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "type": "restart_ack_dispatched",
+                    "reason": reason,
+                    "source": source,
+                    "launcher_session_id": _launcher_session_id,
+                })
+            except Exception as e:
+                append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "type": "restart_ack_finalize_error",
+                    "error": repr(e),
+                })
+
+        threading.Thread(
+            target=_run_agent_ack,
+            name="post-restart-agent-ack",
+            daemon=True,
+        ).start()
     except Exception as e:
         append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
