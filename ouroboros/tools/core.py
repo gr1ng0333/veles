@@ -101,6 +101,46 @@ def _send_document(
     ctx.pending_events.append(event)
     return f"✅ Document queued for delivery: {safe_filename}"
 
+
+def _send_documents(ctx: ToolContext, files: List[Dict[str, Any]], caption: str = "") -> str:
+    """Queue multiple documents for sequential Telegram delivery in one tool call."""
+    chat_id = int(ctx.current_chat_id or 0)
+    if not chat_id:
+        return "⚠️ No current chat available for send_documents."
+
+    if not isinstance(files, list) or not files:
+        return "⚠️ send_documents requires a non-empty files list."
+
+    prepared_files: List[Dict[str, str]] = []
+    for idx, item in enumerate(files, start=1):
+        if not isinstance(item, dict):
+            return f"⚠️ send_documents item #{idx} must be an object."
+
+        payload_b64 = str(item.get("file_base64") or "").strip()
+        content = item.get("content")
+        if isinstance(content, str) and content:
+            payload_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+
+        if not payload_b64:
+            return f"⚠️ send_documents item #{idx} requires file_base64 or content."
+
+        safe_filename = str(item.get("filename") or "").strip() or f"file_{idx}.bin"
+        prepared_files.append({
+            "file_base64": payload_b64,
+            "filename": safe_filename,
+            "caption": str(item.get("caption") or ""),
+            "mime_type": str(item.get("mime_type") or "application/octet-stream"),
+        })
+
+    event = {
+        "type": "send_documents",
+        "chat_id": chat_id,
+        "caption": caption or "",
+        "files": prepared_files,
+    }
+    ctx.pending_events.append(event)
+    return f"✅ {len(prepared_files)} documents queued for sequential delivery"
+
 def _send_photo(ctx: ToolContext, image_base64: str, caption: str = "") -> str:
     """Send a base64-encoded image to the owner's Telegram chat."""
     if not ctx.current_chat_id:
@@ -437,6 +477,32 @@ def get_tools() -> List[ToolEntry]:
                 "required": [],
             },
         }, _send_document),
+        ToolEntry("send_documents", {
+            "name": "send_documents",
+            "description": "Отправить несколько файлов владельцу в Telegram за один tool-вызов. Файлы будут отправлены последовательно одной операцией.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "description": "Список файлов для отправки",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "file_base64": {"type": "string", "description": "Содержимое файла в base64"},
+                                "filename": {"type": "string", "description": "Имя файла"},
+                                "caption": {"type": "string", "description": "Подпись к конкретному файлу"},
+                                "mime_type": {"type": "string", "description": "MIME-тип файла"},
+                                "content": {"type": "string", "description": "Текст файла; если передан, будет закодирован в base64 автоматически"}
+                            },
+                            "required": []
+                        }
+                    },
+                    "caption": {"type": "string", "description": "Общая подпись по умолчанию для файлов без собственного caption"}
+                },
+                "required": ["files"],
+            },
+        }, _send_documents),
         ToolEntry("send_photo", {
             "name": "send_photo",
             "description": (

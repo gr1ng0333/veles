@@ -533,6 +533,58 @@ def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
         )
 
 
+def _handle_send_documents(evt: Dict[str, Any], ctx: Any) -> None:
+    """Send multiple documents sequentially to a Telegram chat."""
+    import base64 as b64mod
+    try:
+        chat_id = int(evt.get("chat_id") or 0)
+        files = evt.get("files") or []
+        default_caption = str(evt.get("caption") or "")
+        if not chat_id or not isinstance(files, list) or not files:
+            return
+
+        failures = []
+        for idx, item in enumerate(files, start=1):
+            if not isinstance(item, dict):
+                failures.append({"index": idx, "error": "item_not_object"})
+                continue
+            file_b64 = str(item.get("file_base64") or "")
+            filename = str(item.get("filename") or f"file_{idx}.bin")
+            caption = str(item.get("caption") or default_caption or "")
+            mime_type = str(item.get("mime_type") or "application/octet-stream")
+            if not file_b64:
+                failures.append({"index": idx, "filename": filename, "error": "missing_file_base64"})
+                continue
+            try:
+                file_bytes = b64mod.b64decode(file_b64)
+            except Exception as decode_exc:
+                failures.append({"index": idx, "filename": filename, "error": f"decode_error: {decode_exc}"})
+                continue
+            ok, err = ctx.TG.send_document(chat_id, file_bytes, filename=filename, caption=caption, mime_type=mime_type)
+            if not ok:
+                failures.append({"index": idx, "filename": filename, "error": err})
+
+        if failures:
+            ctx.append_jsonl(
+                ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "type": "send_documents_error",
+                    "chat_id": chat_id,
+                    "failures": failures,
+                    "file_count": len(files),
+                },
+            )
+    except Exception as e:
+        ctx.append_jsonl(
+            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "type": "send_documents_event_error", "error": repr(e),
+            },
+        )
+
+
 def _handle_owner_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
     """Log owner_message_injected to events.jsonl for health invariant #5 (duplicate processing)."""
     from ouroboros.utils import utc_now_iso
@@ -564,6 +616,7 @@ EVENT_HANDLERS = {
     "cancel_task": _handle_cancel_task,
     "send_photo": _handle_send_photo,
     "send_document": _handle_send_document,
+    "send_documents": _handle_send_documents,
     "toggle_evolution": _handle_toggle_evolution,
     "toggle_consciousness": _handle_toggle_consciousness,
     "owner_message_injected": _handle_owner_message_injected,
