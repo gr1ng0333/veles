@@ -493,6 +493,25 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
             )
         return
 
+    if fmt == "html":
+        tg = get_tg()
+        for idx, part in enumerate(split_telegram(full)):
+            ok, err = tg.send_message(chat_id, _sanitize_telegram_text(part), parse_mode="HTML")
+            if not ok:
+                append_jsonl(
+                    DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                    {
+                        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "type": "telegram_send_error",
+                        "chat_id": chat_id,
+                        "part_index": idx,
+                        "error": err,
+                        "format": "html",
+                    },
+                )
+                break
+        return
+
     tg = get_tg()
     for idx, part in enumerate(split_telegram(full)):
         ok, err = tg.send_message(chat_id, part)
