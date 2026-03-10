@@ -302,7 +302,8 @@ def _dispatch_agent_post_restart_ack() -> None:
         service_text = (
             "♻️ Restart completed: service layer is up.\n"
             f"Restart time: <code>{requested_at or 'unknown'}</code>\n"
-            f"Source: <code>{source}</code>"
+            f"Source: <code>{source}</code>\n\n"
+            f"<code>launcher_start: {datetime.datetime.now(datetime.timezone.utc).isoformat()} branch={BRANCH_DEV} sha={(_git_sha or '')[:12]}...</code>"
         )
         send_with_budget(chat_id, service_text, force_budget=True, fmt="html")
 

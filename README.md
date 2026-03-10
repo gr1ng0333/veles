@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.13.0-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.13.1-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.13.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.13.1 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -268,6 +268,11 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### v6.13.1 (2026-03-10)
+- Moved `branch`/`sha` (`HEAD`) into the supervisor-side restart service notification so infrastructure metadata no longer leaks into the agent-authored post-restart note.
+- Relaxed the agent post-restart prompt: it now confirms reread memory, reflects on the pre-restart line of work, suggests useful verification checks, and points to the next step without a rigid bullet template.
+- Re-synced project version metadata across `VERSION`, `pyproject.toml`, and `README.md` after the bulk-document release.
 
 ### v6.13.0 (2026-03-10)
 - Added `send_documents` tool for multi-file Telegram delivery in one tool call, while preserving the existing single-file `send_document` contract.
