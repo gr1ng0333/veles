@@ -1,45 +1,20 @@
-# ============================
-# Veles — Runtime launcher (entry point, executed from repository)
-# ============================
-# Thin orchestrator: secrets, bootstrap, main loop.
-# Heavy logic lives in supervisor/ package.
-
+# Veles runtime launcher: thin orchestrator; heavy logic lives in supervisor/.
 import logging
 import os, sys, json, time, uuid, pathlib, subprocess, datetime, threading, queue as _queue_mod
 from typing import Any, Dict, List, Optional, Set, Tuple
-
 log = logging.getLogger(__name__)
-
-# ----------------------------
-# 0) Install launcher deps
-# ----------------------------
 def install_launcher_deps() -> None:
     subprocess.run(
         [sys.executable, "-m", "pip", "install", "-q", "requests", "SpeechRecognition"],
         check=True,
     )
-
 install_launcher_deps()
-
-# ----------------------------
-# 0.1) provide apply_patch shim
-# ----------------------------
 from ouroboros.apply_patch import install as install_apply_patch
 from ouroboros.llm import DEFAULT_LIGHT_MODEL
 install_apply_patch()
-
-# ----------------------------
-# 1) Secrets + runtime config
-# ----------------------------
-# google.colab imports removed for VPS deployment
-# Secrets are read from environment variables via get_secret() / get_cfg()
-
 _LEGACY_CFG_WARNED: Set[str] = set()
-
 def _userdata_get(key: str) -> Optional[str]:
-    """Stub: Colab userdata not available on VPS. Always returns None."""
     return None
-
 def get_secret(name: str, default: Optional[str] = None, required: bool = False) -> Optional[str]:
     v = _userdata_get(name)
     if v is None or str(v).strip() == "":
@@ -47,7 +22,6 @@ def get_secret(name: str, default: Optional[str] = None, required: bool = False)
     if required:
         assert v is not None and str(v).strip() != "", f"Missing required secret: {name}"
     return v
-
 def get_cfg(name: str, default: Optional[str] = None, allow_legacy_secret: bool = False) -> Optional[str]:
     v = os.environ.get(name)
     if v is not None and str(v).strip() != "":
@@ -61,19 +35,16 @@ def get_cfg(name: str, default: Optional[str] = None, allow_legacy_secret: bool 
             return legacy
     return default
 
-
 def _parse_int_cfg(raw: Optional[str], default: int, minimum: int = 0) -> int:
     try:
         val = int(str(raw))
     except Exception:
         val = default
     return max(minimum, val)
-
 OPENROUTER_API_KEY = get_secret("OPENROUTER_API_KEY", required=True)
 TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", required=True)
 TOTAL_BUDGET_DEFAULT = get_secret("TOTAL_BUDGET", required=True)
 GITHUB_TOKEN = get_secret("GITHUB_TOKEN", required=True)
-
 # Robust TOTAL_BUDGET parsing — handles \r\n, spaces, and other junk from Colab Secrets
 # Example: user enters "8 800" → Colab stores as "8\r\n800" → we need 8800
 try:
@@ -86,7 +57,6 @@ try:
 except Exception as e:
     log.warning(f"Failed to parse TOTAL_BUDGET ({TOTAL_BUDGET_DEFAULT!r}): {e}")
     TOTAL_BUDGET_LIMIT = 0.0
-
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY", default="")
 ANTHROPIC_API_KEY = get_secret("ANTHROPIC_API_KEY", default="")
 GITHUB_USER = get_cfg("GITHUB_USER", default=None, allow_legacy_secret=True)
@@ -97,7 +67,6 @@ MAX_WORKERS = int(get_cfg("OUROBOROS_MAX_WORKERS", default="5", allow_legacy_sec
 MODEL_MAIN = get_cfg("OUROBOROS_MODEL", default="anthropic/claude-sonnet-4.6", allow_legacy_secret=True)
 MODEL_CODE = get_cfg("OUROBOROS_MODEL_CODE", default="anthropic/claude-sonnet-4.6", allow_legacy_secret=True)
 MODEL_LIGHT = get_cfg("OUROBOROS_MODEL_LIGHT", default=DEFAULT_LIGHT_MODEL, allow_legacy_secret=True)
-
 BUDGET_REPORT_EVERY_MESSAGES = 10
 SOFT_TIMEOUT_SEC = max(60, int(get_cfg("OUROBOROS_SOFT_TIMEOUT_SEC", default="600", allow_legacy_secret=True) or "600"))
 HARD_TIMEOUT_SEC = max(120, int(get_cfg("OUROBOROS_HARD_TIMEOUT_SEC", default="1800", allow_legacy_secret=True) or "1800"))
@@ -112,7 +81,6 @@ DIAG_SLOW_CYCLE_SEC = _parse_int_cfg(
     default=20,
     minimum=0,
 )
-
 os.environ["OPENROUTER_API_KEY"] = str(OPENROUTER_API_KEY)
 os.environ["OPENAI_API_KEY"] = str(OPENAI_API_KEY or "")
 os.environ["ANTHROPIC_API_KEY"] = str(ANTHROPIC_API_KEY or "")
@@ -127,8 +95,6 @@ os.environ["OUROBOROS_DIAG_SLOW_CYCLE_SEC"] = str(DIAG_SLOW_CYCLE_SEC)
 os.environ["OUROBOROS_EVOLUTION_HARD_TIMEOUT_SEC"] = str(EVOLUTION_HARD_TIMEOUT_SEC)
 os.environ["TELEGRAM_BOT_TOKEN"] = str(TELEGRAM_BOT_TOKEN)
 
-
-
 # ----------------------------
 # 2) Data directories (VPS: local disk, no Drive mount)
 # ----------------------------
@@ -138,12 +104,10 @@ DRIVE_ROOT.mkdir(parents=True, exist_ok=True)
 for subdir in ("state", "logs", "memory/knowledge"):
     (DRIVE_ROOT / subdir).mkdir(parents=True, exist_ok=True)
 REPO_DIR.mkdir(parents=True, exist_ok=True)
-
 # ----------------------------
 # 2.1) PID lock — prevent duplicate supervisor processes
 # ----------------------------
 _PID_LOCK_PATH = DRIVE_ROOT / "state" / "supervisor.pid"
-
 def _acquire_pid_lock() -> None:
     """Write our PID to lock file, killing any stale previous process."""
     import signal
@@ -160,9 +124,7 @@ def _acquire_pid_lock() -> None:
         except (ValueError, OSError):
             pass
     _PID_LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
-
 _acquire_pid_lock()
-
 # Clear stale owner mailbox files from previous session
 try:
     from ouroboros.owner_inject import get_pending_path
@@ -177,16 +139,13 @@ try:
             _f.unlink(missing_ok=True)
 except Exception:
     pass
-
 CHAT_LOG_PATH = DRIVE_ROOT / "logs" / "chat.jsonl"
 if not CHAT_LOG_PATH.exists():
     CHAT_LOG_PATH.write_text("", encoding="utf-8")
-
 # 3) Git constants
 BRANCH_DEV = "veles"
 BRANCH_STABLE = "veles-stable"
 REMOTE_URL = f"https://{GITHUB_TOKEN}:x-oauth-basic@github.com/{GITHUB_USER}/{GITHUB_REPO}.git"
-
 # 4) Initialize supervisor modules
 from supervisor.state import (
     init as state_init, load_state, save_state, append_jsonl,
@@ -195,7 +154,6 @@ from supervisor.state import (
 )
 state_init(DRIVE_ROOT, TOTAL_BUDGET_LIMIT)
 init_state()
-
 from supervisor.telegram import (
     init as telegram_init, TelegramClient, send_with_budget, log_chat,
 )
@@ -206,7 +164,6 @@ telegram_init(
     budget_report_every=BUDGET_REPORT_EVERY_MESSAGES,
     tg_client=TG,
 )
-
 from supervisor.git_ops import (
     init as git_ops_init, ensure_repo_present, checkout_and_reset,
     sync_runtime_dependencies, import_test, safe_restart,
@@ -215,13 +172,11 @@ git_ops_init(
     repo_dir=REPO_DIR, drive_root=DRIVE_ROOT, remote_url=REMOTE_URL,
     branch_dev=BRANCH_DEV, branch_stable=BRANCH_STABLE,
 )
-
 from supervisor.queue import (
     enqueue_task, enforce_task_timeouts, enqueue_evolution_task_if_needed,
     persist_queue_snapshot, restore_pending_from_snapshot, snapshot_interrupted_work_info,
     cancel_task_by_id, queue_review_task, sort_pending,
 )
-
 from supervisor.workers import (
     init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
     spawn_workers, kill_workers, assign_tasks, ensure_workers_healthy,
@@ -233,7 +188,6 @@ workers_init(
     total_budget_limit=TOTAL_BUDGET_LIMIT,
     branch_dev=BRANCH_DEV, branch_stable=BRANCH_STABLE,
 )
-
 from supervisor.events import dispatch_event
 from supervisor.audio_stt import transcribe_telegram_audio, AudioTranscriptionError
 from supervisor.codex_bootstrap import prewarm_codex_accounts
@@ -243,9 +197,7 @@ from supervisor.codex_bootstrap import prewarm_codex_accounts
 ensure_repo_present()
 ok, msg = safe_restart(reason="bootstrap", unsynced_policy="rescue_and_reset")
 assert ok, f"Bootstrap failed: {msg}"
-
 prewarm_codex_accounts(DRIVE_ROOT)
-
 # ----------------------------
 # 6) Start workers
 # ----------------------------
@@ -264,7 +216,6 @@ if restored_pending > 0:
     if st_boot.get("owner_chat_id"):
         send_with_budget(int(st_boot["owner_chat_id"]),
                          f"♻️ Restored pending queue from snapshot: {restored_pending} tasks.")
-
 _launcher_session_id = uuid.uuid4().hex
 _st_launch = load_state()
 _st_launch["launcher_session_id"] = _launcher_session_id
@@ -282,7 +233,6 @@ append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
     "diag_heartbeat_sec": DIAG_HEARTBEAT_SEC,
     "diag_slow_cycle_sec": DIAG_SLOW_CYCLE_SEC,
 })
-
 # ----------------------------
 # 6.0.1) Post-restart owner notification
 # ----------------------------
@@ -294,13 +244,11 @@ def _dispatch_agent_post_restart_ack() -> None:
         chat_id = int(st.get("owner_chat_id") or 0)
         if not chat_id:
             return
-
         reason = str(st.get("restart_notify_reason") or "").strip() or "unspecified"
         source = str(st.get("restart_notify_source") or "").strip() or "restart"
         requested_at = str(st.get("restart_notify_requested_at") or "").strip()
         current_sha = str(st.get("current_sha") or "").strip()
         launcher_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
         service_text = (
             "♻️ Restart completed: service layer is up.\n"
             f"Restart time: <code>{requested_at or 'unknown'}</code>\n"
@@ -308,7 +256,6 @@ def _dispatch_agent_post_restart_ack() -> None:
             f"<code>launcher_start: {launcher_started_at} branch={BRANCH_DEV} sha={(current_sha or 'unknown')[:12]}...</code>"
         )
         send_with_budget(chat_id, service_text, force_budget=True, fmt="html")
-
         def _run_agent_ack() -> None:
             ok = handle_post_restart_ack(
                 chat_id=chat_id,
@@ -318,7 +265,6 @@ def _dispatch_agent_post_restart_ack() -> None:
             )
             if not ok:
                 return
-
             try:
                 st_done = load_state()
                 st_done["restart_notify_pending"] = False
@@ -339,7 +285,6 @@ def _dispatch_agent_post_restart_ack() -> None:
                     "type": "restart_ack_finalize_error",
                     "error": repr(e),
                 })
-
         threading.Thread(
             target=_run_agent_ack,
             name="post-restart-agent-ack",
@@ -352,10 +297,8 @@ def _dispatch_agent_post_restart_ack() -> None:
             "error": repr(e),
         })
 
-
 # 6.1) Post-restart acknowledgement from the agent itself
 _dispatch_agent_post_restart_ack()
-
 # ----------------------------
 # 6.2) Direct-mode watchdog
 # ----------------------------
@@ -369,11 +312,9 @@ def _chat_watchdog_loop():
             if not agent._busy:
                 soft_warned = False
                 continue
-
             now = time.time()
             idle_sec = now - agent._last_progress_ts
             total_sec = now - agent._task_started_ts
-
             if idle_sec >= HARD_TIMEOUT_SEC:
                 st = load_state()
                 if st.get("owner_chat_id"):
@@ -385,7 +326,6 @@ def _chat_watchdog_loop():
                 reset_chat_agent()
                 soft_warned = False
                 continue
-
             if idle_sec >= SOFT_TIMEOUT_SEC and not soft_warned:
                 soft_warned = True
                 append_jsonl(
@@ -402,13 +342,10 @@ def _chat_watchdog_loop():
         except Exception:
             log.debug("Failed to check/notify chat watchdog", exc_info=True)
             pass
-
 _watchdog_thread = threading.Thread(target=_chat_watchdog_loop, daemon=True)
 _watchdog_thread.start()
-
 # 6.3) Background consciousness
 from ouroboros.consciousness import BackgroundConsciousness
-
 def _get_owner_chat_id() -> Optional[int]:
     try:
         st = load_state()
@@ -416,19 +353,16 @@ def _get_owner_chat_id() -> Optional[int]:
         return int(cid) if cid else None
     except Exception:
         return None
-
 _consciousness = BackgroundConsciousness(
     drive_root=DRIVE_ROOT,
     repo_dir=REPO_DIR,
     event_queue=get_event_q(),
     owner_chat_id_fn=_get_owner_chat_id,
 )
-
 def reset_chat_agent():
     """Reset the direct-mode chat agent (called by watchdog on hangs)."""
     import supervisor.workers as _w
     _w._chat_agent = None
-
 # ----------------------------
 # 7) Main loop
 # ----------------------------
@@ -459,24 +393,20 @@ _event_ctx = types.SimpleNamespace(
     consciousness=_consciousness,
 )
 
-
 def _safe_qsize(q: Any) -> int:
     try:
         return int(q.qsize())
     except Exception:
         return -1
 
-
 def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
     """Handle supervisor slash-commands.
-
     Returns:
         True  — terminal command fully handled (caller should `continue`)
         str   — dual-path note to prepend (caller falls through to LLM)
         ""    — not a recognized command (falsy, caller falls through)
     """
     lowered = text.strip().lower()
-
     if lowered.startswith("/panic"):
         send_with_budget(chat_id, "🛑 PANIC: stopping everything now.")
         kill_workers()
@@ -484,7 +414,6 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         st2["tg_offset"] = tg_offset
         save_state(st2)
         raise SystemExit("PANIC")
-
     if lowered.startswith("/restart"):
         st2 = load_state()
         st2["session_id"] = uuid.uuid4().hex
@@ -510,17 +439,14 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             return True
         kill_workers()
         os.execv(sys.executable, [sys.executable, __file__])
-
     # Dual-path commands: supervisor handles + LLM sees a note
     if lowered.startswith("/status"):
         status = status_text(WORKERS, PENDING, RUNNING, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC)
         send_with_budget(chat_id, status, force_budget=True)
         return "[Supervisor handled /status — status text already sent to chat]\n"
-
     if lowered.startswith("/review"):
         queue_review_task(reason="owner:/review", force=True)
         return "[Supervisor handled /review — review task queued]\n"
-
     if lowered.startswith("/evolve"):
         parts = lowered.split()
         action = parts[1] if len(parts) > 1 else "on"
@@ -546,7 +472,6 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         state_str = "ON" if turn_on else "OFF"
         send_with_budget(chat_id, f"🧬 Evolution: {state_str}")
         return f"[Supervisor handled /evolve — evolution toggled {state_str}]\n"
-
     if lowered.startswith("/bg"):
         parts = lowered.split()
         action = parts[1] if len(parts) > 1 else "status"
@@ -560,33 +485,27 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             bg_status = "running" if _consciousness.is_running else "stopped"
             send_with_budget(chat_id, f"🧠 Background consciousness: {bg_status}")
         return f"[Supervisor handled /bg {action}]\n"
-
     if lowered.startswith("/sonnet"):
         os.environ["OUROBOROS_MODEL"] = "anthropic/claude-sonnet-4.6"
         send_with_budget(chat_id, "🧠 Switched to Claude Sonnet 4.6. Deep conversation mode.")
         return True
-
     if lowered.startswith("/haiku"):
         os.environ["OUROBOROS_MODEL"] = "anthropic/claude-haiku-4.5"
         send_with_budget(chat_id, "⚡ Switched to Claude Haiku 4.5. Fast & cheap mode.")
         return True
-
     if lowered.startswith("/qwen"):
         os.environ["OUROBOROS_MODEL"] = "qwen/qwen3.5-flash-02-23"
         send_with_budget(chat_id, "⚡ Switched to Qwen 3.5 Flash. Ultra-cheap mode.")
         return True
-
     if lowered.startswith("/codex"):
         os.environ["OUROBOROS_MODEL"] = "codex/gpt-5.3-codex"
         send_with_budget(chat_id, "🤖 Switched to GPT-5.3 Codex (free via OAuth)")
         return True
-
     if lowered.startswith("/model"):
         current = os.environ.get("OUROBOROS_MODEL", "unknown")
         light = os.environ.get("OUROBOROS_MODEL_LIGHT", "unknown")
         send_with_budget(chat_id, f"🔧 Current models:\n• Main: {current}\n• Light: {light}")
         return True
-
     if lowered.startswith("/accounts"):
         from ouroboros.codex_proxy import get_accounts_status
         statuses = get_accounts_status()
@@ -606,7 +525,6 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             lines.append(f"{icon} #{i}: {status} | {usage}{active_marker}")
         send_with_budget(chat_id, "\n".join(lines))
         return True
-
     if lowered.startswith("/switch"):
         from ouroboros.codex_proxy import force_switch_account
         parts = lowered.split()
@@ -617,27 +535,22 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         else:
             send_with_budget(chat_id, f"⚠️ {result['message']}")
         return True
-
     return ""
-
 
 offset = int(load_state().get("tg_offset") or 0)
 _last_diag_heartbeat_ts = 0.0
 _last_message_ts: float = time.time()  # Start in active mode after restart
 _ACTIVE_MODE_SEC: int = 300  # 5 min of activity = active polling mode
-
 # Auto-start background consciousness (creator's policy: always on by default)
 try:
     _consciousness.start()
     log.info("🧠 Background consciousness auto-started (default: always on)")
 except Exception as e:
     log.warning("consciousness auto-start failed: %s", e)
-
 while True:
     loop_started_ts = time.time()
     rotate_chat_log_if_needed(DRIVE_ROOT)
     ensure_workers_healthy()
-
     # Drain worker events
     event_q = get_event_q()
     while True:
@@ -646,12 +559,10 @@ while True:
         except _queue_mod.Empty:
             break
         dispatch_event(evt, _event_ctx)
-
     enforce_task_timeouts()
     enqueue_evolution_task_if_needed()
     assign_tasks()
     persist_queue_snapshot(reason="main_loop")
-
     _now = time.time()
     # Poll Telegram — adaptive: fast when active, long-poll when idle
     _active = (_now - _last_message_ts) < _ACTIVE_MODE_SEC
@@ -668,20 +579,17 @@ while True:
         )
         time.sleep(1.5)
         continue
-
     for upd in updates:
         offset = int(upd["update_id"]) + 1
         msg = upd.get("message") or upd.get("edited_message") or {}
         if not msg:
             continue
-
         chat_id = int(msg["chat"]["id"])
         from_user = msg.get("from") or {}
         user_id = int(from_user.get("id") or 0)
         text = str(msg.get("text") or "")
         caption = str(msg.get("caption") or "")
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
         # Extract image/audio/file payload if present
         image_data = None  # Will be (base64, mime_type, caption) or None
         if msg.get("photo"):
@@ -731,14 +639,12 @@ while True:
             mime_type = str(doc.get("mime_type") or "")
             file_name = str(doc.get("file_name") or "file")
             file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-
             _TEXT_EXTENSIONS = {
                 "py", "txt", "md", "json", "csv", "yaml", "yml", "toml",
                 "cfg", "ini", "sh", "bash", "js", "ts", "html", "css",
                 "xml", "sql", "log", "env", "gitignore", "dockerfile",
             }
             _IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp"}
-
             if mime_type.startswith("image/") or file_ext in _IMAGE_EXTENSIONS:
                 # Image sent as document — handle like a photo
                 file_id = doc.get("file_id")
@@ -746,7 +652,6 @@ while True:
                     b64, mime = TG.download_file_base64(file_id)
                     if b64:
                         image_data = (b64, mime, caption)
-
             elif file_ext in _TEXT_EXTENSIONS or mime_type.startswith("text/"):
                 # Text file — read content and inject into message text
                 file_id = doc.get("file_id")
@@ -764,7 +669,6 @@ while True:
                             _text_content = _text_content[:_MAX_FILE_CONTENT] + f"\n\n... (обрезано, всего {len(_text_content)} символов)"
                         _user_text = caption or ""
                         text = f"{_user_text}\n\n📎 Файл: {file_name}\n```{file_ext}\n{_text_content}\n```"
-
             elif file_ext == "pdf":
                 # PDF — extract text
                 file_id = doc.get("file_id")
@@ -810,11 +714,9 @@ while True:
                         else:
                             send_with_budget(chat_id, f"⚠️ Не удалось извлечь текст из PDF. Установите pdfplumber или PyPDF2.")
                             continue
-
             else:
                 send_with_budget(chat_id, f"⚠️ Формат .{file_ext} не поддерживается. Поддерживаются: текст, PDF, картинки.")
                 continue
-
         st = load_state()
         if st.get("owner_id") is None:
             st["owner_id"] = user_id
@@ -824,10 +726,8 @@ while True:
             log_chat("in", chat_id, user_id, text)
             send_with_budget(chat_id, "✅ Owner registered. Veles online.")
             continue
-
         if user_id != int(st.get("owner_id")):
             continue
-
         log_chat("in", chat_id, user_id, text)
         st["last_owner_message_at"] = now_iso
         if bool(st.get("suppress_auto_resume_until_owner_message")) and owner_message_allows_auto_resume_release(text):
@@ -842,7 +742,6 @@ while True:
             )
         _last_message_ts = time.time()
         save_state(st)
-
         # --- Supervisor commands ---
         if text.strip().lower().startswith("/"):
             try:
@@ -855,16 +754,12 @@ while True:
                 raise
             except Exception:
                 log.warning("Supervisor command handler error", exc_info=True)
-
         # All other messages (and dual-path commands) → direct chat with Ouroboros
         if not text and not image_data:
             continue  # empty message, skip
-
         # Feed observation to consciousness
         _consciousness.inject_observation(f"Owner message: {text[:100]}")
-
         agent = _get_chat_agent()
-
         if agent._busy:
             # BUSY PATH: inject into active conversation (single consumer)
             if image_data:
@@ -873,7 +768,6 @@ while True:
                 send_with_budget(chat_id, "📎 Photo received, but a task is in progress. Send again when I'm free.")
             elif text:
                 agent.inject_message(text)
-
         else:
             # FREE PATH: batch-collect burst messages, then dispatch (single consumer)
             # Batch-collect burst messages: wait briefly for follow-up messages
@@ -884,7 +778,6 @@ while True:
             _batch_deadline = _batch_start + _BATCH_WINDOW_SEC
             _batched_texts = [text] if text else []
             _batched_image = image_data  # keep first image
-
             _batch_state = load_state()
             _batch_state_dirty = False
             while time.time() < _batch_deadline:
@@ -929,11 +822,9 @@ while True:
                                 _b642, _mime2 = TG.download_file_base64(_fid2)
                                 if _b642:
                                     _batched_image = (_b642, _mime2, _txt2)
-
             # Save state once if mutated during batch window
             if _batch_state_dirty:
                 save_state(_batch_state)
-
             # Merge all batched texts into one message
             if len(_batched_texts) > 1:
                 final_text = "\n\n".join(_batched_texts)
@@ -942,7 +833,6 @@ while True:
                 final_text = _batched_texts[0]
             else:
                 final_text = text  # fallback to original
-
             # Re-check if agent became busy during batch window (race condition fix)
             if agent._busy:
                 if final_text:
@@ -967,14 +857,11 @@ while True:
                 except Exception as _te:
                     log.error("Failed to start chat thread: %s", _te)
                     _consciousness.resume()  # ensure resume if thread fails to start
-
     st = load_state()
     st["tg_offset"] = offset
     save_state(st)
-
     now_epoch = time.time()
     loop_duration_sec = now_epoch - loop_started_ts
-
     if DIAG_SLOW_CYCLE_SEC > 0 and loop_duration_sec >= float(DIAG_SLOW_CYCLE_SEC):
         append_jsonl(
             DRIVE_ROOT / "logs" / "supervisor.jsonl",
@@ -986,7 +873,6 @@ while True:
                 "running_count": len(RUNNING),
             },
         )
-
     if DIAG_HEARTBEAT_SEC > 0 and (now_epoch - _last_diag_heartbeat_ts) >= float(DIAG_HEARTBEAT_SEC):
         workers_total = len(WORKERS)
         workers_alive = sum(1 for w in WORKERS.values() if w.proc.is_alive())
@@ -1006,7 +892,6 @@ while True:
             },
         )
         _last_diag_heartbeat_ts = now_epoch
-
     # Short sleep in active mode (fast response), longer when idle (save CPU)
     _loop_sleep = 0.1 if (_now - _last_message_ts) < _ACTIVE_MODE_SEC else 0.5
     time.sleep(_loop_sleep)
