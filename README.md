@@ -8,7 +8,7 @@
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.12.7 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.12.8 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -268,6 +268,10 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### v6.12.8 (2026-03-10)
+- Simplified restart flow: removed startup auto-resume and restored post-restart acknowledgement as the only automatic action.
+- Kept restart handoff/state visibility, but restart no longer routes through advisor/policy logic.
 
 ### v6.12.7 (2026-03-09)
 - Отключено auto-resume после рестарта как механизм самозапуска: после старта агент больше не поднимает себе работу автоматически и не создаёт restart-loop.

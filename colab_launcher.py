@@ -229,8 +229,7 @@ from supervisor.queue import (
 from supervisor.workers import (
     init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
     spawn_workers, kill_workers, assign_tasks, ensure_workers_healthy,
-    handle_chat_direct, _get_chat_agent, auto_resume_after_restart,
-    owner_message_allows_auto_resume_release,
+    handle_chat_direct, _get_chat_agent, owner_message_allows_auto_resume_release,
 )
 workers_init(
     repo_dir=REPO_DIR, drive_root=DRIVE_ROOT, max_workers=MAX_WORKERS,
@@ -309,7 +308,11 @@ def _notify_owner_after_restart() -> None:
 
         send_with_budget(
             chat_id,
-            f"✅ Перезапуск завершён: {reason} [{source}] · {branch_part}@{sha_short}",
+            (
+                f"✅ Перезапуск завершён: {reason} [{source}] · {branch_part}@{sha_short}\n\n"
+                "Контекст перечитан: scratchpad, identity и текущее состояние подняты. "
+                "Работу автоматически не продолжаю — жду следующего сообщения."
+            ),
         )
 
         st["restart_notify_pending"] = False
@@ -332,10 +335,9 @@ def _notify_owner_after_restart() -> None:
         })
 
 # ----------------------------
-# 6.1) Auto-resume after restart
+# 6.1) Post-restart acknowledgement only
 # ----------------------------
 _notify_owner_after_restart()
-auto_resume_after_restart()
 
 # ----------------------------
 # 6.2) Direct-mode watchdog
