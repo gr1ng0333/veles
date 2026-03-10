@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.12.12-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.12.13-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.12.12 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.12.13 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -268,6 +268,11 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### v6.12.13 (2026-03-10)
+- Restored supervisor-side post-restart service notification with explicit restart time and standard budget footer.
+- Kept the first substantive post-restart message agent-authored after real context recovery, without reintroducing auto-resume.
+- Preserved clean role split: supervisor confirms restart liveness, agent confirms recovered context.
 
 ### v6.12.11 (2026-03-10)
 - Fixed post-restart acknowledgement formatting to match the older 6.6.0-style rhythm more closely without bringing back auto-resume.
