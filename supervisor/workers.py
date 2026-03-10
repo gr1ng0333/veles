@@ -152,23 +152,11 @@ def handle_post_restart_ack(chat_id: int, restart_reason: str = "", restart_sour
             "type": "restart_ack",
             "chat_id": chat_id,
             "text": (
-                "Internal restart event. You have just restarted and must write the first conscious "
-                "message to the owner yourself. Read the current context honestly before replying.\n\n"
-                f"Restart requested at: {requested_at or 'unknown'}\n"
-                f"Restart reason: {reason}\n"
-                f"Restart source: {source}\n\n"
-                "Keep it short, real, and written by you rather than by a template.\n"
-                "Hard constraints:\n"
-                "- Write in Russian.\n"
-                "- This is NOT a continuation of previous work and NOT an auto-resume.\n"
-                "- Do not pretend to have done things you did not do.\n"
-                "- Confirm that you reread scratchpad and identity and recovered context.\n"
-                "- Think in two directions: what we were doing before restart, and what checks/tests make sense now to verify the recent update.\n"
-                "- Briefly point to a sensible next step.\n"
-                "- Say clearly that auto-continuation is disabled and you are waiting for the next owner message.\n"
-                "- Do not mention repository HEAD in the agent message; it is reported by the supervisor service notification.\n"
-                "- Do not use tools unless truly necessary; context already contains what you need.\n\n"
-                "No fixed bullet template is required. A short live note is better than a rigid report."
+                "Internal restart event. You have just restarted, сontinue your work. "
+                "Read scratchpad and identity — they contain context of what you were doing. "
+                "Think in two directions: what had already been done before the restart, and what checks/tests make sense now to verify the recent update. "
+                "Do not use tools unless truly necessary; context already contains what you need. "
+                "A short live note is better than a rigid report."
             ),
             "_is_direct_chat": True,
             "_is_post_restart_ack": True,
