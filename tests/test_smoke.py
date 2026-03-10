@@ -122,6 +122,9 @@ EXPECTED_TOOLS = [
     "monitor_snapshot",
     "time_status",
     "research_report",
+    "external_repo_register", "external_repo_list", "external_repo_sync",
+    "external_repo_read", "external_repo_list_files", "external_repo_search",
+    "external_repo_run_shell", "external_repo_git_status", "external_repo_git_diff",
 ]
 
 
