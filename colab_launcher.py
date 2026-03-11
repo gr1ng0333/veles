@@ -109,13 +109,15 @@ REPO_DIR.mkdir(parents=True, exist_ok=True)
 # 2.1) PID lock — prevent duplicate supervisor processes
 # ----------------------------
 _PID_LOCK_PATH = DRIVE_ROOT / "state" / "supervisor.pid"
-def _acquire_pid_lock() -> None:
+def _acquire_pid_lock() -> Optional[int]:
     """Write our PID to lock file, killing any stale previous process."""
     import signal
+    previous_pid: Optional[int] = None
     if _PID_LOCK_PATH.exists():
         try:
             old_pid = int(_PID_LOCK_PATH.read_text(encoding="utf-8").strip())
             if old_pid != os.getpid():
+                previous_pid = old_pid
                 try:
                     os.kill(old_pid, signal.SIGTERM)
                     log.warning("Killed stale supervisor process PID=%d", old_pid)
@@ -125,7 +127,8 @@ def _acquire_pid_lock() -> None:
         except (ValueError, OSError):
             pass
     _PID_LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
-_acquire_pid_lock()
+    return previous_pid
+_PREVIOUS_SUPERVISOR_PID = _acquire_pid_lock()
 # Clear stale owner mailbox files from previous session
 try:
     from ouroboros.owner_inject import get_pending_path
@@ -193,6 +196,7 @@ workers_init(
 from supervisor.events import dispatch_event
 from supervisor.audio_stt import transcribe_telegram_audio, AudioTranscriptionError
 from supervisor.codex_bootstrap import prewarm_codex_accounts
+from supervisor.restart_observability import arm_manual_terminal_restart_handoff
 # ----------------------------
 # 5) Bootstrap repo
 # ----------------------------
@@ -221,7 +225,18 @@ if restored_pending > 0:
 _launcher_session_id = uuid.uuid4().hex
 _st_launch = load_state()
 _st_launch["launcher_session_id"] = _launcher_session_id
+_st_launch, _manual_terminal_restart_armed = arm_manual_terminal_restart_handoff(
+    _st_launch,
+    _PREVIOUS_SUPERVISOR_PID,
+)
 save_state(_st_launch)
+if _manual_terminal_restart_armed:
+    append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "type": "manual_terminal_restart_inferred",
+        "previous_pid": _PREVIOUS_SUPERVISOR_PID,
+        "launcher_session_id": _launcher_session_id,
+    })
 append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "type": "launcher_start",
