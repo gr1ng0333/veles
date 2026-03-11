@@ -170,14 +170,14 @@ class TestNoCommitBackoff:
         assert len(q.PENDING) == 1
 
     def test_backoff_caps_at_power_4(self, tmp_drive, monkeypatch):
-        """Backoff exponent capped at 4 → max multiplier = 16."""
+        """Backoff exponent capped at 4 → max multiplier = 16, but hard cap at 600s."""
         from supervisor import queue as q
         monkeypatch.setattr(q, "EVOLUTION_COOLDOWN_SEC", 120)
         monkeypatch.setattr(q, "EVOLUTION_MAX_CYCLES_PER_HOUR", 100)
 
         # streak=10 → exponent = min(10-2, 4) = 4 → 120*16 = 1920s
-        # last was 1800s ago → still blocked
-        old_ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1800)
+        # but hard cap = 600s, last was 500s ago → still blocked
+        old_ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=500)
         _make_state(tmp_drive,
                     evolution_mode_enabled=True,
                     last_evolution_task_at=old_ts.isoformat(),
@@ -186,7 +186,19 @@ class TestNoCommitBackoff:
         q.PENDING.clear()
         q.RUNNING.clear()
         q.enqueue_evolution_task_if_needed()
-        assert len(q.PENDING) == 0, "1800s < 1920s, should still be blocked"
+        assert len(q.PENDING) == 0, "500s < 600s cap, should still be blocked"
+
+        # 700s ago → allowed (past 600s cap)
+        old_ts2 = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=700)
+        _make_state(tmp_drive,
+                    evolution_mode_enabled=True,
+                    last_evolution_task_at=old_ts2.isoformat(),
+                    no_commit_streak=10)
+
+        q.PENDING.clear()
+        q.RUNNING.clear()
+        q.enqueue_evolution_task_if_needed()
+        assert len(q.PENDING) == 1, "700s > 600s cap, should be allowed"
 
     def test_no_backoff_below_streak_3(self, tmp_drive, monkeypatch):
         """Streak < 3 should use base cooldown."""

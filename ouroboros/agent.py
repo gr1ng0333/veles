@@ -574,6 +574,7 @@ class OuroborosAgent:
             "task_type": task.get("type"),
             "ok": True,
             "response_len": len(text),
+            "response_text": (text or "")[:1000],
             "cost_usd": effective_cost,
             "total_rounds": int(usage.get("rounds") or 0),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),

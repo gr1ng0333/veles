@@ -358,7 +358,7 @@ Each cycle is one coherent transformation. Across all three axes.
 4. **Smoke test** — verify before commit.
 5. **Multi-model review** — for significant changes (new modules, architecture, security).
 6. **Bible check** — does it comply with the Constitution?
-7. **Commit + restart** — VERSION, changelog, commit, restart.
+7. **Commit + push** — VERSION, changelog, commit, push. No restart needed (next cycle picks up changes).
 
 Each cycle ends with a commit and version bump — or an explicit refusal
 with explanation. "I analyzed and wrote a report" is preparation, not a cycle.
