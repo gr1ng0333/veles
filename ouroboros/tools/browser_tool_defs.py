@@ -5,6 +5,42 @@ from typing import Any, List
 from ouroboros.tools.registry import ToolEntry
 
 
+def _browser_run_actions_schema() -> dict[str, Any]:
+    return {
+        "name": "browser_run_actions",
+        "description": (
+            "Run a reusable batch of browser actions against the current live/restored browser session, "
+            "with per-step verification and structured results."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for, goto.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["click", "evaluate", "fill", "goto", "scroll", "select", "wait_for"]},
+                            "selector": {"type": "string"},
+                            "value": {"type": ["string", "number", "boolean"]},
+                            "timeout": {"type": "integer", "description": "Timeout in ms for the step (default: 5000)"},
+                            "label": {"type": "string", "description": "Optional human-readable step label"},
+                            "expect_selector": {"type": "string", "description": "Optional selector that must become visible after the step"},
+                            "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
+                            "wait_for_navigation": {"type": "boolean", "description": "Wait for page URL to change/become available after the step"},
+                            "wait_until": {"type": "string", "enum": ["commit", "domcontentloaded", "load", "networkidle"], "description": "Navigation readiness target for goto (default: load)"},
+                        },
+                        "required": ["action"],
+                    },
+                },
+                "stop_on_error": {"type": "boolean", "description": "Stop at first failed step or failed verification (default: true)"},
+            },
+            "required": ["actions"],
+        },
+    }
+
+
 def build_browser_tool_entries(
     *,
     browse_page_handler: Any,
@@ -74,37 +110,7 @@ def build_browser_tool_entries(
         ),
         ToolEntry(
             name="browser_run_actions",
-            schema={
-                "name": "browser_run_actions",
-                "description": (
-                    "Run a reusable batch of browser actions against the current live/restored browser session, "
-                    "with per-step verification and structured results."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "actions": {
-                            "type": "array",
-                            "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "action": {"type": "string", "enum": ["click", "evaluate", "fill", "scroll", "select", "wait_for"]},
-                                    "selector": {"type": "string"},
-                                    "value": {"type": ["string", "number", "boolean"]},
-                                    "timeout": {"type": "integer", "description": "Timeout in ms for the step (default: 5000)"},
-                                    "label": {"type": "string", "description": "Optional human-readable step label"},
-                                    "expect_selector": {"type": "string", "description": "Optional selector that must become visible after the step"},
-                                    "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
-                                },
-                                "required": ["action"],
-                            },
-                        },
-                        "stop_on_error": {"type": "boolean", "description": "Stop at first failed step or failed verification (default: true)"},
-                    },
-                    "required": ["actions"],
-                },
-            },
+            schema=_browser_run_actions_schema(),
             handler=browser_run_actions_handler,
             timeout_sec=60,
         ),
