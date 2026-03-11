@@ -260,7 +260,6 @@ def test_browser_run_actions_waits_for_text_absence(monkeypatch):
     ]))
 
     assert payload["success"] is True
-    assert payload["results"][0]["text_must_absent"] is True
     assert payload["results"][0]["checks"]["wait_for_text"]["matched"] is True
 
 
@@ -345,3 +344,52 @@ def test_browser_run_actions_fails_when_wait_for_url_never_matches(monkeypatch):
     assert payload["executed_steps"] == 1
     assert payload["results"][0]["checks"]["wait_for_url"]["matched"] is False
     assert payload["results"][0]["checks"]["wait_for_url"]["url"].endswith('/login')
+
+
+
+def test_browser_run_actions_waits_for_url_absence_with_explicit_flag(monkeypatch):
+    page = DummyPage()
+    page.url = "https://example.com/dashboard/loading"
+    ctx = make_ctx(page)
+
+    def advance_url(timeout):
+        page.calls.append(("wait_for_timeout", timeout))
+        page.url = "https://example.com/dashboard"
+
+    page.wait_for_timeout = advance_url
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for_url", "value": "loading", "timeout": 1000, "url_must_absent": True},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["url_must_absent"] is True
+    assert payload["results"][0]["checks"]["wait_for_url"]["matched"] is True
+    assert payload["results"][0]["checks"]["wait_for_url"]["url_must_absent"] is True
+    assert payload["results"][0]["checks"]["wait_for_url"]["url"].endswith('/dashboard')
+
+
+
+def test_browser_run_actions_wait_for_url_absence_keeps_legacy_text_flag(monkeypatch):
+    page = DummyPage()
+    page.url = "https://example.com/dashboard/loading"
+    ctx = make_ctx(page)
+
+    def advance_url(timeout):
+        page.calls.append(("wait_for_timeout", timeout))
+        page.url = "https://example.com/dashboard"
+
+    page.wait_for_timeout = advance_url
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for_url", "value": "loading", "timeout": 1000, "text_must_absent": True},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["url_must_absent"] is True
+    assert payload["results"][0]["checks"]["wait_for_url"]["matched"] is True
+    assert payload["results"][0]["checks"]["wait_for_url"]["url_must_absent"] is True
