@@ -9,6 +9,7 @@ from ouroboros.tools.browser_runtime import _ensure_browser
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 _ALLOWED_ACTIONS = {"assert_text", "click", "extract_text", "fill", "goto", "screenshot", "scroll", "select", "evaluate", "wait_for", "wait_for_text", "wait_for_url"}
+_ALLOWED_WAIT_FOR_STATES = {"attached", "detached", "hidden", "visible"}
 
 
 def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -33,12 +34,17 @@ def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optiona
             "expect_url_substring": str(raw.get("expect_url_substring") or "").strip(),
             "wait_for_navigation": bool(raw.get("wait_for_navigation") or False),
             "wait_until": str(raw.get("wait_until") or "").strip() or "load",
+            "wait_for_state": str(raw.get("wait_for_state") or "").strip() or "visible",
             "match_substring": bool(raw.get("match_substring") if "match_substring" in raw else True),
             "text_must_absent": text_must_absent,
             "url_must_absent": url_must_absent,
         }
         if action == "wait_for_url" and text_must_absent and not url_must_absent:
             step["url_must_absent"] = True
+        if action == "wait_for":
+            wait_for_state = step["wait_for_state"]
+            if wait_for_state not in _ALLOWED_WAIT_FOR_STATES:
+                return None, f"action #{idx + 1} has unsupported wait_for_state '{wait_for_state}'"
         normalized.append(step)
     return normalized, None
 
@@ -205,9 +211,10 @@ def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
         _scroll_page(page, str(value or "").strip().lower())
     elif action == "wait_for":
         if selector:
-            page.wait_for_selector(selector, timeout=timeout, state="visible")
-        else:
-            page.wait_for_timeout(timeout)
+            wait_for_state = str(step.get("wait_for_state") or "visible").strip() or "visible"
+            page.wait_for_selector(selector, timeout=timeout, state=wait_for_state)
+            return {"wait_for_state": wait_for_state, "wait_for_selector": selector}
+        page.wait_for_timeout(timeout)
     elif action == "goto":
         url = "" if value is None else str(value).strip()
         if not url:
