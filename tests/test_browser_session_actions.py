@@ -1,6 +1,7 @@
 import json
 
-from ouroboros.tools.browser_session_actions import _browser_run_actions
+from ouroboros.tools.browser_session_actions import _browser_run_actions, get_tools
+from ouroboros.tools.browser_tool_defs import _browser_run_actions_schema
 from ouroboros.tools.registry import ToolContext
 
 
@@ -139,6 +140,12 @@ def test_browser_run_actions_stops_early_on_failed_verification(monkeypatch):
     assert payload["executed_steps"] == 1
     assert payload["results"][0]["success"] is False
     assert payload["results"][0]["checks"]["expect_selector"]["matched"] is False
+
+
+def test_browser_run_actions_schema_matches_shared_definition():
+    tool_entry = get_tools()[0]
+    assert tool_entry.name == "browser_run_actions"
+    assert tool_entry.schema == _browser_run_actions_schema()
 
 
 def test_browser_run_actions_rejects_invalid_payload():
