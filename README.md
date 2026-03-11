@@ -184,6 +184,11 @@ python colab_launcher.py
 | `/bg stop` | Остановить фоновое сознание. Также `/bg off`. |
 | `/bg` | Статус фонового сознания. |
 | `/switch` | Переключить активный Codex-аккаунт. |
+| `/codex` | Включить основной режим Codex и показать активный аккаунт/лимиты. |
+| `/haiku` | Включить короткий рабочий режим Haiku (tools on, ~10 rounds). |
+| `/sonnet` | Включить разговорный one-shot режим Sonnet (tools off). |
+| `/opus` | Включить one-shot режим планирования Opus (tools off). |
+| `/model` | Показать активный режим, лимиты и runtime-профиль. |
 
 Все остальные сообщения — прямо в LLM (Принцип 3: LLM-First).
 
@@ -268,6 +273,11 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### v6.17.1 (2026-03-11)
+- Promoted model modes from a UI switcher into a real runtime policy layer: active-mode round limits now resolve from `ouroboros/model_modes.py` instead of relying on `OUROBOROS_MAX_ROUNDS` as the primary source of truth.
+- Made `/model` and `/codex` more truthful by reporting the active mode profile together with Codex account/limit details when applicable.
+- Added targeted tests for runtime policy resolution and codex mode summary output.
 
 ### v6.17.0 (2026-03-11)
 - Added explicit persistent model modes for `/codex`, `/haiku`, `/sonnet`, `/opus`, and `/model` instead of ad-hoc single-env model switching.

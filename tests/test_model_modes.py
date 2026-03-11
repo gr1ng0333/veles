@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from ouroboros.model_modes import MODEL_MODES, bootstrap_mode_env
+from ouroboros.model_modes import MODEL_MODES, bootstrap_mode_env, get_runtime_policy, mode_summary_text
 from supervisor.state import load_state, save_state
 
 
@@ -45,3 +45,36 @@ def test_bootstrap_mode_env_uses_persisted_active_mode() -> None:
             os.environ.pop("OUROBOROS_MODEL_LIGHT", None)
         else:
             os.environ["OUROBOROS_MODEL_LIGHT"] = old_light
+
+
+
+def test_runtime_policy_uses_active_mode_registry(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
+    policy = get_runtime_policy({"active_model_mode": "haiku"})
+    assert policy.mode_key == "haiku"
+    assert policy.main_model == MODEL_MODES["haiku"].model
+    assert policy.max_rounds == MODEL_MODES["haiku"].max_rounds
+    assert policy.tools_enabled is True
+    assert policy.aux_light_model == "qwen/qwen3-coder:free"
+
+
+def test_mode_summary_text_for_codex_includes_mode_details(monkeypatch) -> None:
+    from ouroboros import model_modes as mm
+
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
+    monkeypatch.setattr(mm, "get_active_mode", lambda st=None: MODEL_MODES["codex"])
+
+    def _fake_statuses():
+        return [{"index": 2, "is_active": True, "usage_5h": 11, "usage_7d": 222}]
+
+    import ouroboros.codex_proxy as cp
+    monkeypatch.setattr(cp, "get_accounts_status", _fake_statuses)
+
+    summary = mode_summary_text()
+    assert "Mode: codex" in summary
+    assert "Main: codex/gpt-5.4" in summary
+    assert "Rounds limit: 200" in summary
+    assert "Tools: on" in summary
+    assert "Aux light model: qwen/qwen3-coder:free" in summary
+    assert "Account: acc2" in summary
+    assert "Limits: 5h=11 7d=222" in summary
