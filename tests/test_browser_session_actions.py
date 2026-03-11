@@ -349,6 +349,46 @@ def test_browser_run_actions_wait_for_supports_detached_state(monkeypatch):
     assert ("wait_for_selector", "#loading", 1000, "detached") in page.calls
 
 
+def test_browser_run_actions_supports_hidden_expect_selector_state(monkeypatch):
+    page = DummyPage()
+    page.visible.add("#toast")
+    ctx = make_ctx(page)
+
+    def stateful_wait_for_selector(selector, timeout=0, state="visible"):
+        page.calls.append(("wait_for_selector", selector, timeout, state))
+        if selector == "#dismiss" and state == "visible":
+            return
+        if selector == "#toast" and state == "hidden":
+            page.visible.discard("#toast")
+            return
+        if selector not in page.visible and state in {"visible", "attached"}:
+            raise RuntimeError(f"missing selector: {selector}")
+
+    page.wait_for_selector = stateful_wait_for_selector
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "click", "selector": "#dismiss", "expect_selector": "#toast", "expect_selector_state": "hidden"},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["checks"]["expect_selector"]["matched"] is True
+    assert payload["results"][0]["checks"]["expect_selector"]["state"] == "hidden"
+    assert ("wait_for_selector", "#toast", 5000, "hidden") in page.calls
+
+
+def test_browser_run_actions_rejects_invalid_expect_selector_state(monkeypatch):
+    page = DummyPage()
+    ctx = make_ctx(page)
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    result = _browser_run_actions(ctx, actions=[
+        {"action": "click", "selector": "#submit", "expect_selector": "#toast", "expect_selector_state": "gone"},
+    ])
+
+    assert result == "Error: action #1 has unsupported expect_selector_state 'gone'"
+
+
 def test_browser_run_actions_rejects_invalid_wait_for_state(monkeypatch):
     page = DummyPage()
     ctx = make_ctx(page)
