@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ouroboros.tools.browser_runtime import _ensure_browser
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
-_ALLOWED_ACTIONS = {"assert_text", "click", "extract_text", "fill", "goto", "screenshot", "scroll", "select", "evaluate", "wait_for", "wait_for_text"}
+_ALLOWED_ACTIONS = {"assert_text", "click", "extract_text", "fill", "goto", "screenshot", "scroll", "select", "evaluate", "wait_for", "wait_for_text", "wait_for_url"}
 
 
 def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -109,6 +109,35 @@ def _wait_for_text(page: Any, selector: str, expected: str, timeout: int, *, mat
         page.wait_for_timeout(100)
 
 
+def _wait_for_url(page: Any, expected: str, timeout: int, *, match_substring: bool = True, url_must_absent: bool = False) -> Dict[str, Any]:
+    if not expected:
+        raise ValueError("wait_for_url action requires value")
+
+    deadline = time.monotonic() + max(timeout, 0) / 1000.0
+    last_url = str(page.url or "")
+    while True:
+        current_url = str(page.url or "")
+        last_url = current_url
+        matched = (expected not in current_url) if url_must_absent else ((expected in current_url) if match_substring else (current_url == expected))
+        if matched:
+            return {
+                "url": current_url,
+                "expected_url": expected,
+                "match_substring": match_substring,
+                "url_must_absent": url_must_absent,
+                "wait_for_url_matched": True,
+            }
+        if time.monotonic() >= deadline:
+            return {
+                "url": last_url,
+                "expected_url": expected,
+                "match_substring": match_substring,
+                "url_must_absent": url_must_absent,
+                "wait_for_url_matched": False,
+            }
+        page.wait_for_timeout(100)
+
+
 def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
     action = step["action"]
     selector = step.get("selector") or ""
@@ -157,6 +186,15 @@ def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
             timeout,
             match_substring=bool(step.get("match_substring") if "match_substring" in step else True),
             text_must_absent=bool(step.get("text_must_absent") or False),
+        )
+    elif action == "wait_for_url":
+        expected = "" if value is None else str(value)
+        return _wait_for_url(
+            page,
+            expected,
+            timeout,
+            match_substring=bool(step.get("match_substring") if "match_substring" in step else True),
+            url_must_absent=bool(step.get("text_must_absent") or False),
         )
     elif action == "scroll":
         _scroll_page(page, str(value or "").strip().lower())
@@ -233,6 +271,22 @@ def _verify_step(page: Any, step: Dict[str, Any], *, previous_url: str = "", exe
                 checks[action]["error"] = execution["wait_for_text_error"]
             if "wait_for_text_note" in execution:
                 checks[action]["note"] = execution["wait_for_text_note"]
+        verified = verified and matched
+
+    if action == "wait_for_url":
+        expected_url = "" if step.get("value") is None else str(step.get("value"))
+        match_substring = bool(step.get("match_substring") if "match_substring" in step else True)
+        url_must_absent = bool(step.get("text_must_absent") or False)
+        execution_url = execution.get("url") if isinstance(execution, dict) and "url" in execution else None
+        current_url = str(execution_url) if execution_url is not None else str(page.url or "")
+        matched = (expected_url not in current_url) if url_must_absent else ((expected_url in current_url) if match_substring else (current_url == expected_url))
+        checks["wait_for_url"] = {
+            "expected_url": expected_url,
+            "matched": matched,
+            "match_substring": match_substring,
+            "url_must_absent": url_must_absent,
+            "url": current_url,
+        }
         verified = verified and matched
 
     if expect_selector:
@@ -329,7 +383,7 @@ def get_tools() -> List[ToolEntry]:
                     "properties": {
                         "actions": {
                             "type": "array",
-                            "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for, goto, extract_text, assert_text, wait_for_text.",
+                            "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, screenshot, wait_for, goto, extract_text, assert_text, wait_for_text, wait_for_url.",
                             "items": {
                                 "type": "object",
                                 "properties": {
