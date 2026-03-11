@@ -138,3 +138,34 @@ def test_research_report_returns_degraded_result_without_sources(_search):
     assert result["status"] == "degraded"
     assert result["search"]["backend"] == "openai"
     assert result["error"]
+
+
+@patch('ouroboros.tools.research_report._get_llm_client', return_value=DummyLLM())
+@patch('ouroboros.tools.research_report._search_web', return_value={
+    "status": "ok",
+    "backend": "searxng",
+    "error": None,
+    "answer": "",
+    "sources": [
+        {"title": "Source A", "url": "https://example.com/a", "snippet": "Alpha snippet."},
+        {"title": "Source B", "url": "https://example.com/b", "snippet": "Beta snippet."},
+    ],
+})
+def test_research_report_supports_markdown_export(_search, _llm):
+    ctx = make_ctx()
+    raw = _research_report(ctx, topic="test topic", output_format="md")
+    result = json.loads(raw)
+
+    assert result["status"] == "ok"
+    assert result["output_format"] == "md"
+    assert result["mime_type"] == "text/markdown"
+    report_path = pathlib.Path(result["report_path"])
+    assert report_path.suffix == ".md"
+    md_text = report_path.read_text(encoding="utf-8")
+    assert "# Тестовый отчёт" in md_text
+    assert "## Диагностика поиска" in md_text
+    assert "- Backend: searxng" in md_text
+    doc_events = [event for event in ctx.pending_events if event.get("type") == "send_document"]
+    assert doc_events
+    assert doc_events[0].get("mime_type") == "text/markdown"
+    assert doc_events[0].get("filename", "").endswith(".md")

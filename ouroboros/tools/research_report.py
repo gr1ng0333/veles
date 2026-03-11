@@ -8,7 +8,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -223,6 +223,21 @@ def _generate_payload(
     return _fallback_payload(topic, sources, diagnostics)
 
 
+
+
+def _reliability_label(diagnostics: SearchDiagnostics, source_count: int) -> str:
+    if diagnostics.status == "ok" and source_count >= 4:
+        return "Высокая"
+    if source_count:
+        return "Средняя"
+    return "Низкая"
+
+
+def _limitation_notice(diagnostics: SearchDiagnostics) -> str:
+    if diagnostics.status == "ok":
+        return "Поиск дал достаточную основу для короткого отчёта."
+    return "Поиск работал с деградацией; выводы стоит перепроверить по источникам."
+
 def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource], diagnostics: SearchDiagnostics) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     title = html.escape(payload.get("title") or f"Отчёт: {topic}")
@@ -254,12 +269,8 @@ def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource
         f"<tr><th>{html.escape(label)}</th><td>{html.escape(value)}</td></tr>" for label, value in diagnostics_items
     )
 
-    reliability = "Высокая" if diagnostics.status == "ok" and len(sources) >= 4 else "Средняя" if sources else "Низкая"
-    limitation_notice = (
-        "Поиск дал достаточную основу для короткого отчёта."
-        if diagnostics.status == "ok"
-        else "Поиск работал с деградацией; выводы стоит перепроверить по источникам."
-    )
+    reliability = _reliability_label(diagnostics, len(sources))
+    limitation_notice = _limitation_notice(diagnostics)
     diagnostic_class = "good" if diagnostics.status == "ok" else "bad"
 
     return f"""<!doctype html>
@@ -339,10 +350,94 @@ def _render_html(payload: Dict[str, Any], topic: str, sources: List[ReportSource
 """
 
 
-def _safe_filename(topic: str) -> str:
+def _render_markdown(payload: Dict[str, Any], topic: str, sources: List[ReportSource], diagnostics: SearchDiagnostics) -> str:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    title = str(payload.get("title") or f"Отчёт: {topic}")
+    summary = str(payload.get("summary") or "").strip()
+    conclusion = str(payload.get("conclusion") or "").strip()
+    key_findings = [str(item) for item in (payload.get("key_findings") or [])]
+    limitations = [str(item) for item in (payload.get("limitations") or [])]
+    source_notes = payload.get("source_notes") or []
+    notes_by_url = {str(item.get("url", "")): item for item in source_notes if isinstance(item, dict)}
+
+    lines = [
+        f"# {title}",
+        "",
+        f"- Тема: `{topic}`",
+        f"- Сформировано: {now}",
+        f"- Источники: {len(sources)}",
+        f"- Надёжность: {_reliability_label(diagnostics, len(sources))}",
+        f"- Поиск: `{diagnostics.backend}` / `{diagnostics.status}`",
+        "",
+        "## Краткое резюме",
+        "",
+        summary or "—",
+        "",
+        "## Ключевые выводы",
+        "",
+    ]
+    if key_findings:
+        lines.extend(f"- {item}" for item in key_findings)
+    else:
+        lines.append("- —")
+
+    lines.extend([
+        "",
+        "## Ограничения и надёжность",
+        "",
+        _limitation_notice(diagnostics),
+        "",
+    ])
+    if limitations:
+        lines.extend(f"- {item}" for item in limitations)
+    else:
+        lines.append("- —")
+
+    lines.extend([
+        "",
+        "## Источники",
+        "",
+    ])
+    for idx, source in enumerate(sources, start=1):
+        note_item = notes_by_url.get(source.url, {})
+        note = str(note_item.get("note") or source.snippet or "Без дополнительной заметки.").strip()
+        lines.extend([
+            f"### {idx}. {source.title}",
+            f"- URL: {source.url}",
+            f"- Домен: {source.domain or 'unknown'}",
+            f"- Оценка: {source.score}",
+            f"- Заметка: {note}",
+            "",
+        ])
+
+    lines.extend([
+        "## Диагностика поиска",
+        "",
+        f"- Статус поиска: {diagnostics.status}",
+        f"- Backend: {diagnostics.backend}",
+        f"- Ошибка: {diagnostics.error or '—'}",
+        f"- Сырой answer: {diagnostics.answer or '—'}",
+        "",
+        "## Вывод",
+        "",
+        conclusion or "—",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def _build_report_artifact(payload: Dict[str, Any], topic: str, sources: List[ReportSource], diagnostics: SearchDiagnostics, output_format: str) -> Tuple[str, str, str]:
+    fmt = (output_format or "html").strip().lower()
+    if fmt == "md":
+        return _render_markdown(payload, topic=topic, sources=sources, diagnostics=diagnostics), "md", "text/markdown"
+    return _render_html(payload, topic=topic, sources=sources, diagnostics=diagnostics), "html", "text/html"
+
+
+def _safe_filename(topic: str, extension: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "-", topic).strip("-").lower()
     slug = slug[:60] or "report"
-    return f"research-report-{slug}.html"
+    ext = (extension or "html").strip(".").lower() or "html"
+    return f"research-report-{slug}.{ext}"
 
 
 def _research_report(
@@ -353,6 +448,7 @@ def _research_report(
     search_query: str = "",
     deliver: bool = True,
     model: str = "",
+    output_format: str = "html",
 ) -> str:
     query = (search_query or topic).strip()
     if not query:
@@ -377,6 +473,8 @@ def _research_report(
             "report_path": "",
             "filename": "",
             "delivered": False,
+            "output_format": (output_format or "html").strip().lower() or "html",
+            "mime_type": "",
             "title": "",
             "summary": "",
             "search": {
@@ -399,13 +497,19 @@ def _research_report(
         model=chosen_model,
         diagnostics=diagnostics,
     )
-    html_report = _render_html(payload, topic=topic, sources=sources, diagnostics=diagnostics)
-    filename = _safe_filename(topic)
+    report_text, resolved_format, mime_type = _build_report_artifact(
+        payload,
+        topic=topic,
+        sources=sources,
+        diagnostics=diagnostics,
+        output_format=output_format,
+    )
+    filename = _safe_filename(topic, resolved_format)
 
     report_dir = ctx.drive_path("reports")
     report_dir.mkdir(parents=True, exist_ok=True)
     out_path = report_dir / filename
-    out_path.write_text(html_report, encoding="utf-8")
+    out_path.write_text(report_text, encoding="utf-8")
 
     delivered = False
     if deliver and ctx.current_chat_id:
@@ -415,8 +519,8 @@ def _research_report(
                 "chat_id": int(ctx.current_chat_id or 0),
                 "filename": filename,
                 "caption": f"Research report: {topic}",
-                "mime_type": "text/html",
-                "file_base64": base64.b64encode(html_report.encode("utf-8")).decode("ascii"),
+                "mime_type": mime_type,
+                "file_base64": base64.b64encode(report_text.encode("utf-8")).decode("ascii"),
             }
         )
         delivered = True
@@ -430,6 +534,8 @@ def _research_report(
         "report_path": str(out_path),
         "filename": filename,
         "delivered": delivered,
+        "output_format": resolved_format,
+        "mime_type": mime_type,
         "title": payload.get("title", ""),
         "summary": payload.get("summary", ""),
         "search": {
@@ -449,7 +555,7 @@ def get_tools() -> List[ToolEntry]:
             schema={
                 "name": "research_report",
                 "description": (
-                    "Search the web, synthesize a short research report, render it as a polished HTML file, "
+                    "Search the web, synthesize a short research report, render it as a polished HTML or Markdown file, "
                     "save it locally, and optionally send it to the current Telegram chat as a document."
                 ),
                 "parameters": {
@@ -465,6 +571,12 @@ def get_tools() -> List[ToolEntry]:
                             "default": True,
                         },
                         "model": {"type": "string", "description": "Optional LLM model override for synthesis"},
+                        "output_format": {
+                            "type": "string",
+                            "enum": ["html", "md"],
+                            "description": "Output file format for the saved and delivered report",
+                            "default": "html"
+                        },
                     },
                     "required": ["topic"],
                 },

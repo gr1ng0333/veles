@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.18.19-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.18.20-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.18.19 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.18.20 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -273,6 +273,10 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### v6.18.20 (2026-03-11)
+- `research_report` теперь поддерживает явный `output_format` (`html` или `md`), так что web-research можно сохранять и отправлять не только как polished HTML, но и как переносимый Markdown-артефакт.
+- Для markdown-пути добавлены корректные `filename`/`mime_type` и регрессионный тест, чтобы экспорт и Telegram-доставка не расходились с реальным форматом.
 
 ### v6.18.19 (2026-03-11)
 - У `browser_run_actions` убран split-brain между локальной tool schema и канонической схемой в `browser_tool_defs.py`: runtime и self-description снова используют один источник истины.
