@@ -435,3 +435,98 @@ def test_summarize_auth_diagnostics_exposes_inactive_handoff_when_no_verificatio
     assert diagnostics["verification_handoff"]["active"] is False
     assert diagnostics["verification_handoff"]["mode"] == "none"
     assert diagnostics["verification_handoff"]["continuation"] == "continue"
+
+
+def test_infer_auth_state_does_not_treat_cookie_only_on_login_url_as_logged_in():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={
+            "title": "Sign in",
+            "body_text": "Sign in to continue",
+            "cookie_names": ["sessionid"],
+            "success_cookie_names": ["sessionid"],
+            "login_form_visible": False,
+            "visible_password_fields": 0,
+            "body_mentions_login": True,
+        },
+        matched=[],
+        profile=normalize_site_profile({"success_cookie_names": ["sessionid"]}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+
+    state = infer_auth_state(snapshot)
+
+    assert state["state"] == "logged_out"
+
+
+def test_infer_auth_state_does_not_treat_account_ui_on_login_url_as_logged_in_without_strong_signal():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={
+            "title": "Login",
+            "body_text": "Manage your account",
+            "has_profile_ui": True,
+            "login_form_visible": False,
+        },
+        matched=[],
+        profile=normalize_site_profile({}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+
+    state = infer_auth_state(snapshot)
+
+    assert state["state"] == "unknown"
+
+
+def test_build_auth_outcome_blocks_captcha_auto_attempt_without_captcha_selector():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=[],
+        profile=normalize_site_profile({}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+
+    assert verification["detected"] is True
+    assert verification["kind"] == "captcha"
+    assert verification["actionable"] is False
+    assert verification["missing_requirements"] == ["captcha_selector"]
+    assert outcome["status"] == "blocked_by_verification"
+    assert outcome["continuation"] == "stop"
+    assert outcome["should_auto_attempt_verification"] is False
+    assert handoff["mode"] == "blocked"
+    assert handoff["required_inputs"] == ["captcha_selector"]
+
+
+def test_build_auth_outcome_blocks_owner_handoff_without_mfa_selector():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/verify",
+        page_signals={"title": "Verify", "body_text": "Enter the 6-digit code from your authenticator app"},
+        matched=[],
+        profile=normalize_site_profile({}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+
+    assert verification["detected"] is True
+    assert verification["kind"] == "mfa"
+    assert verification["actionable"] is False
+    assert verification["missing_requirements"] == ["mfa_selector"]
+    assert outcome["status"] == "blocked_by_verification"
+    assert outcome["continuation"] == "stop"
+    assert outcome["requires_owner_input"] is False
+    assert handoff["mode"] == "blocked"
+    assert handoff["required_inputs"] == ["mfa_selector"]
