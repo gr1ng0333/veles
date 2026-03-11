@@ -79,6 +79,14 @@ def build_auth_page_snapshot(
     mfa_selector_hit = _selector_matched(profile.get("mfa_selector", ""), matched, "mfa_selector")
     captcha_text_hits = [term for term in profile.get("captcha_text_substrings", []) if term in body_text_lower]
     mfa_text_hits = [term for term in profile.get("mfa_text_substrings", []) if term in body_text_lower]
+    success_cookie_names = [str(x).strip() for x in (signals.get("success_cookie_names") or profile.get("success_cookie_names") or []) if str(x).strip()]
+    cookie_names = [str(x).strip() for x in (signals.get("cookie_names") or []) if str(x).strip()]
+    success_cookie_hits = [name for name in success_cookie_names if name in cookie_names]
+    failure_terms = [str(x).strip() for x in (signals.get("failure_text_substrings") or profile.get("failure_text_substrings") or []) if str(x).strip()]
+    failure_text_hits = [
+        term for term in failure_terms
+        if term.lower() in body_text_lower or term.lower() in " ".join(error_texts).lower()
+    ]
 
     return {
         "profile": profile,
@@ -104,6 +112,10 @@ def build_auth_page_snapshot(
         "mfa_selector_hit": mfa_selector_hit,
         "captcha_text_hits": captcha_text_hits,
         "mfa_text_hits": mfa_text_hits,
+        "cookie_names": cookie_names,
+        "success_cookie_names": success_cookie_names,
+        "success_cookie_hits": success_cookie_hits,
+        "failure_text_hits": failure_text_hits,
     }
 
 
@@ -125,18 +137,18 @@ def infer_auth_state(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     if profile.get("failure_selector") and "failure_selector" in matched:
         return {"state": "error", "reason": "explicit failure selector matched", "matched": matched}
 
-    failure_hits = [
-        term for term in profile.get("failure_text_substrings") or []
-        if term.lower() in snapshot.get("body_text_lower", "") or term.lower() in " ".join(snapshot.get("error_texts") or []).lower()
-    ]
+    failure_hits = list(snapshot.get("failure_text_hits") or [])
     if failure_hits:
         return {"state": "error", "reason": f"failure text matched: {', '.join(failure_hits[:3])}", "matched": matched}
+
+    cookie_hit = bool(snapshot.get("success_cookie_hits"))
+    cookie_only_success = cookie_hit and not snapshot.get("login_form_visible")
 
     if snapshot.get("protected_url_alive") or (
         profile.get("success_selector") and "success_selector" in matched
     ) or snapshot.get("redirected_away_from_login") or (
         snapshot.get("has_profile_ui") or snapshot.get("body_mentions_profile") or snapshot.get("body_mentions_logout")
-    ):
+    ) or cookie_only_success:
         success_reasons: List[str] = []
         if profile.get("success_selector") and "success_selector" in matched:
             success_reasons.append("success selector matched")
@@ -146,6 +158,8 @@ def infer_auth_state(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             success_reasons.append("redirected to expected URL")
         if snapshot.get("has_profile_ui") or snapshot.get("body_mentions_profile") or snapshot.get("body_mentions_logout"):
             success_reasons.append("account UI present")
+        if cookie_hit:
+            success_reasons.append(f"auth cookie present: {', '.join((snapshot.get('success_cookie_hits') or [])[:3])}")
         return {"state": "logged_in", "reason": "; ".join(success_reasons[:3]) or "authenticated signals present", "matched": matched}
 
     if profile.get("logged_out_selector") and "logged_out_selector" in matched:
@@ -259,8 +273,16 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
         evidence.append("captcha_text")
     if snapshot.get("mfa_text_hits"):
         evidence.append("mfa_text")
+    if snapshot.get("success_cookie_hits"):
+        evidence.append("success_cookie")
+    if snapshot.get("failure_text_hits"):
+        evidence.append("failure_text")
 
-    if state == "logged_in" and (snapshot.get("protected_url_alive") or "success_selector" in (snapshot.get("matched") or [])):
+    if state == "logged_in" and (
+        snapshot.get("protected_url_alive")
+        or "success_selector" in (snapshot.get("matched") or [])
+        or snapshot.get("success_cookie_hits")
+    ):
         confidence = "high"
     elif state in {"captcha", "mfa", "error", "logged_out", "login_form", "signup_form", "username_step"}:
         confidence = "medium"
@@ -289,8 +311,23 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
             "captcha_text_hits": snapshot.get("captcha_text_hits", []),
             "mfa_text_hits": snapshot.get("mfa_text_hits", []),
             "protected_url_alive": snapshot.get("protected_url_alive", False),
+            "success_cookie_hits": snapshot.get("success_cookie_hits", []),
+            "failure_text_hits": snapshot.get("failure_text_hits", []),
         },
     }
+
+
+def _selector_is_visible(page: Any, selector: str) -> bool:
+    selector = str(selector or "").strip()
+    if not selector:
+        return False
+    try:
+        locator = page.locator(selector)
+        if locator.count() == 0:
+            return False
+        return bool(locator.first.is_visible())
+    except Exception:
+        return False
 
 
 import json
@@ -368,13 +405,8 @@ def build_post_submit_auth_result(
         ("mfa_selector", profile.get("mfa_selector", "")),
     ]
     for label, selector in selector_checks:
-        if not selector:
-            continue
-        try:
-            if page.locator(selector).count() > 0:
-                matched.append(label)
-        except Exception:
-            continue
+        if _selector_is_visible(page, selector):
+            matched.append(label)
 
     snapshot = build_auth_page_snapshot(
         current_url=page.url,

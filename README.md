@@ -274,6 +274,11 @@ python colab_launcher.py
 
 ## Changelog
 
+### 6.17.10
+- Tightened browser auth-state inference so `success_cookie_names` and runtime `failure_text_substrings` now participate in real post-submit diagnostics instead of only living in the tool schema.
+- Stopped post-submit selector checks from treating any hidden DOM match as success/failure evidence: auth-flow diagnostics now require visible selector hits.
+- Normalized browser auth diagnostics to `login_mode` naming and added regression tests for cookie-only success, visible-login-form guard, and runtime failure-text detection.
+
 ### 6.17.9
 - Added site-profile-aware auth diagnostics in `ouroboros/tools/browser_auth_flow.py` so login flows can infer auth state, evidence, and next action instead of returning blind form-fill results.
 - Made `browser_fill_login_form` support a dry-plan path without live browser state and return structured post-submit auth results when a browser is present.

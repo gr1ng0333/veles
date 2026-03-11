@@ -158,3 +158,78 @@ def test_browser_fill_login_form_returns_profile_aware_plan_without_browser():
     assert payload["state"] == "planned"
     assert payload["next_action"]["action"] == "fill_login_form"
     assert payload["used_selectors"]["username_selector"] == "#email"
+
+
+def test_infer_auth_state_uses_success_cookie_hits_when_login_form_is_gone():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/app",
+        page_signals={
+            "title": "Dashboard",
+            "body_text": "Welcome",
+            "cookie_names": ["sessionid"],
+            "success_cookie_names": ["sessionid"],
+            "login_form_visible": False,
+            "visible_password_fields": 0,
+        },
+        matched=[],
+        profile=normalize_site_profile({"success_cookie_names": ["sessionid"]}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+
+    state = infer_auth_state(snapshot)
+    diagnostics = summarize_auth_diagnostics(snapshot, state, build_next_action_plan(snapshot, state))
+
+    assert state["state"] == "logged_in"
+    assert "success_cookie" in diagnostics["evidence"]
+
+
+def test_infer_auth_state_does_not_treat_cookie_as_success_while_login_form_visible():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={
+            "title": "Sign in",
+            "body_text": "Sign in",
+            "cookie_names": ["sessionid"],
+            "success_cookie_names": ["sessionid"],
+            "login_form_visible": True,
+            "visible_login_inputs": 1,
+            "visible_password_fields": 1,
+        },
+        matched=[],
+        profile=normalize_site_profile({
+            "success_cookie_names": ["sessionid"],
+            "username_selector": "#email",
+            "password_selector": "#password",
+        }),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+
+    state = infer_auth_state(snapshot)
+
+    assert state["state"] == "login_form"
+
+
+def test_infer_auth_state_uses_failure_text_from_runtime_signals():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={
+            "title": "Login",
+            "body_text": "Account locked",
+            "failure_text_substrings": ["account locked"],
+            "error_texts": ["Account locked"],
+            "login_form_visible": False,
+            "visible_password_fields": 0,
+        },
+        matched=[],
+        profile=normalize_site_profile({}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+
+    state = infer_auth_state(snapshot)
+    diagnostics = summarize_auth_diagnostics(snapshot, state, build_next_action_plan(snapshot, state))
+
+    assert state["state"] == "error"
+    assert "failure_text" in diagnostics["evidence"]
