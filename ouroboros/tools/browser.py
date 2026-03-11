@@ -179,7 +179,7 @@ def _advance_multi_step_login(
                 fill_results=[{"step": "username_fill", **user_fill}],
                 submit=next_result,
                 diagnostics={
-                    "site_profile": {"site_name": profile.get("site_name", ""), "domain": profile.get("domain", ""), "flow_type": profile.get("flow_type", "login")},
+                    "site_profile": {"site_name": profile.get("site_name", ""), "domain": profile.get("domain", ""), "login_mode": profile.get("login_mode", "login")},
                     "state": "username_step",
                     "reason": "password field not found after username step",
                     "next_action": {"action": "inspect_page", "reason": "password field not found after username step", "can_proceed": False, "required_selectors": {"next_selector": next_sel or submit_sel}},
@@ -304,7 +304,7 @@ def _browser_fill_login_form(
 
     if not plan["can_proceed"]:
         diagnostics = {
-            "site_profile": {"site_name": profile.get("site_name", ""), "domain": profile.get("domain", ""), "flow_type": profile.get("flow_type", "login")},
+            "site_profile": {"site_name": profile.get("site_name", ""), "domain": profile.get("domain", ""), "login_mode": profile.get("login_mode", "login")},
             "state": "blocked",
             "reason": plan.get("reason", "cannot proceed"),
             "next_action": {"action": "inspect_page", "reason": plan.get("reason", "cannot proceed"), "can_proceed": False, "required_selectors": {}},
@@ -467,6 +467,10 @@ def _browser_check_login_state(
     page.evaluate(_SELECTOR_HELPERS_JS)
     _post_submit_wait(page)
     profile = normalize_site_profile(site_profile)
+    if success_cookie_names:
+        profile["success_cookie_names"] = [str(x).strip() for x in success_cookie_names if str(x).strip()]
+    if failure_text_substrings:
+        profile["failure_text_substrings"] = [str(x).strip() for x in failure_text_substrings if str(x).strip()]
 
     current_url = str(page.url or "")
     expected_url = _normalize_selector(profile.get("expected_url_substring") or expected_url_substring).lower()
