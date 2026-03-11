@@ -33,6 +33,7 @@ def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optiona
             "expect_selector": str(raw.get("expect_selector") or "").strip(),
             "expect_selector_state": str(raw.get("expect_selector_state") or "").strip() or "visible",
             "expect_url_substring": str(raw.get("expect_url_substring") or "").strip(),
+            "expect_url_must_absent": bool(raw.get("expect_url_must_absent") or False),
             "wait_for_navigation": bool(raw.get("wait_for_navigation") or False),
             "wait_until": str(raw.get("wait_until") or "").strip() or "load",
             "wait_for_state": str(raw.get("wait_for_state") or "").strip() or "visible",
@@ -315,12 +316,14 @@ def _verify_step(page: Any, step: Dict[str, Any], *, previous_url: str = "", exe
             checks["expect_selector"] = {"selector": expect_selector, "state": expect_selector_state, "matched": False, "error": str(exc)}
 
     if expect_url_substring:
-        current_url = page.url
-        matched = expect_url_substring in current_url
+        current_url = str(page.url or "")
+        expect_url_must_absent = bool(step.get("expect_url_must_absent") or False)
+        matched = (expect_url_substring not in current_url) if expect_url_must_absent else (expect_url_substring in current_url)
         checks["expect_url_substring"] = {
             "substring": expect_url_substring,
             "matched": matched,
-            "current_url": current_url,
+            "url": current_url,
+            "must_absent": expect_url_must_absent,
         }
         verified = verified and matched
 
@@ -411,6 +414,7 @@ def get_tools() -> List[ToolEntry]:
                                     "label": {"type": "string", "description": "Optional human-readable step label"},
                                     "expect_selector": {"type": "string", "description": "Optional selector that must become visible after the step"},
                                     "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
+                                    "expect_url_must_absent": {"type": "boolean", "description": "For expect_url_substring: require the substring to be absent after the step instead of present."},
                                     "wait_for_navigation": {"type": "boolean", "description": "Wait for page URL to change/become available after the step"},
                                     "wait_until": {"type": "string", "enum": ["commit", "domcontentloaded", "load", "networkidle"], "description": "Navigation readiness target for goto (default: load)"},
                                     "match_substring": {"type": "boolean", "description": "For assert_text: substring match (default: true). If false, require exact equality."},
