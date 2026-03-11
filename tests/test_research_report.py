@@ -1,6 +1,7 @@
 import json
 import pathlib
 import tempfile
+import zipfile
 from unittest.mock import patch
 
 from ouroboros.tools.research_report import _normalize_sources, _research_report
@@ -169,3 +170,37 @@ def test_research_report_supports_markdown_export(_search, _llm):
     assert doc_events
     assert doc_events[0].get("mime_type") == "text/markdown"
     assert doc_events[0].get("filename", "").endswith(".md")
+
+
+@patch('ouroboros.tools.research_report._get_llm_client', return_value=DummyLLM())
+@patch('ouroboros.tools.research_report._search_web', return_value={
+    "status": "ok",
+    "backend": "searxng",
+    "error": None,
+    "answer": "",
+    "sources": [
+        {"title": "Source A", "url": "https://example.com/a", "snippet": "Alpha snippet."},
+        {"title": "Source B", "url": "https://example.com/b", "snippet": "Beta snippet."},
+    ],
+})
+def test_research_report_supports_docx_export(_search, _llm):
+    ctx = make_ctx()
+    raw = _research_report(ctx, topic="test topic", output_format="docx")
+    result = json.loads(raw)
+
+    assert result["status"] == "ok"
+    assert result["output_format"] == "docx"
+    assert result["mime_type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    report_path = pathlib.Path(result["report_path"])
+    assert report_path.suffix == ".docx"
+    with zipfile.ZipFile(report_path, 'r') as zf:
+        names = set(zf.namelist())
+        assert '[Content_Types].xml' in names
+        assert 'word/document.xml' in names
+        document_xml = zf.read('word/document.xml').decode('utf-8')
+    assert 'Тестовый отчёт' in document_xml
+    assert 'Диагностика поиска' in document_xml
+    doc_events = [event for event in ctx.pending_events if event.get("type") == "send_document"]
+    assert doc_events
+    assert doc_events[0].get("mime_type") == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert doc_events[0].get("filename", "").endswith(".docx")
