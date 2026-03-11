@@ -440,7 +440,7 @@ def _browser_fill_login_form(
         f"current_url={page.url}"
     )
     return json.dumps({
-        "success": auth_result["post_submit_state"].get("state") != "error",
+        "success": bool((auth_result.get("outcome") or {}).get("can_continue")),
         "message": message,
         "flow_plan": plan,
         "selectors": chosen,
@@ -448,7 +448,7 @@ def _browser_fill_login_form(
         "steps": step_results,
         "submit": submit_result,
         **auth_result,
-        "error": None if auth_result["post_submit_state"].get("state") != "error" else auth_result["post_submit_state"].get("reason"),
+        "error": None if not (auth_result.get("outcome") or {}).get("is_error") else auth_result["post_submit_state"].get("reason"),
     }, ensure_ascii=False)
 
 
@@ -549,6 +549,7 @@ def _browser_check_login_state(
         "legacy_reason": legacy_inferred["reason"],
         "diagnostics": diagnostics,
         "verification": diagnostics.get("verification"),
+        "outcome": diagnostics.get("outcome"),
         "site_profile": profile,
         "next_action": next_action,
     }
