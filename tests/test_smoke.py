@@ -43,6 +43,7 @@ TOOL_MODULES = [
     "ouroboros.tools.control",
     "ouroboros.tools.browser",
     "ouroboros.tools.browser_runtime",
+    "ouroboros.tools.browser_persisted_sessions",
     "ouroboros.tools.review",
     "ouroboros.tools.research_report",
 ]
@@ -91,7 +92,7 @@ EXPECTED_TOOLS = [
     "drive_read", "drive_write", "drive_list",
     "git_status", "git_diff",
     "run_shell",
-    "browse_page", "browser_action", "browser_fill_login_form", "browser_save_session", "browser_restore_session", "browser_check_login_state", "browser_solve_captcha",
+    "browse_page", "browser_action", "browser_fill_login_form", "browser_save_session", "browser_restore_session", "browser_persist_session", "browser_restore_persisted_session", "browser_get_persisted_session", "browser_check_login_state", "browser_solve_captcha",
     "web_search",
     "chat_history", "update_scratchpad", "update_identity",
     "request_restart", "promote_to_stable", "request_review",

@@ -240,6 +240,7 @@ def _browser_restore_session(ctx: ToolContext, session_name: str, url: str = "")
     return json.dumps(result, ensure_ascii=False)
 
 
+
 def _browse_page(ctx: ToolContext, url: str, output: str = "text",
                  wait_for: str = "", timeout: int = 30000) -> str:
     try:
