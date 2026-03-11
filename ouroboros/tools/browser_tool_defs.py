@@ -123,6 +123,8 @@ def build_browser_tool_entries(
             handler=browser_restore_session_handler,
             timeout_sec=60,
         ),
+
+
         ToolEntry(
             name="browser_check_login_state",
             schema={
