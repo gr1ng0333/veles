@@ -262,3 +262,54 @@ def test_llm_rejects_non_claude_copilot_model():
         raise AssertionError("Expected ValueError for non-Claude Copilot model")
     except ValueError as e:
         assert "Copilot routing is reserved for Claude-family models only" in str(e)
+
+
+def test_model_transport_resolution_contract():
+    """Transport resolution should stay explicit and backward-compatible."""
+    from ouroboros.llm import model_transport, transport_model_name
+
+    assert model_transport("codex/gpt-5.4") == "codex"
+    assert model_transport("codex-consciousness/gpt-5.1-codex-mini") == "codex-consciousness"
+    assert model_transport("copilot/claude-sonnet-4.6") == "copilot"
+    assert model_transport("anthropic/claude-sonnet-4.6") == "openrouter"
+    assert model_transport("openai/o3") == "openrouter"
+
+    assert transport_model_name("codex/gpt-5.4") == "gpt-5.4"
+    assert transport_model_name("codex-consciousness/gpt-5.1-codex-mini") == "gpt-5.1-codex-mini"
+    assert transport_model_name("copilot/claude-sonnet-4.6") == "claude-sonnet-4.6"
+    assert transport_model_name("anthropic/claude-sonnet-4.6") == "anthropic/claude-sonnet-4.6"
+
+
+def test_llm_openrouter_model_is_left_unprefixed(monkeypatch):
+    """OpenRouter models should go through the default client unchanged."""
+    from ouroboros.llm import LLMClient
+
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+
+            class FakeResp:
+                def model_dump(self):
+                    return {
+                        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0.0},
+                    }
+
+            return FakeResp()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    client = LLMClient(api_key="test-key")
+    monkeypatch.setattr(client, "_get_client", lambda: FakeClient())
+
+    msg, usage = client.chat([{"role": "user", "content": "hi"}], model="anthropic/claude-sonnet-4.6")
+
+    assert captured["model"] == "anthropic/claude-sonnet-4.6"
+    assert msg["content"] == "ok"
+    assert usage["cost"] == 0.0

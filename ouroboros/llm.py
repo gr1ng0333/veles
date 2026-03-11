@@ -19,6 +19,39 @@ log = logging.getLogger(__name__)
 DEFAULT_LIGHT_MODEL = DEFAULT_AUX_LIGHT_MODEL
 
 
+def model_transport(model: str) -> str:
+    """Resolve which transport/backend should serve a model identifier."""
+    normalized = str(model or "").strip().lower()
+    if normalized.startswith("codex-consciousness/"):
+        return "codex-consciousness"
+    if normalized.startswith("codex/"):
+        return "codex"
+    if normalized.startswith("copilot/"):
+        return "copilot"
+    return "openrouter"
+
+
+def transport_model_name(model: str) -> str:
+    """Return the backend-specific model name after transport prefix normalization."""
+    transport = model_transport(model)
+    normalized = str(model or "").strip()
+    if transport == "codex-consciousness":
+        return normalized.split("/", 1)[1].strip()
+    if transport in {"codex", "copilot"}:
+        return normalized.split("/", 1)[1].strip()
+    return normalized
+
+
+def validate_transport_model(model: str) -> None:
+    """Validate transport-specific constraints before dispatch."""
+    transport = model_transport(model)
+    actual_model = transport_model_name(model).lower()
+    if transport == "copilot" and not actual_model.startswith("claude-"):
+        raise ValueError(
+            f"Unsupported Copilot model '{model}'. Copilot routing is reserved for Claude-family models only."
+        )
+
+
 def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
     allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
     v = str(value or "").strip().lower()
@@ -165,27 +198,24 @@ class LLMClient:
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
-        # Codex proxy: route "codex/*" models through ChatGPT OAuth endpoint
-        if model.startswith("codex/"):
+        transport = model_transport(model)
+        actual_model = transport_model_name(model)
+        validate_transport_model(model)
+
+        # Codex proxy: explicit OAuth-backed transport
+        if transport == "codex":
             from ouroboros.codex_proxy import call_codex
-            actual_model = model[len("codex/"):]
             return call_codex(messages, tools=tools, model=actual_model)
 
         # Consciousness Codex: separate account tokens
-        if model.startswith("codex-consciousness/"):
+        if transport == "codex-consciousness":
             from ouroboros.codex_proxy import call_codex
-            actual_model = model.split("/", 1)[1]
             return call_codex(messages, tools=tools, model=actual_model,
                               token_prefix="CODEX_CONSCIOUSNESS")
 
-        # Copilot proxy: route only Claude-family "copilot/*" models through GitHub Copilot API
-        if model.startswith("copilot/"):
+        # Copilot proxy: explicit Claude-only transport
+        if transport == "copilot":
             from ouroboros.copilot_proxy import call_copilot
-            actual_model = model[len("copilot/"):].strip()
-            if not actual_model.startswith("claude-"):
-                raise ValueError(
-                    f"Unsupported Copilot model '{model}'. Copilot routing is reserved for Claude-family models only."
-                )
             return call_copilot(messages, tools=tools, model=actual_model,
                                 max_tokens=max_tokens)
 
@@ -205,7 +235,7 @@ class LLMClient:
             }
 
         kwargs: Dict[str, Any] = {
-            "model": model,
+            "model": actual_model,
             "messages": messages,
             "max_tokens": max_tokens,
             "extra_body": extra_body,
