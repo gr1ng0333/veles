@@ -34,6 +34,17 @@ class DummyPage:
     def wait_for_timeout(self, timeout):
         self.calls.append(("wait_for_timeout", timeout))
 
+    def goto(self, url, timeout=0, wait_until="load"):
+        self.calls.append(("goto", url, timeout, wait_until))
+        self.url = url
+        if url.endswith("/dashboard"):
+            self.visible.add("#dashboard")
+
+    def wait_for_url(self, pattern, timeout=0):
+        self.calls.append(("wait_for_url", pattern, timeout))
+        if not self.url:
+            raise RuntimeError("missing url")
+
 
 class DummyBrowserState:
     def __init__(self, page):
@@ -95,3 +106,21 @@ def test_browser_run_actions_rejects_invalid_payload():
     ctx = make_ctx(DummyPage())
     result = _browser_run_actions(ctx, actions=[])
     assert result == 'Error: actions must be a non-empty array'
+
+
+def test_browser_run_actions_supports_goto_and_navigation_wait(monkeypatch):
+    page = DummyPage()
+    ctx = make_ctx(page)
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "goto", "value": "https://example.com/dashboard", "wait_until": "domcontentloaded", "wait_for_navigation": True, "expect_selector": "#dashboard", "expect_url_substring": "/dashboard"},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["current_url"].endswith('/dashboard')
+    assert payload["results"][0]["navigated_to"].endswith('/dashboard')
+    assert payload["results"][0]["checks"]["wait_for_navigation"]["matched"] is True
+    assert ("goto", "https://example.com/dashboard", 5000, "domcontentloaded") in page.calls
+    assert ("wait_for_url", "**", 5000) in page.calls

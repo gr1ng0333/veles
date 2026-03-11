@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ouroboros.tools.browser_runtime import _ensure_browser
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
-_ALLOWED_ACTIONS = {"click", "fill", "select", "scroll", "evaluate", "wait_for"}
+_ALLOWED_ACTIONS = {"click", "fill", "select", "scroll", "evaluate", "wait_for", "goto"}
 
 
 def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -27,6 +27,8 @@ def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optiona
             "label": str(raw.get("label") or "").strip(),
             "expect_selector": str(raw.get("expect_selector") or "").strip(),
             "expect_url_substring": str(raw.get("expect_url_substring") or "").strip(),
+            "wait_for_navigation": bool(raw.get("wait_for_navigation") or False),
+            "wait_until": str(raw.get("wait_until") or "").strip() or "load",
         }
         normalized.append(step)
     return normalized, None
@@ -74,6 +76,13 @@ def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
             page.wait_for_selector(selector, timeout=timeout, state="visible")
         else:
             page.wait_for_timeout(timeout)
+    elif action == "goto":
+        url = "" if value is None else str(value).strip()
+        if not url:
+            raise ValueError("goto action requires value")
+        wait_until = str(step.get("wait_until") or "load").strip() or "load"
+        page.goto(url, timeout=timeout, wait_until=wait_until)
+        return {"navigated_to": page.url, "wait_until": wait_until}
     else:
         raise ValueError(f"unsupported action: {action}")
     return {}
@@ -84,10 +93,15 @@ def _verify_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
     checks: Dict[str, Any] = {}
     expect_selector = step.get("expect_selector") or ""
     expect_url_substring = step.get("expect_url_substring") or ""
+    timeout = int(step.get("timeout") or 5000)
+
+    if step.get("wait_for_navigation"):
+        page.wait_for_url("**", timeout=timeout)
+        checks["wait_for_navigation"] = {"matched": True, "current_url": page.url}
 
     if expect_selector:
         try:
-            page.wait_for_selector(expect_selector, timeout=step.get("timeout") or 5000, state="visible")
+            page.wait_for_selector(expect_selector, timeout=timeout, state="visible")
             checks["expect_selector"] = {"selector": expect_selector, "matched": True}
         except Exception as exc:
             verified = False
@@ -175,7 +189,7 @@ def get_tools() -> List[ToolEntry]:
                     "properties": {
                         "actions": {
                             "type": "array",
-                            "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for.",
+                            "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for, goto.",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -186,6 +200,8 @@ def get_tools() -> List[ToolEntry]:
                                     "label": {"type": "string", "description": "Optional human-readable step label"},
                                     "expect_selector": {"type": "string", "description": "Optional selector that must become visible after the step"},
                                     "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
+                                    "wait_for_navigation": {"type": "boolean", "description": "Wait for page URL to change/become available after the step"},
+                                    "wait_until": {"type": "string", "enum": ["commit", "domcontentloaded", "load", "networkidle"], "description": "Navigation readiness target for goto (default: load)"},
                                 },
                                 "required": ["action"],
                             },
