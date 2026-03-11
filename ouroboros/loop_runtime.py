@@ -14,7 +14,7 @@ PROMPT_TOKEN_GUARD_THRESHOLD = 40000
 
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
 from ouroboros.llm import LLMClient, normalize_reasoning_effort
-from ouroboros.model_modes import tools_enabled_for_active_mode
+from ouroboros.model_modes import max_rounds_for_active_mode, tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.antistagnation import (
@@ -381,10 +381,10 @@ def _append_assistant_with_tool_calls(messages: List[Dict[str, Any]], content: O
 
 def _init_antistagnation_state() -> Tuple[int, Any, int, int, List[bool], bool, bool]:
     try:
-        max_rounds = max(1, int(os.environ.get("OUROBOROS_MAX_ROUNDS", "200")))
-    except (ValueError, TypeError):
+        max_rounds = max(1, int(max_rounds_for_active_mode()))
+    except Exception:
         max_rounds = 200
-        log.warning("Invalid OUROBOROS_MAX_ROUNDS, defaulting to 200")
+        log.warning("Failed to resolve active mode max_rounds, defaulting to 200", exc_info=True)
     anti = load_antistagnation_config()
     return max_rounds, anti, 0, 0, [], False, False
 

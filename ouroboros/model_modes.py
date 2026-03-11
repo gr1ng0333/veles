@@ -18,6 +18,17 @@ class ModelMode:
     intended_use: str
 
 
+
+
+@dataclass(frozen=True)
+class ModeRuntimePolicy:
+    mode_key: str
+    main_model: str
+    max_rounds: int
+    tools_enabled: bool
+    intended_use: str
+    aux_light_model: str
+
 MODEL_MODES: Dict[str, ModelMode] = {
     "codex": ModelMode(
         key="codex",
@@ -96,19 +107,51 @@ def bootstrap_mode_env() -> ModelMode:
     return apply_mode_env(get_active_mode())
 
 
-def mode_summary_text() -> str:
-    mode = get_active_mode()
-    light = os.environ.get("OUROBOROS_MODEL_LIGHT", MODEL_MODES["haiku"].model)
-    return (
-        "🔧 Current model mode:\n"
-        f"• Mode: {mode.key}\n"
-        f"• Main: {mode.model}\n"
-        f"• Light: {light}\n"
-        f"• Rounds limit: {mode.max_rounds}\n"
-        f"• Tools: {'on' if mode.tools_enabled else 'off'}\n"
-        f"• Purpose: {mode.intended_use}"
+def get_aux_light_model() -> str:
+    return os.environ.get("OUROBOROS_MODEL_LIGHT", "").strip() or MODEL_MODES["haiku"].model
+
+
+def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy:
+    mode = get_active_mode(st)
+    return ModeRuntimePolicy(
+        mode_key=mode.key,
+        main_model=mode.model,
+        max_rounds=mode.max_rounds,
+        tools_enabled=mode.tools_enabled,
+        intended_use=mode.intended_use,
+        aux_light_model=get_aux_light_model(),
     )
 
 
+def mode_summary_text() -> str:
+    policy = get_runtime_policy()
+    lines = [
+        "🔧 Current model mode:",
+        f"• Mode: {policy.mode_key}",
+        f"• Main: {policy.main_model}",
+        f"• Rounds limit: {policy.max_rounds}",
+        f"• Tools: {'on' if policy.tools_enabled else 'off'}",
+        f"• Purpose: {policy.intended_use}",
+        f"• Aux light model: {policy.aux_light_model}",
+    ]
+    if policy.mode_key == "codex":
+        try:
+            from ouroboros.codex_proxy import get_accounts_status
+            statuses = get_accounts_status()
+            active = next((acc for acc in statuses if acc.get("is_active")), None)
+            if active is not None:
+                lines.append(f"• Account: acc{int(active.get('index', 0))}")
+                lines.append(
+                    f"• Limits: 5h={int(active.get('usage_5h', 0))} 7d={int(active.get('usage_7d', 0))}"
+                )
+        except Exception:
+            pass
+    return "\n".join(lines)
+
+
 def tools_enabled_for_active_mode() -> bool:
-    return get_active_mode().tools_enabled
+    return get_runtime_policy().tools_enabled
+
+
+def max_rounds_for_active_mode() -> int:
+    return get_runtime_policy().max_rounds

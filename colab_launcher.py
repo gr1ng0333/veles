@@ -504,20 +504,8 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         send_with_budget(chat_id, "⚠️ /qwen removed from the primary mode surface. Use /codex, /haiku, /sonnet, /opus.")
         return True
     if lowered.startswith("/codex"):
-        mode = persist_active_mode("codex")
-        try:
-            from ouroboros.codex_proxy import get_accounts_status
-            statuses = get_accounts_status()
-            active = next((acc for acc in statuses if acc.get("is_active")), None)
-            if active is not None:
-                idx = int(active.get("index", 0))
-                five = int(active.get("usage_5h", 0))
-                seven = int(active.get("usage_7d", 0))
-                send_with_budget(chat_id, f"✅ Mode: codex\n• Main: {mode.model}\n• Account: acc{idx}\n• Limits: 5h={five} 7d={seven}")
-            else:
-                send_with_budget(chat_id, f"✅ Mode: codex\n• Main: {mode.model}")
-        except Exception:
-            send_with_budget(chat_id, f"✅ Mode: codex\n• Main: {mode.model}")
+        persist_active_mode("codex")
+        send_with_budget(chat_id, "✅ Switched to codex mode\n" + mode_summary_text())
         return True
     if lowered.startswith("/model"):
         send_with_budget(chat_id, mode_summary_text())
