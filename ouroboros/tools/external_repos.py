@@ -19,7 +19,6 @@ _MAX_WRITE_CHARS = 500_000
 _DEFAULT_PROTECTED_BRANCHES = ["main", "master"]
 _DEFAULT_WORK_BRANCH_PREFIX = "veles/"
 
-
 def _utc_now_iso() -> str:
     return __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
 
@@ -854,6 +853,8 @@ def _write_tool_entries() -> List[ToolEntry]:
             is_code_tool=True,
         ),
     ]
+
+
 
 
 def get_tools() -> List[ToolEntry]:
