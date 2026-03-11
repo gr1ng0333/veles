@@ -124,13 +124,13 @@ EXPECTED_TOOLS = [
     "external_repo_run_shell", "external_repo_git_status", "external_repo_git_diff",
     "external_repo_write", "external_repo_prepare_work_branch",
     "external_repo_set_branch_policy", "external_repo_commit_push",
+    "external_repo_memory_get", "external_repo_memory_update", "external_repo_memory_append_note",
+    "external_repo_pr_list", "external_repo_pr_get", "external_repo_pr_create",
+    "external_repo_issue_list", "external_repo_issue_get", "external_repo_issue_create", "external_repo_issue_comment",
     "doctor",
     "monitor_snapshot",
     "time_status",
     "research_report",
-    "external_repo_register", "external_repo_list", "external_repo_sync",
-    "external_repo_read", "external_repo_list_files", "external_repo_search",
-    "external_repo_run_shell", "external_repo_git_status", "external_repo_git_diff",
 ]
 
 
