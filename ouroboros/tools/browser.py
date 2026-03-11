@@ -17,6 +17,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
+from ouroboros.tools.browser_session_actions import _browser_run_actions
 from ouroboros.tools.browser_runtime import (
     _apply_stealth,
     _check_session_alive_via_protected_url,
@@ -931,6 +932,7 @@ def get_tools() -> List[ToolEntry]:
     return build_browser_tool_entries(
         browse_page_handler=_browse_page,
         browser_action_handler=_browser_action,
+        browser_run_actions_handler=_browser_run_actions,
         browser_fill_login_form_handler=_browser_fill_login_form,
         browser_save_session_handler=_browser_save_session,
         browser_restore_session_handler=_browser_restore_session,
