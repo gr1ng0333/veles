@@ -55,7 +55,7 @@ MODEL_MODES: Dict[str, ModelMode] = {
     ),
     "sonnet": ModelMode(
         key="sonnet",
-        model="anthropic/claude-sonnet-4.6",
+        model="copilot/claude-sonnet-4.6",
         label="Claude Sonnet 4.6",
         description="разговорный режим",
         max_rounds=1,
@@ -65,7 +65,7 @@ MODEL_MODES: Dict[str, ModelMode] = {
     ),
     "opus": ModelMode(
         key="opus",
-        model="anthropic/claude-opus-4.6",
+        model="copilot/claude-opus-4.6",
         label="Claude Opus 4.6",
         description="режим планирования",
         max_rounds=1,

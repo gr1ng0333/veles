@@ -18,6 +18,7 @@ def test_bootstrap_mode_env_uses_persisted_active_mode() -> None:
         save_state(st)
         mode = bootstrap_mode_env()
         assert mode.key == "sonnet"
+        assert mode.model == "copilot/claude-sonnet-4.6"
         assert os.environ["OUROBOROS_MODEL"] == MODEL_MODES["sonnet"].model
         assert os.environ["OUROBOROS_MAX_ROUNDS"] == str(MODEL_MODES["sonnet"].max_rounds)
         assert os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] == "0"
@@ -104,3 +105,13 @@ def test_execution_style_for_active_mode_reads_persisted_mode() -> None:
         else:
             st2["active_model_mode"] = old_mode
         save_state(st2)
+
+
+def test_runtime_policy_uses_copilot_tags_for_sonnet_and_opus(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
+    sonnet = get_runtime_policy({"active_model_mode": "sonnet"})
+    opus = get_runtime_policy({"active_model_mode": "opus"})
+    assert sonnet.main_model == "copilot/claude-sonnet-4.6"
+    assert opus.main_model == "copilot/claude-opus-4.6"
+    assert sonnet.execution_style == "one_shot"
+    assert opus.execution_style == "one_shot"
