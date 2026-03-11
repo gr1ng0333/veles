@@ -123,16 +123,31 @@ def infer_auth_state(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     matched = list(snapshot.get("matched") or [])
     profile = snapshot.get("profile") or {}
     flow_type = str(profile.get("login_mode") or "login")
+    captcha_hits = list(snapshot.get("captcha_text_hits") or [])
+    mfa_hits = list(snapshot.get("mfa_text_hits") or [])
 
-    if snapshot.get("captcha_selector_hit") or snapshot.get("captcha_text_hits"):
-        hits = snapshot.get("captcha_text_hits") or []
-        reason = "captcha selector matched" if snapshot.get("captcha_selector_hit") else f"captcha text matched: {', '.join(hits[:3])}"
-        return {"state": "captcha", "reason": reason, "matched": matched}
+    if snapshot.get("captcha_selector_hit"):
+        return {"state": "captcha", "reason": "captcha selector matched", "matched": matched}
 
-    if snapshot.get("mfa_selector_hit") or snapshot.get("mfa_text_hits"):
-        hits = snapshot.get("mfa_text_hits") or []
-        reason = "mfa selector matched" if snapshot.get("mfa_selector_hit") else f"mfa text matched: {', '.join(hits[:3])}"
-        return {"state": "mfa", "reason": reason, "matched": matched}
+    if snapshot.get("mfa_selector_hit"):
+        return {"state": "mfa", "reason": "mfa selector matched", "matched": matched}
+
+    if captcha_hits and not mfa_hits:
+        return {"state": "captcha", "reason": f"captcha text matched: {', '.join(captcha_hits[:3])}", "matched": matched}
+
+    if mfa_hits and not captcha_hits:
+        return {"state": "mfa", "reason": f"mfa text matched: {', '.join(mfa_hits[:3])}", "matched": matched}
+
+    if captcha_hits and mfa_hits:
+        captcha_only = [hit for hit in captcha_hits if hit not in mfa_hits]
+        mfa_only = [hit for hit in mfa_hits if hit not in captcha_hits]
+        if captcha_only and not mfa_only:
+            return {"state": "captcha", "reason": f"captcha text matched: {', '.join(captcha_only[:3])}", "matched": matched}
+        if mfa_only and not captcha_only:
+            return {"state": "mfa", "reason": f"mfa text matched: {', '.join(mfa_only[:3])}", "matched": matched}
+        if snapshot.get("current_url", "").lower().find("verify") >= 0:
+            return {"state": "mfa", "reason": f"ambiguous verification text, leaning mfa: {', '.join(mfa_hits[:3])}", "matched": matched}
+        return {"state": "captcha", "reason": f"ambiguous verification text, leaning captcha: {', '.join(captcha_hits[:3])}", "matched": matched}
 
     if profile.get("failure_selector") and "failure_selector" in matched:
         return {"state": "error", "reason": "explicit failure selector matched", "matched": matched}
@@ -249,6 +264,71 @@ def build_next_action_plan(snapshot: Dict[str, Any], auth_state: Dict[str, Any])
     )
 
 
+def build_verification_boundary(snapshot: Dict[str, Any], auth_state: Dict[str, Any], next_action: Dict[str, Any]) -> Dict[str, Any]:
+    state = str(auth_state.get("state") or "unknown")
+    profile = snapshot.get("profile") or {}
+    matched = snapshot.get("matched") or []
+    captcha_hits = list(snapshot.get("captcha_text_hits") or [])
+    mfa_hits = list(snapshot.get("mfa_text_hits") or [])
+
+    def _selectors(*pairs: tuple[str, Any]) -> Dict[str, Any]:
+        return {key: value for key, value in pairs if value}
+
+    if state == "captcha":
+        return {
+            "detected": True,
+            "kind": "captcha",
+            "reason": auth_state.get("reason") or "captcha challenge detected",
+            "source": "selector" if snapshot.get("captcha_selector_hit") else "text",
+            "can_auto_attempt": True,
+            "requires_owner_input": False,
+            "blocks_progress": True,
+            "recommended_action": next_action.get("action") or "solve_captcha",
+            "confidence": "high" if snapshot.get("captcha_selector_hit") else "medium",
+            "matched": [item for item in matched if item == "captcha_selector"],
+            "text_hits": captcha_hits,
+            "selectors": _selectors(
+                ("captcha_selector", profile.get("captcha_selector", "")),
+                ("submit_selector", profile.get("submit_selector", "")),
+            ),
+        }
+
+    if state == "mfa":
+        return {
+            "detected": True,
+            "kind": "mfa",
+            "reason": auth_state.get("reason") or "mfa step detected",
+            "source": "selector" if snapshot.get("mfa_selector_hit") else "text",
+            "can_auto_attempt": False,
+            "requires_owner_input": True,
+            "blocks_progress": True,
+            "recommended_action": next_action.get("action") or "wait_for_mfa",
+            "confidence": "high" if snapshot.get("mfa_selector_hit") else "medium",
+            "matched": [item for item in matched if item == "mfa_selector"],
+            "text_hits": mfa_hits,
+            "selectors": _selectors(
+                ("mfa_selector", profile.get("mfa_selector", "")),
+                ("submit_selector", profile.get("submit_selector", "")),
+            ),
+        }
+
+    return {
+        "detected": False,
+        "kind": "none",
+        "reason": "no verification boundary detected",
+        "source": "none",
+        "can_auto_attempt": False,
+        "requires_owner_input": False,
+        "blocks_progress": False,
+        "recommended_action": next_action.get("action") or "continue",
+        "confidence": "low",
+        "matched": [],
+        "text_hits": [],
+        "selectors": {},
+    }
+
+
+
 def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, Any], next_action: Dict[str, Any]) -> Dict[str, Any]:
     profile = snapshot.get("profile") or {}
     state = auth_state.get("state", "unknown")
@@ -289,6 +369,8 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
     else:
         confidence = "low"
 
+    verification = build_verification_boundary(snapshot, auth_state, next_action)
+
     return {
         "site_profile": {
             "site_name": profile.get("site_name", ""),
@@ -299,6 +381,7 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
         "reason": auth_state.get("reason", ""),
         "confidence": confidence,
         "evidence": evidence,
+        "verification": verification,
         "next_action": next_action,
         "current_url": snapshot.get("current_url", ""),
         "matched": snapshot.get("matched", []),
@@ -421,6 +504,7 @@ def build_post_submit_auth_result(
     diagnostics = summarize_auth_diagnostics(snapshot, auth_state, next_action)
     return {
         "diagnostics": diagnostics,
+        "verification": diagnostics.get("verification"),
         "post_submit_state": auth_state,
         "post_submit_signals": post_signals,
         "protected_url_alive": protected_url_alive,

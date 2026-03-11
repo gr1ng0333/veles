@@ -3,6 +3,7 @@ import json
 from ouroboros.tools.browser_auth_flow import (
     build_auth_page_snapshot,
     build_next_action_plan,
+    build_verification_boundary,
     infer_auth_state,
     normalize_site_profile,
     summarize_auth_diagnostics,
@@ -233,3 +234,68 @@ def test_infer_auth_state_uses_failure_text_from_runtime_signals():
 
     assert state["state"] == "error"
     assert "failure_text" in diagnostics["evidence"]
+
+
+def test_build_verification_boundary_detects_captcha_as_auto_attemptable_blocker():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box", "submit_selector": "button[type=submit]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    verification = build_verification_boundary(snapshot, state, next_action)
+
+    assert verification["detected"] is True
+    assert verification["kind"] == "captcha"
+    assert verification["can_auto_attempt"] is True
+    assert verification["requires_owner_input"] is False
+    assert verification["blocks_progress"] is True
+    assert verification["recommended_action"] == "solve_captcha"
+    assert verification["selectors"]["captcha_selector"] == ".captcha-box"
+
+
+def test_build_verification_boundary_detects_mfa_as_owner_boundary():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/verify",
+        page_signals={"title": "Verify", "body_text": "Enter the verification code from your app"},
+        matched=["mfa_selector"],
+        profile=normalize_site_profile({"mfa_selector": "input[name=otp]", "submit_selector": "button[type=submit]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    verification = build_verification_boundary(snapshot, state, next_action)
+
+    assert verification["detected"] is True
+    assert verification["kind"] == "mfa"
+    assert verification["can_auto_attempt"] is False
+    assert verification["requires_owner_input"] is True
+    assert verification["blocks_progress"] is True
+    assert verification["recommended_action"] == "wait_for_mfa"
+    assert verification["selectors"]["mfa_selector"] == "input[name=otp]"
+
+
+def test_summarize_auth_diagnostics_includes_verification_boundary_even_when_absent():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/app",
+        page_signals={"title": "Dashboard", "body_text": "Welcome back"},
+        matched=["success_selector"],
+        profile=normalize_site_profile({"success_selector": ".dashboard"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(snapshot, state, next_action)
+
+    assert diagnostics["verification"]["detected"] is False
+    assert diagnostics["verification"]["kind"] == "none"
+    assert diagnostics["verification"]["recommended_action"] == "continue"
