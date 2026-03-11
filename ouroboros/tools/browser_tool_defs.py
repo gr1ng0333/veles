@@ -17,11 +17,11 @@ def _browser_run_actions_schema() -> dict[str, Any]:
             "properties": {
                 "actions": {
                     "type": "array",
-                    "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for, goto.",
+                    "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for, goto, extract_text, assert_text.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "action": {"type": "string", "enum": ["click", "evaluate", "fill", "goto", "scroll", "select", "wait_for"]},
+                            "action": {"type": "string", "enum": ["assert_text", "click", "evaluate", "extract_text", "fill", "goto", "scroll", "select", "wait_for"]},
                             "selector": {"type": "string"},
                             "value": {"type": ["string", "number", "boolean"]},
                             "timeout": {"type": "integer", "description": "Timeout in ms for the step (default: 5000)"},
@@ -30,6 +30,8 @@ def _browser_run_actions_schema() -> dict[str, Any]:
                             "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
                             "wait_for_navigation": {"type": "boolean", "description": "Wait for page URL to change/become available after the step"},
                             "wait_until": {"type": "string", "enum": ["commit", "domcontentloaded", "load", "networkidle"], "description": "Navigation readiness target for goto (default: load)"},
+                            "match_substring": {"type": "boolean", "description": "For assert_text: substring match (default: true). If false, require exact equality."},
+                            "text_must_absent": {"type": "boolean", "description": "For assert_text: require expected text to be absent instead of present."},
                         },
                         "required": ["action"],
                     },
