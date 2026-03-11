@@ -31,7 +31,8 @@ log = logging.getLogger(__name__)
 EVOLUTION_COOLDOWN_SEC: int = int(os.environ.get("EVOLUTION_COOLDOWN_SEC", "120"))
 EVOLUTION_MAX_CYCLES_PER_HOUR: int = int(os.environ.get("EVOLUTION_MAX_CYCLES_PER_HOUR", "6"))
 CODEX_5H_CAPACITY_THRESHOLD: float = 0.70  # skip evolution when 5h usage > 70%
-CODEX_5H_CAPACITY_LIMIT: int = int(os.environ.get("CODEX_5H_CAPACITY_LIMIT", "200"))
+CODEX_5H_CAPACITY_LIMIT: int = int(os.environ.get("CODEX_5H_CAPACITY_LIMIT", "800"))
+EVOLUTION_CAPACITY_MAX_BACKOFF_SEC: int = 1800  # 30 min cap on capacity backoff
 
 
 # ---------------------------------------------------------------------------
@@ -554,11 +555,16 @@ def enqueue_evolution_task_if_needed() -> None:
     if blocked:
         prev_step = int(st.get("evolution_capacity_backoff_step") or 0)
         step = prev_step + 1
-        backoff_sec = 300 if step == 1 else 900
+        backoff_sec = min(300 if step == 1 else 900, EVOLUTION_CAPACITY_MAX_BACKOFF_SEC)
         retry_at_iso = (now_dt + datetime.timedelta(seconds=backoff_sec)).isoformat()
         st["next_evolution_retry_at"] = retry_at_iso
         st["evolution_capacity_backoff_step"] = step
         st["evolution_capacity_blocked"] = True
+        log.warning(
+            "evolution capacity gate blocked: total_5h=%s threshold=%s step=%d backoff=%ds",
+            capacity_info.get("total_5h"), capacity_info.get("threshold"),
+            step, backoff_sec,
+        )
         if not was_blocked:
             append_jsonl(
                 DRIVE_ROOT / "logs" / "supervisor.jsonl",
