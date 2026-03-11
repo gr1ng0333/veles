@@ -21,6 +21,8 @@ def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optiona
         action = str(raw.get("action") or "").strip()
         if action not in _ALLOWED_ACTIONS:
             return None, f"action #{idx + 1} has unsupported action '{action}'"
+        text_must_absent = bool(raw.get("text_must_absent") or False)
+        url_must_absent = bool(raw.get("url_must_absent") or False)
         step = {
             "action": action,
             "selector": str(raw.get("selector") or "").strip(),
@@ -32,8 +34,11 @@ def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optiona
             "wait_for_navigation": bool(raw.get("wait_for_navigation") or False),
             "wait_until": str(raw.get("wait_until") or "").strip() or "load",
             "match_substring": bool(raw.get("match_substring") if "match_substring" in raw else True),
-            "text_must_absent": bool(raw.get("text_must_absent") or False),
+            "text_must_absent": text_must_absent,
+            "url_must_absent": url_must_absent,
         }
+        if action == "wait_for_url" and text_must_absent and not url_must_absent:
+            step["url_must_absent"] = True
         normalized.append(step)
     return normalized, None
 
@@ -194,7 +199,7 @@ def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
             expected,
             timeout,
             match_substring=bool(step.get("match_substring") if "match_substring" in step else True),
-            url_must_absent=bool(step.get("text_must_absent") or False),
+            url_must_absent=bool(step.get("url_must_absent") or False),
         )
     elif action == "scroll":
         _scroll_page(page, str(value or "").strip().lower())
@@ -276,7 +281,7 @@ def _verify_step(page: Any, step: Dict[str, Any], *, previous_url: str = "", exe
     if action == "wait_for_url":
         expected_url = "" if step.get("value") is None else str(step.get("value"))
         match_substring = bool(step.get("match_substring") if "match_substring" in step else True)
-        url_must_absent = bool(step.get("text_must_absent") or False)
+        url_must_absent = bool(step.get("url_must_absent") or False)
         execution_url = execution.get("url") if isinstance(execution, dict) and "url" in execution else None
         current_url = str(execution_url) if execution_url is not None else str(page.url or "")
         matched = (expected_url not in current_url) if url_must_absent else ((expected_url in current_url) if match_substring else (current_url == expected_url))
