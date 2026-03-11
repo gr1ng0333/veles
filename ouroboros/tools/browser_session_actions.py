@@ -177,7 +177,7 @@ def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def _verify_step(page: Any, step: Dict[str, Any], *, previous_url: str = "") -> Dict[str, Any]:
+def _verify_step(page: Any, step: Dict[str, Any], *, previous_url: str = "", execution: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     verified = True
     checks: Dict[str, Any] = {}
     expect_selector = step.get("expect_selector") or ""
@@ -214,10 +214,11 @@ def _verify_step(page: Any, step: Dict[str, Any], *, previous_url: str = "") -> 
 
     action = step.get("action") or ""
     if action in {"assert_text", "wait_for_text"}:
-        extracted = _extract_text(page, step.get("selector") or "", timeout)
         expected_text = "" if step.get("value") is None else str(step.get("value"))
         match_substring = bool(step.get("match_substring") if "match_substring" in step else True)
         text_must_absent = bool(step.get("text_must_absent") or False)
+        execution_text = execution.get("text") if isinstance(execution, dict) and "text" in execution else None
+        extracted = str(execution_text) if execution_text is not None else _extract_text(page, step.get("selector") or "", timeout)
         matched = (expected_text not in extracted) if text_must_absent else ((expected_text in extracted) if match_substring else (extracted == expected_text))
         checks[action] = {
             "selector": step.get("selector") or "",
@@ -227,6 +228,11 @@ def _verify_step(page: Any, step: Dict[str, Any], *, previous_url: str = "") -> 
             "text_must_absent": text_must_absent,
             "text": extracted,
         }
+        if isinstance(execution, dict):
+            if "wait_for_text_error" in execution:
+                checks[action]["error"] = execution["wait_for_text_error"]
+            if "wait_for_text_note" in execution:
+                checks[action]["note"] = execution["wait_for_text_note"]
         verified = verified and matched
 
     if expect_selector:
@@ -278,7 +284,7 @@ def _browser_run_actions(
             if screenshot_b64:
                 ctx.browser_state.last_screenshot_b64 = screenshot_b64
             item.update(execution)
-            verification = _verify_step(page, step, previous_url=previous_url)
+            verification = _verify_step(page, step, previous_url=previous_url, execution=execution if isinstance(execution, dict) else None)
             item.update(verification)
             item["success"] = bool(verification["verified"])
             item["current_url"] = page.url

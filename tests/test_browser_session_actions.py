@@ -242,6 +242,32 @@ def test_browser_run_actions_waits_for_text_absence(monkeypatch):
     assert payload["results"][0]["checks"]["wait_for_text"]["matched"] is True
 
 
+def test_browser_run_actions_wait_for_text_absence_survives_selector_disappearance(monkeypatch):
+    page = DummyPage()
+    page.visible.add("#status")
+    page.texts["#status"] = "Saving changes"
+    ctx = make_ctx(page)
+
+    def vanish_after_wait(timeout):
+        page.calls.append(("wait_for_timeout", timeout))
+        page.visible.discard("#status")
+        page.texts.pop("#status", None)
+
+    page.wait_for_timeout = vanish_after_wait
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for_text", "selector": "#status", "value": "Saving", "timeout": 1000, "text_must_absent": True},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["wait_for_text_matched"] is True
+    assert payload["results"][0]["checks"]["wait_for_text"]["matched"] is True
+    assert payload["results"][0]["checks"]["wait_for_text"]["text"] == ""
+    assert "missing selector" in payload["results"][0]["checks"]["wait_for_text"]["note"]
+
+
 def test_browser_run_actions_can_capture_screenshot(monkeypatch):
     page = DummyPage()
     ctx = make_ctx(page)
