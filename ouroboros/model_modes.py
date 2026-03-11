@@ -7,6 +7,9 @@ from typing import Any, Dict, Optional
 from supervisor.state import load_state, save_state
 
 
+DEFAULT_AUX_LIGHT_MODEL = "qwen/qwen3-coder:free"
+
+
 @dataclass(frozen=True)
 class ModelMode:
     key: str
@@ -42,7 +45,7 @@ MODEL_MODES: Dict[str, ModelMode] = {
     ),
     "haiku": ModelMode(
         key="haiku",
-        model="anthropic/claude-haiku-4.5",
+        model="copilot/claude-haiku-4.5",
         label="Claude Haiku 4.5",
         description="быстрый и дешёвый рабочий режим",
         max_rounds=10,
@@ -103,7 +106,7 @@ def apply_mode_env(mode: Optional[ModelMode] = None) -> ModelMode:
     os.environ["OUROBOROS_MODEL"] = active.model
     os.environ["OUROBOROS_MAX_ROUNDS"] = str(active.max_rounds)
     os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] = "1" if active.tools_enabled else "0"
-    os.environ.setdefault("OUROBOROS_MODEL_LIGHT", MODEL_MODES["haiku"].model)
+    os.environ.setdefault("OUROBOROS_MODEL_LIGHT", DEFAULT_AUX_LIGHT_MODEL)
     return active
 
 
@@ -112,7 +115,7 @@ def bootstrap_mode_env() -> ModelMode:
 
 
 def get_aux_light_model() -> str:
-    return os.environ.get("OUROBOROS_MODEL_LIGHT", "").strip() or MODEL_MODES["haiku"].model
+    return os.environ.get("OUROBOROS_MODEL_LIGHT", "").strip() or DEFAULT_AUX_LIGHT_MODEL
 
 
 def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy:

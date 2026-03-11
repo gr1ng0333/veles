@@ -251,23 +251,14 @@ def test_llm_routes_copilot_model(monkeypatch):
     assert msg["content"] == "routed"
 
 
-def test_llm_routes_copilot_gpt_model(monkeypatch):
-    """Model 'copilot/gpt-4o' should also route correctly."""
+def test_llm_rejects_non_claude_copilot_model():
+    """GPT/Codex models must not route through Copilot."""
     from ouroboros.llm import LLMClient
 
-    routed = {}
-
-    def fake_call_copilot(messages, tools=None, model="claude-sonnet-4-5", max_tokens=16384):
-        routed["model"] = model
-        return (
-            {"role": "assistant", "content": "ok"},
-            {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8, "cost": 0},
-        )
-
-    monkeypatch.setattr("ouroboros.copilot_proxy.call_copilot", fake_call_copilot)
-
     client = LLMClient()
-    msg, _ = client.chat([{"role": "user", "content": "hi"}], model="copilot/gpt-4o")
 
-    assert routed["model"] == "gpt-4o"
-    assert msg["content"] == "ok"
+    try:
+        client.chat([{"role": "user", "content": "hi"}], model="copilot/gpt-4o")
+        raise AssertionError("Expected ValueError for non-Claude Copilot model")
+    except ValueError as e:
+        assert "Copilot routing is reserved for Claude-family models only" in str(e)
