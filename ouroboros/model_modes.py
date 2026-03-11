@@ -149,18 +149,53 @@ def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy
     )
 
 
+def _model_diagnostics(model: str) -> Dict[str, str]:
+    from ouroboros.llm import model_transport, transport_model_name
+
+    requested = str(model or "").strip()
+    return {
+        "requested_model": requested,
+        "transport": model_transport(requested),
+        "actual_model": transport_model_name(requested),
+    }
+
+
+def get_runtime_diagnostics(st: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    policy = get_runtime_policy(st)
+    return {
+        "mode_key": policy.mode_key,
+        "execution_style": policy.execution_style,
+        "tools_enabled": policy.tools_enabled,
+        "max_rounds": policy.max_rounds,
+        "intended_use": policy.intended_use,
+        "background_reasoning_effort": policy.background_reasoning_effort,
+        "main": _model_diagnostics(policy.main_model),
+        "aux_light": _model_diagnostics(policy.aux_light_model),
+        "background": _model_diagnostics(policy.background_model),
+    }
+
+
+def _format_model_line(label: str, entry: Dict[str, Any]) -> str:
+    return (
+        f"• {label}: {entry.get('requested_model', '')} "
+        f"→ {entry.get('transport', '')} "
+        f"→ {entry.get('actual_model', '')}"
+    )
+
+
 def mode_summary_text() -> str:
     policy = get_runtime_policy()
+    diagnostics = get_runtime_diagnostics()
     lines = [
         "🔧 Current model mode:",
         f"• Mode: {policy.mode_key}",
-        f"• Main: {policy.main_model}",
+        _format_model_line("Main", diagnostics["main"]),
         f"• Rounds limit: {policy.max_rounds}",
         f"• Tools: {'on' if policy.tools_enabled else 'off'}",
         f"• Execution: {policy.execution_style}",
         f"• Purpose: {policy.intended_use}",
-        f"• Aux light model: {policy.aux_light_model}",
-        f"• Background model: {policy.background_model}",
+        _format_model_line("Aux light", diagnostics["aux_light"]),
+        _format_model_line("Background", diagnostics["background"]),
         f"• Background reasoning: {policy.background_reasoning_effort}",
     ]
     if policy.mode_key == "codex":

@@ -8,6 +8,7 @@ from ouroboros.model_modes import (
     execution_style_for_active_mode,
     get_background_model,
     get_background_reasoning_effort,
+    get_runtime_diagnostics,
     get_runtime_policy,
     mode_summary_text,
 )
@@ -90,12 +91,12 @@ def test_mode_summary_text_for_codex_includes_mode_details(monkeypatch) -> None:
 
     summary = mode_summary_text()
     assert "Mode: codex" in summary
-    assert "Main: codex/gpt-5.4" in summary
+    assert "Main: codex/gpt-5.4 → codex → gpt-5.4" in summary
     assert "Rounds limit: 200" in summary
     assert "Tools: on" in summary
     assert "Execution: loop" in summary
-    assert "Aux light model: qwen/qwen3-coder:free" in summary
-    assert "Background model: google/gemini-2.5-pro-preview" in summary
+    assert "Aux light: qwen/qwen3-coder:free → openrouter → qwen/qwen3-coder:free" in summary
+    assert "Background: google/gemini-2.5-pro-preview → openrouter → google/gemini-2.5-pro-preview" in summary
     assert "Background reasoning: minimal" in summary
     assert "Account: acc2" in summary
     assert "Limits: 5h=11 7d=222" in summary
@@ -153,3 +154,15 @@ def test_background_model_prefers_consciousness_codex_tokens(monkeypatch) -> Non
 def test_background_reasoning_effort_reads_explicit_env(monkeypatch) -> None:
     monkeypatch.setenv("OUROBOROS_BG_REASONING_EFFORT", "minimal")
     assert get_background_reasoning_effort() == "minimal"
+
+
+def test_runtime_diagnostics_exposes_requested_transport_and_actual_models(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
+    monkeypatch.setenv("OUROBOROS_MODEL_BACKGROUND", "google/gemini-2.5-pro-preview")
+    diagnostics = get_runtime_diagnostics({"active_model_mode": "sonnet"})
+    assert diagnostics["mode_key"] == "sonnet"
+    assert diagnostics["main"]["requested_model"] == "copilot/claude-sonnet-4.6"
+    assert diagnostics["main"]["transport"] == "copilot"
+    assert diagnostics["main"]["actual_model"] == "claude-sonnet-4.6"
+    assert diagnostics["aux_light"]["transport"] == "openrouter"
+    assert diagnostics["background"]["transport"] == "codex-consciousness"

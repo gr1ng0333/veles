@@ -14,7 +14,7 @@ PROMPT_TOKEN_GUARD_THRESHOLD = 40000
 
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
 from ouroboros.llm import LLMClient, normalize_reasoning_effort
-from ouroboros.model_modes import execution_style_for_active_mode, max_rounds_for_active_mode, tools_enabled_for_active_mode
+from ouroboros.model_modes import execution_style_for_active_mode, get_runtime_diagnostics, max_rounds_for_active_mode, tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.antistagnation import (
@@ -835,6 +835,7 @@ def run_llm_loop_impl(
     tools._ctx.event_queue = event_queue
     tools._ctx.task_id = task_id
 
+    runtime_diagnostics = get_runtime_diagnostics()
     state = {
         "active_model": active_model,
         "active_effort": initial_effort,
@@ -854,12 +855,34 @@ def run_llm_loop_impl(
         "evolution_large_prompt_streak": 0,
         "original_task_text": _extract_original_task(messages),
         "execution_style": execution_style_for_active_mode(),
+        "runtime_diagnostics": runtime_diagnostics,
     }
     # If caller provides a persistent executor (direct-chat), reuse it and
     # do NOT shut it down when this task ends — it survives across messages.
     owns_executor = persistent_executor is None
     stateful_executor = persistent_executor or _StatefulToolExecutor()
     owner_msg_seen: set = set()
+
+    append_jsonl(drive_logs / "events.jsonl", {
+        "ts": utc_now_iso(),
+        "type": "task_runtime_mode",
+        "task_id": task_id,
+        "task_type": task_type,
+        "mode_key": runtime_diagnostics.get("mode_key"),
+        "execution_style": runtime_diagnostics.get("execution_style"),
+        "tools_enabled": runtime_diagnostics.get("tools_enabled"),
+        "max_rounds": runtime_diagnostics.get("max_rounds"),
+        "main_requested_model": runtime_diagnostics.get("main", {}).get("requested_model"),
+        "main_transport": runtime_diagnostics.get("main", {}).get("transport"),
+        "main_actual_model": runtime_diagnostics.get("main", {}).get("actual_model"),
+        "aux_requested_model": runtime_diagnostics.get("aux_light", {}).get("requested_model"),
+        "aux_transport": runtime_diagnostics.get("aux_light", {}).get("transport"),
+        "aux_actual_model": runtime_diagnostics.get("aux_light", {}).get("actual_model"),
+        "background_requested_model": runtime_diagnostics.get("background", {}).get("requested_model"),
+        "background_transport": runtime_diagnostics.get("background", {}).get("transport"),
+        "background_actual_model": runtime_diagnostics.get("background", {}).get("actual_model"),
+        "background_reasoning_effort": runtime_diagnostics.get("background_reasoning_effort"),
+    })
 
     try:
         if state["execution_style"] == "one_shot":
