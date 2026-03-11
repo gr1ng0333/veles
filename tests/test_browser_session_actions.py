@@ -483,6 +483,49 @@ def test_browser_run_actions_waits_for_url_absence_with_explicit_flag(monkeypatc
 
 
 
+def test_browser_run_actions_supports_absent_expect_url_substring(monkeypatch):
+    page = DummyPage()
+    page.url = "https://example.com/logout"
+    ctx = make_ctx(page)
+
+    def click_logout(selector, timeout=0):
+        page.calls.append(("click", selector, timeout))
+        page.url = "https://example.com/login"
+
+    page.click = click_logout
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "click", "selector": "#logout", "expect_url_substring": "/logout", "expect_url_must_absent": True},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["checks"]["expect_url_substring"]["matched"] is True
+    assert payload["results"][0]["checks"]["expect_url_substring"]["must_absent"] is True
+    assert payload["results"][0]["checks"]["expect_url_substring"]["url"].endswith('/login')
+
+
+def test_browser_run_actions_fails_absent_expect_url_substring_when_substring_remains(monkeypatch):
+    page = DummyPage()
+    page.url = "https://example.com/logout"
+    ctx = make_ctx(page)
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for", "timeout": 10, "expect_url_substring": "/logout", "expect_url_must_absent": True},
+        {"action": "fill", "selector": "#after", "value": "x"},
+    ]))
+
+    assert payload["success"] is False
+    assert payload["stopped_early"] is True
+    assert payload["executed_steps"] == 1
+    assert payload["results"][0]["checks"]["expect_url_substring"]["matched"] is False
+    assert payload["results"][0]["checks"]["expect_url_substring"]["must_absent"] is True
+    assert payload["results"][0]["checks"]["expect_url_substring"]["url"].endswith('/logout')
+
+
 def test_browser_run_actions_wait_for_url_absence_keeps_legacy_text_flag(monkeypatch):
     page = DummyPage()
     page.url = "https://example.com/dashboard/loading"

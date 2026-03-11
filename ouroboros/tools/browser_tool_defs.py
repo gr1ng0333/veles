@@ -29,6 +29,7 @@ def _browser_run_actions_schema() -> dict[str, Any]:
                             "expect_selector": {"type": "string", "description": "Optional selector to verify after the step"},
                             "expect_selector_state": {"type": "string", "enum": ["attached", "detached", "hidden", "visible"], "description": "For expect_selector: selector state expected after the step (default: visible)."},
                             "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
+                            "expect_url_must_absent": {"type": "boolean", "description": "For expect_url_substring: require the substring to be absent after the step instead of present."},
                             "wait_for_navigation": {"type": "boolean", "description": "Wait for page URL to change/become available after the step"},
                             "wait_until": {"type": "string", "enum": ["commit", "domcontentloaded", "load", "networkidle"], "description": "Navigation readiness target for goto (default: load)"},
                             "wait_for_state": {"type": "string", "enum": ["attached", "detached", "hidden", "visible"], "description": "For wait_for: selector state to wait for (default: visible)."},
