@@ -553,6 +553,29 @@ class TestEvolutionCapacityBackoff:
         assert len([row for row in rows if row.get("type") == "evolution_unblocked"]) == 1
 
 
+class TestEvolutionEnqueueSuppressFlag:
+    def test_does_not_enqueue_when_suppress_auto_resume_until_owner_message_is_set(self, tmp_drive, monkeypatch):
+        from supervisor import queue as q
+        from supervisor.state import save_state, ensure_state_defaults, load_state
+        from supervisor import workers as w
+
+        w.init(pathlib.Path('/opt/veles'), tmp_drive, max_workers=1, soft_timeout=600, hard_timeout=1800, total_budget_limit=1000.0)
+        st = ensure_state_defaults({
+            'owner_chat_id': 123,
+            'evolution_mode_enabled': True,
+            'suppress_auto_resume_until_owner_message': True,
+        })
+        save_state(st)
+
+        monkeypatch.setattr(q, '_evolution_blocked_by_codex_capacity', lambda now_iso: (False, {'total_5h': 0, 'threshold': 560}))
+        q.enqueue_evolution_task_if_needed()
+
+        assert len(q.PENDING) == 0
+        st2 = load_state()
+        assert st2['evolution_mode_enabled'] is True
+        assert st2['suppress_auto_resume_until_owner_message'] is True
+
+
 class TestAutoResumeControls:
     def test_auto_resume_suppressed_by_flag(self, tmp_drive, monkeypatch):
         from supervisor.state import save_state, ensure_state_defaults
