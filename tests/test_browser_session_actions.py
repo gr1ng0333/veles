@@ -26,6 +26,7 @@ class DummyPage:
         self.calls = []
         self.visible = {"#ready"}
         self.texts = {"#ready": "Ready"}
+        self._timeouts = {}
 
     def click(self, selector, timeout=0):
         self.calls.append(("click", selector, timeout))
@@ -50,6 +51,14 @@ class DummyPage:
 
     def wait_for_timeout(self, timeout):
         self.calls.append(("wait_for_timeout", timeout))
+        for selector, states in list(self._timeouts.items()):
+            if states:
+                self.texts[selector] = states.pop(0)
+                if not states:
+                    del self._timeouts[selector]
+
+    def schedule_text_updates(self, selector, values):
+        self._timeouts[selector] = list(values)
 
     def goto(self, url, timeout=0, wait_until="load"):
         self.calls.append(("goto", url, timeout, wait_until))
@@ -184,3 +193,40 @@ def test_browser_run_actions_fails_on_exact_text_mismatch(monkeypatch):
     assert payload["stopped_early"] is True
     assert payload["executed_steps"] == 1
     assert payload["results"][0]["checks"]["assert_text"]["matched"] is False
+
+
+def test_browser_run_actions_waits_for_text(monkeypatch):
+    page = DummyPage()
+    page.visible.add("#status")
+    page.texts["#status"] = "Loading"
+    page.schedule_text_updates("#status", ["Still loading", "Done"])
+    ctx = make_ctx(page)
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for_text", "selector": "#status", "value": "Done", "timeout": 1000},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["wait_for_text_matched"] is True
+    assert payload["results"][0]["checks"]["wait_for_text"]["matched"] is True
+    assert ("wait_for_timeout", 100) in page.calls
+
+
+def test_browser_run_actions_waits_for_text_absence(monkeypatch):
+    page = DummyPage()
+    page.visible.add("#status")
+    page.texts["#status"] = "Saving changes"
+    page.schedule_text_updates("#status", ["Still saving", "Saved"])
+    ctx = make_ctx(page)
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for_text", "selector": "#status", "value": "Saving", "timeout": 1000, "text_must_absent": True},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["text_must_absent"] is True
+    assert payload["results"][0]["checks"]["wait_for_text"]["matched"] is True

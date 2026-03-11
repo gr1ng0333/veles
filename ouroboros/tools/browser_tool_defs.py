@@ -17,11 +17,11 @@ def _browser_run_actions_schema() -> dict[str, Any]:
             "properties": {
                 "actions": {
                     "type": "array",
-                    "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for, goto, extract_text, assert_text.",
+                    "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for, goto, extract_text, assert_text, wait_for_text.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "action": {"type": "string", "enum": ["assert_text", "click", "evaluate", "extract_text", "fill", "goto", "scroll", "select", "wait_for"]},
+                            "action": {"type": "string", "enum": ["assert_text", "click", "evaluate", "extract_text", "fill", "goto", "scroll", "select", "wait_for", "wait_for_text"]},
                             "selector": {"type": "string"},
                             "value": {"type": ["string", "number", "boolean"]},
                             "timeout": {"type": "integer", "description": "Timeout in ms for the step (default: 5000)"},
