@@ -31,6 +31,7 @@ def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optiona
             "timeout": int(raw.get("timeout") or 5000),
             "label": str(raw.get("label") or "").strip(),
             "expect_selector": str(raw.get("expect_selector") or "").strip(),
+            "expect_selector_state": str(raw.get("expect_selector_state") or "").strip() or "visible",
             "expect_url_substring": str(raw.get("expect_url_substring") or "").strip(),
             "wait_for_navigation": bool(raw.get("wait_for_navigation") or False),
             "wait_until": str(raw.get("wait_until") or "").strip() or "load",
@@ -41,6 +42,9 @@ def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optiona
         }
         if action == "wait_for_url" and text_must_absent and not url_must_absent:
             step["url_must_absent"] = True
+        expect_selector_state = step["expect_selector_state"]
+        if expect_selector_state not in _ALLOWED_WAIT_FOR_STATES:
+            return None, f"action #{idx + 1} has unsupported expect_selector_state '{expect_selector_state}'"
         if action == "wait_for":
             wait_for_state = step["wait_for_state"]
             if wait_for_state not in _ALLOWED_WAIT_FOR_STATES:
@@ -302,12 +306,13 @@ def _verify_step(page: Any, step: Dict[str, Any], *, previous_url: str = "", exe
         verified = verified and matched
 
     if expect_selector:
+        expect_selector_state = str(step.get("expect_selector_state") or "visible").strip() or "visible"
         try:
-            page.wait_for_selector(expect_selector, timeout=timeout, state="visible")
-            checks["expect_selector"] = {"selector": expect_selector, "matched": True}
+            page.wait_for_selector(expect_selector, timeout=timeout, state=expect_selector_state)
+            checks["expect_selector"] = {"selector": expect_selector, "state": expect_selector_state, "matched": True}
         except Exception as exc:
             verified = False
-            checks["expect_selector"] = {"selector": expect_selector, "matched": False, "error": str(exc)}
+            checks["expect_selector"] = {"selector": expect_selector, "state": expect_selector_state, "matched": False, "error": str(exc)}
 
     if expect_url_substring:
         current_url = page.url
