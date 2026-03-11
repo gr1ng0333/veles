@@ -400,6 +400,91 @@ def build_auth_outcome(auth_state: Dict[str, Any], next_action: Dict[str, Any], 
     }
 
 
+def build_verification_handoff(
+    verification: Dict[str, Any],
+    outcome: Dict[str, Any],
+    next_action: Dict[str, Any],
+) -> Dict[str, Any]:
+    verification = dict(verification or {})
+    outcome = dict(outcome or {})
+    next_action = dict(next_action or {})
+
+    selectors = dict(verification.get("selectors") or next_action.get("selectors") or {})
+    action = str(next_action.get("action") or verification.get("recommended_action") or "continue")
+    continuation = str(outcome.get("continuation") or "continue")
+    kind = str(verification.get("kind") or "none")
+
+    if not verification.get("detected"):
+        return {
+            "active": False,
+            "mode": "none",
+            "kind": "none",
+            "action": action,
+            "continuation": continuation,
+            "message": "No verification handoff required.",
+            "instructions": [],
+            "required_inputs": [],
+            "selectors": selectors,
+        }
+
+    if continuation == "auto_attempt_verification":
+        instructions = [
+            "Capture or reuse the verification image/element from the current page.",
+            "Attempt the configured captcha flow automatically using the detected selectors.",
+            "Re-check auth state after submit instead of assuming verification success.",
+        ]
+        required_inputs = []
+        if not selectors.get("captcha_selector"):
+            required_inputs.append("captcha_selector")
+        return {
+            "active": True,
+            "mode": "auto_attempt",
+            "kind": kind,
+            "action": action,
+            "continuation": continuation,
+            "message": "Verification can be attempted automatically before the auth flow continues.",
+            "instructions": instructions,
+            "required_inputs": required_inputs,
+            "selectors": selectors,
+        }
+
+    if continuation == "await_owner":
+        instructions = [
+            "Pause automatic progress at the current verification step.",
+            "Request the missing owner-provided code or approval needed to continue.",
+            "Resume only after the owner input is supplied and re-check auth state after submission.",
+        ]
+        required_inputs = ["owner_verification_code"]
+        if not selectors.get("mfa_selector"):
+            required_inputs.append("mfa_selector")
+        return {
+            "active": True,
+            "mode": "owner_handoff",
+            "kind": kind,
+            "action": action,
+            "continuation": continuation,
+            "message": "Verification requires owner input before the auth flow can continue.",
+            "instructions": instructions,
+            "required_inputs": required_inputs,
+            "selectors": selectors,
+        }
+
+    return {
+        "active": True,
+        "mode": "blocked",
+        "kind": kind,
+        "action": action,
+        "continuation": continuation,
+        "message": "Verification boundary detected, but no safe continuation is available.",
+        "instructions": [
+            "Do not continue the auth flow automatically.",
+            "Inspect the page or escalate to the owner before taking further action.",
+        ],
+        "required_inputs": [],
+        "selectors": selectors,
+    }
+
+
 def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, Any], next_action: Dict[str, Any]) -> Dict[str, Any]:
     profile = snapshot.get("profile") or {}
     state = auth_state.get("state", "unknown")
@@ -442,6 +527,7 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
 
     verification = build_verification_boundary(snapshot, auth_state, next_action)
     outcome = build_auth_outcome(auth_state, next_action, verification)
+    verification_handoff = build_verification_handoff(verification, outcome, next_action)
 
     return {
         "site_profile": {
@@ -455,6 +541,7 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
         "evidence": evidence,
         "verification": verification,
         "outcome": outcome,
+        "verification_handoff": verification_handoff,
         "next_action": next_action,
         "current_url": snapshot.get("current_url", ""),
         "matched": snapshot.get("matched", []),
@@ -579,6 +666,7 @@ def build_post_submit_auth_result(
         "diagnostics": diagnostics,
         "verification": diagnostics.get("verification"),
         "outcome": diagnostics.get("outcome"),
+        "verification_handoff": diagnostics.get("verification_handoff"),
         "post_submit_state": auth_state,
         "post_submit_signals": post_signals,
         "protected_url_alive": protected_url_alive,

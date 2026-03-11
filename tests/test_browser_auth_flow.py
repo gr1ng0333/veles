@@ -5,6 +5,7 @@ from ouroboros.tools.browser_auth_flow import (
     build_auth_page_snapshot,
     build_next_action_plan,
     build_verification_boundary,
+    build_verification_handoff,
     infer_auth_state,
     normalize_site_profile,
     summarize_auth_diagnostics,
@@ -366,3 +367,71 @@ def test_summarize_auth_diagnostics_exposes_machine_readable_outcome():
     assert diagnostics["verification"]["kind"] == "captcha"
     assert diagnostics["outcome"]["status"] == "verification_required"
     assert diagnostics["outcome"]["continuation"] == "auto_attempt_verification"
+
+
+
+def test_build_verification_handoff_for_captcha_returns_auto_attempt_plan():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box", "submit_selector": "button[type=submit]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+
+    handoff = build_verification_handoff(verification, outcome, next_action)
+
+    assert handoff["active"] is True
+    assert handoff["mode"] == "auto_attempt"
+    assert handoff["kind"] == "captcha"
+    assert handoff["required_inputs"] == []
+    assert handoff["selectors"]["captcha_selector"] == ".captcha-box"
+
+
+
+def test_build_verification_handoff_for_mfa_returns_owner_handoff_plan():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/verify",
+        page_signals={"title": "Verify", "body_text": "Enter the verification code"},
+        matched=["mfa_selector"],
+        profile=normalize_site_profile({"mfa_selector": "input[name=otp]", "submit_selector": "button[type=submit]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+
+    handoff = build_verification_handoff(verification, outcome, next_action)
+
+    assert handoff["active"] is True
+    assert handoff["mode"] == "owner_handoff"
+    assert handoff["kind"] == "mfa"
+    assert "owner_verification_code" in handoff["required_inputs"]
+    assert handoff["selectors"]["mfa_selector"] == "input[name=otp]"
+
+
+
+def test_summarize_auth_diagnostics_exposes_inactive_handoff_when_no_verification():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/app",
+        page_signals={"title": "Dashboard", "body_text": "Welcome back"},
+        matched=["success_selector"],
+        profile=normalize_site_profile({"success_selector": ".dashboard"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(snapshot, state, next_action)
+
+    assert diagnostics["verification_handoff"]["active"] is False
+    assert diagnostics["verification_handoff"]["mode"] == "none"
+    assert diagnostics["verification_handoff"]["continuation"] == "continue"
