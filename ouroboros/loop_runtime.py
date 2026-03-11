@@ -14,6 +14,7 @@ PROMPT_TOKEN_GUARD_THRESHOLD = 40000
 
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
 from ouroboros.llm import LLMClient, normalize_reasoning_effort
+from ouroboros.model_modes import tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.antistagnation import (
@@ -781,6 +782,8 @@ def run_llm_loop_impl(
     _td.set_registry(tools)
     tool_schemas = tools.schemas(core_only=True)
     tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, messages)
+    if not tools_enabled_for_active_mode():
+        tool_schemas = []
     tools._ctx.event_queue = event_queue
     tools._ctx.task_id = task_id
 

@@ -12,9 +12,11 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from ouroboros.model_modes import MODEL_MODES, get_active_mode
+
 log = logging.getLogger(__name__)
 
-DEFAULT_LIGHT_MODEL = "google/gemini-3-pro-preview"
+DEFAULT_LIGHT_MODEL = MODEL_MODES["haiku"].model
 
 
 def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
@@ -301,19 +303,26 @@ class LLMClient:
         return text, usage
 
     def default_model(self) -> str:
-        """Return the single default model from env. LLM switches via tool if needed."""
-        return os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
+        """Return the active main model from mode state/env."""
+        env_model = os.environ.get("OUROBOROS_MODEL", "").strip()
+        if env_model:
+            return env_model
+        return get_active_mode().model
 
     def available_models(self) -> List[str]:
-        """Return list of available models from env (for switch_model tool schema)."""
-        main = os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
+        """Return list of available models from mode registry + env extras."""
+        main = self.default_model()
         code = os.environ.get("OUROBOROS_MODEL_CODE", "")
-        light = os.environ.get("OUROBOROS_MODEL_LIGHT", "")
+        light = os.environ.get("OUROBOROS_MODEL_LIGHT", "") or DEFAULT_LIGHT_MODEL
         models = [main]
         if code and code != main:
             models.append(code)
         if light and light != main and light != code:
             models.append(light)
+
+        for mode in MODEL_MODES.values():
+            if mode.model not in models:
+                models.append(mode.model)
         # Extra models available for switch_model (comma-separated)
         extra = os.environ.get("OUROBOROS_EXTRA_MODELS", "")
         for m in extra.split(","):
