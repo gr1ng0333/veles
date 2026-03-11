@@ -548,6 +548,7 @@ def _browser_check_login_state(
         "legacy_state": legacy_inferred["state"],
         "legacy_reason": legacy_inferred["reason"],
         "diagnostics": diagnostics,
+        "verification": diagnostics.get("verification"),
         "site_profile": profile,
         "next_action": next_action,
     }
