@@ -55,6 +55,7 @@ def test_runtime_policy_uses_active_mode_registry(monkeypatch) -> None:
     assert policy.main_model == MODEL_MODES["haiku"].model
     assert policy.max_rounds == MODEL_MODES["haiku"].max_rounds
     assert policy.tools_enabled is True
+    assert policy.main_model == "copilot/claude-haiku-4.5"
     assert policy.aux_light_model == "qwen/qwen3-coder:free"
 
 

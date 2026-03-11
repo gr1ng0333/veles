@@ -12,11 +12,11 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from ouroboros.model_modes import MODEL_MODES, get_active_mode
+from ouroboros.model_modes import DEFAULT_AUX_LIGHT_MODEL, MODEL_MODES, get_active_mode
 
 log = logging.getLogger(__name__)
 
-DEFAULT_LIGHT_MODEL = MODEL_MODES["haiku"].model
+DEFAULT_LIGHT_MODEL = DEFAULT_AUX_LIGHT_MODEL
 
 
 def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
@@ -178,10 +178,14 @@ class LLMClient:
             return call_codex(messages, tools=tools, model=actual_model,
                               token_prefix="CODEX_CONSCIOUSNESS")
 
-        # Copilot proxy: route "copilot/*" models through GitHub Copilot API
+        # Copilot proxy: route only Claude-family "copilot/*" models through GitHub Copilot API
         if model.startswith("copilot/"):
             from ouroboros.copilot_proxy import call_copilot
-            actual_model = model[len("copilot/"):]
+            actual_model = model[len("copilot/"):].strip()
+            if not actual_model.startswith("claude-"):
+                raise ValueError(
+                    f"Unsupported Copilot model '{model}'. Copilot routing is reserved for Claude-family models only."
+                )
             return call_copilot(messages, tools=tools, model=actual_model,
                                 max_tokens=max_tokens)
 
