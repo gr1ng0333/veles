@@ -274,6 +274,12 @@ python colab_launcher.py
 
 ## Changelog
 
+### 6.17.8
+- Fixed post-restart model-mode bootstrap in `colab_launcher.py` so the launcher applies the persisted active mode only after `supervisor.state` is initialized instead of falling back to default state too early.
+- Stopped launcher diagnostics from trusting a stale module-level mode snapshot: startup and restart-ack messages now read the current persisted active mode at emission time.
+- Added `sync_mode_env_from_state()` and applied it at task start in `ouroboros/agent.py` so long-lived processes refresh `OUROBOROS_MODEL` and related execution env from persisted mode before each request.
+- Added regression coverage for stale-env override behavior in model-mode tests.
+
 ### 6.17.7
 - Closed the third model-modes compatibility commit by adding a shared runtime diagnostics contract in `ouroboros/model_modes.py` that exposes requested model, transport, and actual backend model for main, aux-light, and background paths.
 - Made `/model`, task runtime events, `llm_usage`, and background consciousness logs/reporting speak the same truthful routing language instead of leaving transport resolution implicit.

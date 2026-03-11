@@ -119,6 +119,15 @@ def bootstrap_mode_env() -> ModelMode:
     return apply_mode_env(get_active_mode())
 
 
+def sync_mode_env_from_state(st: Optional[Dict[str, Any]] = None) -> ModelMode:
+    """Re-apply persisted active mode to process env.
+
+    Needed for long-lived launcher/chat/worker processes after restarts or
+    mode switches so each task starts from persisted truth, not stale env.
+    """
+    return apply_mode_env(get_active_mode(st))
+
+
 def get_aux_light_model() -> str:
     return os.environ.get("OUROBOROS_MODEL_LIGHT", "").strip() or DEFAULT_AUX_LIGHT_MODEL
 
