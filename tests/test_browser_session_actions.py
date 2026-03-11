@@ -224,6 +224,28 @@ def test_browser_run_actions_waits_for_text(monkeypatch):
     assert ("wait_for_timeout", 100) in page.calls
 
 
+def test_browser_run_actions_waits_for_url(monkeypatch):
+    page = DummyPage()
+    ctx = make_ctx(page)
+
+    def advance_url(timeout):
+        page.calls.append(("wait_for_timeout", timeout))
+        page.url = "https://example.com/dashboard?tab=home"
+
+    page.wait_for_timeout = advance_url
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for_url", "value": "/dashboard", "timeout": 1000},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["wait_for_url_matched"] is True
+    assert payload["results"][0]["checks"]["wait_for_url"]["matched"] is True
+    assert payload["results"][0]["checks"]["wait_for_url"]["url"].endswith("/dashboard?tab=home")
+
+
 def test_browser_run_actions_waits_for_text_absence(monkeypatch):
     page = DummyPage()
     page.visible.add("#status")
@@ -305,3 +327,21 @@ def test_browser_run_actions_fails_when_navigation_url_does_not_change(monkeypat
     assert payload["results"][0]["checks"]["wait_for_navigation"]["previous_url"].endswith('/login')
     assert payload["results"][0]["checks"]["wait_for_navigation"]["current_url"].endswith('/login')
     assert any(call[0] == "wait_for_function" for call in page.calls)
+
+
+def test_browser_run_actions_fails_when_wait_for_url_never_matches(monkeypatch):
+    page = DummyPage()
+    ctx = make_ctx(page)
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for_url", "value": "/dashboard", "timeout": 50},
+        {"action": "fill", "selector": "#after", "value": "x"},
+    ]))
+
+    assert payload["success"] is False
+    assert payload["stopped_early"] is True
+    assert payload["executed_steps"] == 1
+    assert payload["results"][0]["checks"]["wait_for_url"]["matched"] is False
+    assert payload["results"][0]["checks"]["wait_for_url"]["url"].endswith('/login')
