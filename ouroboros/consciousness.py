@@ -32,7 +32,7 @@ from ouroboros.utils import (
     utc_now_iso, read_text, append_jsonl, clip_text,
     truncate_for_log, sanitize_tool_result_for_log, sanitize_tool_args_for_log,
 )
-from ouroboros.llm import LLMClient
+from ouroboros.llm import LLMClient, model_transport, transport_model_name
 from ouroboros.model_modes import get_background_model, get_background_reasoning_effort
 
 log = logging.getLogger(__name__)
@@ -401,6 +401,10 @@ class BackgroundConsciousness:
                 "cost_usd": total_cost,
                 "rounds": round_idx,
                 "model": model,
+                "requested_model": model,
+                "transport": model_transport(model),
+                "actual_model": transport_model_name(model),
+                "reasoning_effort": get_background_reasoning_effort(),
             })
 
             now_iso = utc_now_iso()
@@ -409,6 +413,9 @@ class BackgroundConsciousness:
             self._monitor_state["last_thought_at"] = now_iso
             self._monitor_state["last_thought_preview"] = thought_preview
             self._monitor_state["last_model"] = model
+            self._monitor_state["last_transport"] = model_transport(model)
+            self._monitor_state["last_actual_model"] = transport_model_name(model)
+            self._monitor_state["last_reasoning_effort"] = get_background_reasoning_effort()
             self._monitor_state["last_rounds"] = round_idx
             self._monitor_state["next_wakeup_interval_seconds"] = int(self._next_wakeup_sec)
             self._monitor_state["next_wakeup_at"] = _calc_next_wakeup_at(self._next_wakeup_sec)

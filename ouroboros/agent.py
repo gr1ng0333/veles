@@ -27,6 +27,7 @@ from ouroboros.utils import (
     get_git_info, sanitize_task_for_event,
 )
 from ouroboros.llm import LLMClient, add_usage
+from ouroboros.model_modes import get_runtime_diagnostics
 from ouroboros.tools import ToolRegistry
 from ouroboros.tools.registry import ToolContext
 from ouroboros.memory import Memory
@@ -545,6 +546,7 @@ class OuroborosAgent:
             log.warning("Failed to log task eval event", exc_info=True)
             pass
 
+        runtime_diagnostics = get_runtime_diagnostics()
         self._pending_events.append({
             "type": "task_metrics",
             "task_id": task.get("id"), "task_type": task.get("type"),
@@ -554,6 +556,11 @@ class OuroborosAgent:
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
             "completion_tokens": int(usage.get("completion_tokens") or 0),
             "total_rounds": int(usage.get("rounds") or 0),
+            "mode_key": runtime_diagnostics.get("mode_key"),
+            "execution_style": runtime_diagnostics.get("execution_style"),
+            "main_requested_model": runtime_diagnostics.get("main", {}).get("requested_model"),
+            "main_transport": runtime_diagnostics.get("main", {}).get("transport"),
+            "main_actual_model": runtime_diagnostics.get("main", {}).get("actual_model"),
             "ts": utc_now_iso(),
         })
 
@@ -568,6 +575,11 @@ class OuroborosAgent:
             "total_rounds": int(usage.get("rounds") or 0),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
             "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "mode_key": runtime_diagnostics.get("mode_key"),
+            "execution_style": runtime_diagnostics.get("execution_style"),
+            "main_requested_model": runtime_diagnostics.get("main", {}).get("requested_model"),
+            "main_transport": runtime_diagnostics.get("main", {}).get("transport"),
+            "main_actual_model": runtime_diagnostics.get("main", {}).get("actual_model"),
             "ts": utc_now_iso(),
         })
         append_jsonl(drive_logs / "events.jsonl", {

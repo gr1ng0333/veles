@@ -274,6 +274,11 @@ python colab_launcher.py
 
 ## Changelog
 
+### 6.17.7
+- Closed the third model-modes compatibility commit by adding a shared runtime diagnostics contract in `ouroboros/model_modes.py` that exposes requested model, transport, and actual backend model for main, aux-light, and background paths.
+- Made `/model`, task runtime events, `llm_usage`, and background consciousness logs/reporting speak the same truthful routing language instead of leaving transport resolution implicit.
+- Fixed release metadata desync by bringing `pyproject.toml` back in sync with the current release line before the new patch release.
+
 ### v6.17.6 (2026-03-11)
 - Moved auxiliary/light and background model selection onto one explicit policy layer in `ouroboros/model_modes.py` by introducing runtime fields for `background_model` and `background_reasoning_effort`.
 - Rewired background consciousness and lightweight helper LLM paths (dialogue summarization, tool-history compaction, duplicate-task detection, available-model listing) to use policy helpers instead of ad-hoc direct reads from `OUROBOROS_MODEL_LIGHT`.

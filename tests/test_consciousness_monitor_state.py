@@ -46,3 +46,14 @@ def test_normalize_monitor_state_preserves_existing_last_issues_check():
     ts = "2026-03-06T05:00:00Z"
     data = _normalize_monitor_state({"last_issues_check": ts})
     assert data["last_issues_check"] == ts
+
+
+def test_normalize_monitor_state_preserves_transport_fields():
+    data = _normalize_monitor_state({
+        "last_transport": "codex-consciousness",
+        "last_actual_model": "gpt-5.1-codex-mini",
+        "last_reasoning_effort": "low",
+    })
+    assert data["last_transport"] == "codex-consciousness"
+    assert data["last_actual_model"] == "gpt-5.1-codex-mini"
+    assert data["last_reasoning_effort"] == "low"

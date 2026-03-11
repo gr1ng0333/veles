@@ -44,6 +44,9 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
             "task_id": evt.get("task_id", ""),
             "category": evt.get("category", "other"),
             "model": evt.get("model", ""),
+            "requested_model": evt.get("requested_model", evt.get("model", "")),
+            "transport": evt.get("transport", ""),
+            "actual_model": evt.get("actual_model", ""),
             "cost": usage.get("cost", 0),
             "shadow_cost": usage.get("shadow_cost", 0),
             "prompt_tokens": usage.get("prompt_tokens", 0),
@@ -255,6 +258,13 @@ def _handle_task_metrics(evt: Dict[str, Any], ctx: Any) -> None:
             "duration_sec": round(float(evt.get("duration_sec") or 0.0), 3),
             "tool_calls": int(evt.get("tool_calls") or 0),
             "tool_errors": int(evt.get("tool_errors") or 0),
+            "cost_usd": round(float(evt.get("cost_usd") or 0.0), 6),
+            "total_rounds": int(evt.get("total_rounds") or 0),
+            "mode_key": str(evt.get("mode_key") or ""),
+            "execution_style": str(evt.get("execution_style") or ""),
+            "main_requested_model": str(evt.get("main_requested_model") or ""),
+            "main_transport": str(evt.get("main_transport") or ""),
+            "main_actual_model": str(evt.get("main_actual_model") or ""),
         },
     )
 
