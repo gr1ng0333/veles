@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.tools.browser_runtime import _ensure_browser
+from ouroboros.tools.browser_tool_defs import _browser_run_actions_schema
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 _ALLOWED_ACTIONS = {"assert_text", "click", "extract_text", "fill", "goto", "screenshot", "scroll", "select", "evaluate", "wait_for", "wait_for_text", "wait_for_url"}
@@ -392,42 +393,7 @@ def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
             name="browser_run_actions",
-            schema={
-                "name": "browser_run_actions",
-                "description": (
-                    "Run a reusable batch of browser actions against the current live/restored browser session, "
-                    "with per-step verification and structured results."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "actions": {
-                            "type": "array",
-                            "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, screenshot, wait_for, goto, extract_text, assert_text, wait_for_text, wait_for_url.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "action": {"type": "string", "enum": sorted(_ALLOWED_ACTIONS)},
-                                    "selector": {"type": "string"},
-                                    "value": {"type": ["string", "number", "boolean"]},
-                                    "timeout": {"type": "integer", "description": "Timeout in ms for the step (default: 5000)"},
-                                    "label": {"type": "string", "description": "Optional human-readable step label"},
-                                    "expect_selector": {"type": "string", "description": "Optional selector that must become visible after the step"},
-                                    "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
-                                    "expect_url_must_absent": {"type": "boolean", "description": "For expect_url_substring: require the substring to be absent after the step instead of present."},
-                                    "wait_for_navigation": {"type": "boolean", "description": "Wait for page URL to change/become available after the step"},
-                                    "wait_until": {"type": "string", "enum": ["commit", "domcontentloaded", "load", "networkidle"], "description": "Navigation readiness target for goto (default: load)"},
-                                    "match_substring": {"type": "boolean", "description": "For assert_text: substring match (default: true). If false, require exact equality."},
-                                    "text_must_absent": {"type": "boolean", "description": "For assert_text: require expected text to be absent instead of present."},
-                                },
-                                "required": ["action"],
-                            },
-                        },
-                        "stop_on_error": {"type": "boolean", "description": "Stop at first failed step or failed verification (default: true)"},
-                    },
-                    "required": ["actions"],
-                },
-            },
+            schema=_browser_run_actions_schema(),
             handler=_browser_run_actions,
             timeout_sec=60,
         )
