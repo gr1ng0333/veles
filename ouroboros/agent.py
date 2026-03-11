@@ -428,8 +428,10 @@ class OuroborosAgent:
 
             # Set initial reasoning effort based on task type
             task_type_str = str(task.get("type") or "").lower()
-            if task_type_str in ("evolution", "review"):
+            if task_type_str == "review":
                 initial_effort = "high"
+            elif task_type_str == "evolution":
+                initial_effort = "medium"
             else:
                 initial_effort = "medium"
 

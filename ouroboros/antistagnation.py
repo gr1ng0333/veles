@@ -101,12 +101,24 @@ def stagnation_action(no_progress_rounds: int, cfg: AntiStagnationConfig, alread
 def is_small_completion_stagnation(
     recent_completion_tokens: List[int],
     cfg: AntiStagnationConfig,
+    *,
+    task_type: str = "",
+    has_tool_calls: bool = False,
 ) -> bool:
-    """Return True if the last N rounds all had completion_tokens below threshold."""
+    """Return True if the last N rounds all had completion_tokens below threshold.
+
+    For evolution tasks: threshold is halved (50 instead of 100),
+    and rounds with tool_calls are never considered stagnant.
+    """
+    if task_type == "evolution" and has_tool_calls:
+        return False
     n = cfg.small_completion_max_rounds
     if len(recent_completion_tokens) < n:
         return False
-    return all(t < cfg.small_completion_threshold for t in recent_completion_tokens[-n:])
+    threshold = cfg.small_completion_threshold
+    if task_type == "evolution":
+        threshold = threshold // 2
+    return all(t < threshold for t in recent_completion_tokens[-n:])
 
 
 def detect_context_overflow(

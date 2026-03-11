@@ -337,7 +337,8 @@ def build_llm_messages(
         + "## BIBLE.md\n\n" + clip_text(bible_md, 180000)
     )
     if needs_full_context:
-        static_text += "\n\n## README.md\n\n" + clip_text(readme_md, 180000)
+        readme_limit = 2000 if task_type == "evolution" else 180000
+        static_text += "\n\n## README.md\n\n" + clip_text(readme_md, readme_limit)
 
     # Semi-stable content: identity, scratchpad, knowledge
     # These change ~once per task, not per round
