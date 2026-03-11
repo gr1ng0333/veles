@@ -157,13 +157,27 @@ def infer_auth_state(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         return {"state": "error", "reason": f"failure text matched: {', '.join(failure_hits[:3])}", "matched": matched}
 
     cookie_hit = bool(snapshot.get("success_cookie_hits"))
-    cookie_only_success = cookie_hit and not snapshot.get("login_form_visible")
-
-    if snapshot.get("protected_url_alive") or (
-        profile.get("success_selector") and "success_selector" in matched
-    ) or snapshot.get("redirected_away_from_login") or (
+    current_url_lower = str(snapshot.get("current_url_lower") or snapshot.get("current_url") or "").lower()
+    login_markers = [str(x).strip().lower() for x in (profile.get("login_url_markers") or DEFAULT_LOGIN_URL_MARKERS) if str(x).strip()]
+    current_url_looks_like_login = any(marker in current_url_lower for marker in login_markers)
+    strong_success_signal = bool(
+        snapshot.get("protected_url_alive")
+        or (profile.get("success_selector") and "success_selector" in matched)
+        or snapshot.get("redirected_away_from_login")
+    )
+    account_ui_signal = bool(
         snapshot.get("has_profile_ui") or snapshot.get("body_mentions_profile") or snapshot.get("body_mentions_logout")
-    ) or cookie_only_success:
+    )
+    weak_success_guard_ok = bool(
+        not snapshot.get("login_form_visible")
+        and not snapshot.get("body_mentions_login")
+        and not current_url_looks_like_login
+    )
+    ui_cookie_success = account_ui_signal and cookie_hit and weak_success_guard_ok
+    ui_only_success = account_ui_signal and weak_success_guard_ok
+    cookie_only_success = cookie_hit and weak_success_guard_ok and not account_ui_signal
+
+    if strong_success_signal or ui_cookie_success or ui_only_success or cookie_only_success:
         success_reasons: List[str] = []
         if profile.get("success_selector") and "success_selector" in matched:
             success_reasons.append("success selector matched")
@@ -171,7 +185,7 @@ def infer_auth_state(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             success_reasons.append("protected_url_alive")
         if snapshot.get("redirected_away_from_login"):
             success_reasons.append("redirected to expected URL")
-        if snapshot.get("has_profile_ui") or snapshot.get("body_mentions_profile") or snapshot.get("body_mentions_logout"):
+        if account_ui_signal:
             success_reasons.append("account UI present")
         if cookie_hit:
             success_reasons.append(f"auth cookie present: {', '.join((snapshot.get('success_cookie_hits') or [])[:3])}")
@@ -275,6 +289,12 @@ def build_verification_boundary(snapshot: Dict[str, Any], auth_state: Dict[str, 
         return {key: value for key, value in pairs if value}
 
     if state == "captcha":
+        selectors = _selectors(
+            ("captcha_selector", profile.get("captcha_selector", "")),
+            ("submit_selector", profile.get("submit_selector", "")),
+        )
+        actionable = bool(selectors.get("captcha_selector"))
+        missing_requirements = [] if actionable else ["captcha_selector"]
         return {
             "detected": True,
             "kind": "captcha",
@@ -282,18 +302,23 @@ def build_verification_boundary(snapshot: Dict[str, Any], auth_state: Dict[str, 
             "source": "selector" if snapshot.get("captcha_selector_hit") else "text",
             "can_auto_attempt": True,
             "requires_owner_input": False,
+            "actionable": actionable,
+            "missing_requirements": missing_requirements,
             "blocks_progress": True,
             "recommended_action": next_action.get("action") or "solve_captcha",
             "confidence": "high" if snapshot.get("captcha_selector_hit") else "medium",
             "matched": [item for item in matched if item == "captcha_selector"],
             "text_hits": captcha_hits,
-            "selectors": _selectors(
-                ("captcha_selector", profile.get("captcha_selector", "")),
-                ("submit_selector", profile.get("submit_selector", "")),
-            ),
+            "selectors": selectors,
         }
 
     if state == "mfa":
+        selectors = _selectors(
+            ("mfa_selector", profile.get("mfa_selector", "")),
+            ("submit_selector", profile.get("submit_selector", "")),
+        )
+        actionable = bool(selectors.get("mfa_selector"))
+        missing_requirements = [] if actionable else ["mfa_selector"]
         return {
             "detected": True,
             "kind": "mfa",
@@ -301,15 +326,14 @@ def build_verification_boundary(snapshot: Dict[str, Any], auth_state: Dict[str, 
             "source": "selector" if snapshot.get("mfa_selector_hit") else "text",
             "can_auto_attempt": False,
             "requires_owner_input": True,
+            "actionable": actionable,
+            "missing_requirements": missing_requirements,
             "blocks_progress": True,
             "recommended_action": next_action.get("action") or "wait_for_mfa",
             "confidence": "high" if snapshot.get("mfa_selector_hit") else "medium",
             "matched": [item for item in matched if item == "mfa_selector"],
             "text_hits": mfa_hits,
-            "selectors": _selectors(
-                ("mfa_selector", profile.get("mfa_selector", "")),
-                ("submit_selector", profile.get("submit_selector", "")),
-            ),
+            "selectors": selectors,
         }
 
     return {
@@ -319,6 +343,8 @@ def build_verification_boundary(snapshot: Dict[str, Any], auth_state: Dict[str, 
         "source": "none",
         "can_auto_attempt": False,
         "requires_owner_input": False,
+        "actionable": True,
+        "missing_requirements": [],
         "blocks_progress": False,
         "recommended_action": next_action.get("action") or "continue",
         "confidence": "low",
@@ -335,10 +361,11 @@ def build_auth_outcome(auth_state: Dict[str, Any], next_action: Dict[str, Any], 
     verification = dict(verification or {})
 
     if verification.get("detected"):
-        if verification.get("requires_owner_input"):
+        actionable = bool(verification.get("actionable", True))
+        if verification.get("requires_owner_input") and actionable:
             status = "blocked_by_verification"
             continuation = "await_owner"
-        elif verification.get("can_auto_attempt"):
+        elif verification.get("can_auto_attempt") and actionable:
             status = "verification_required"
             continuation = "auto_attempt_verification"
         else:
@@ -350,8 +377,8 @@ def build_auth_outcome(auth_state: Dict[str, Any], next_action: Dict[str, Any], 
             "state": state,
             "action": action,
             "can_continue": False,
-            "should_auto_attempt_verification": bool(verification.get("can_auto_attempt")),
-            "requires_owner_input": bool(verification.get("requires_owner_input")),
+            "should_auto_attempt_verification": bool(verification.get("can_auto_attempt")) and actionable,
+            "requires_owner_input": bool(verification.get("requires_owner_input")) and actionable,
             "is_authenticated": False,
             "is_error": False,
             "blocks_progress": bool(verification.get("blocks_progress")),
@@ -413,6 +440,7 @@ def build_verification_handoff(
     action = str(next_action.get("action") or verification.get("recommended_action") or "continue")
     continuation = str(outcome.get("continuation") or "continue")
     kind = str(verification.get("kind") or "none")
+    missing_requirements = list(verification.get("missing_requirements") or [])
 
     if not verification.get("detected"):
         return {
@@ -433,9 +461,6 @@ def build_verification_handoff(
             "Attempt the configured captcha flow automatically using the detected selectors.",
             "Re-check auth state after submit instead of assuming verification success.",
         ]
-        required_inputs = []
-        if not selectors.get("captcha_selector"):
-            required_inputs.append("captcha_selector")
         return {
             "active": True,
             "mode": "auto_attempt",
@@ -444,7 +469,7 @@ def build_verification_handoff(
             "continuation": continuation,
             "message": "Verification can be attempted automatically before the auth flow continues.",
             "instructions": instructions,
-            "required_inputs": required_inputs,
+            "required_inputs": missing_requirements,
             "selectors": selectors,
         }
 
@@ -454,9 +479,6 @@ def build_verification_handoff(
             "Request the missing owner-provided code or approval needed to continue.",
             "Resume only after the owner input is supplied and re-check auth state after submission.",
         ]
-        required_inputs = ["owner_verification_code"]
-        if not selectors.get("mfa_selector"):
-            required_inputs.append("mfa_selector")
         return {
             "active": True,
             "mode": "owner_handoff",
@@ -465,7 +487,7 @@ def build_verification_handoff(
             "continuation": continuation,
             "message": "Verification requires owner input before the auth flow can continue.",
             "instructions": instructions,
-            "required_inputs": required_inputs,
+            "required_inputs": ["owner_verification_code", *missing_requirements],
             "selectors": selectors,
         }
 
@@ -480,7 +502,7 @@ def build_verification_handoff(
             "Do not continue the auth flow automatically.",
             "Inspect the page or escalate to the owner before taking further action.",
         ],
-        "required_inputs": [],
+        "required_inputs": missing_requirements,
         "selectors": selectors,
     }
 
