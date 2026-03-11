@@ -8,6 +8,8 @@ from supervisor.state import load_state, save_state
 
 
 DEFAULT_AUX_LIGHT_MODEL = "qwen/qwen3-coder:free"
+DEFAULT_BACKGROUND_OPENROUTER_MODEL = DEFAULT_AUX_LIGHT_MODEL
+DEFAULT_CONSCIOUSNESS_CODEX_MODEL = "gpt-5.1-codex-mini"
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,9 @@ class ModeRuntimePolicy:
     intended_use: str
     execution_style: str
     aux_light_model: str
+    background_model: str
+    background_reasoning_effort: str
+
 
 MODEL_MODES: Dict[str, ModelMode] = {
     "codex": ModelMode(
@@ -118,6 +123,17 @@ def get_aux_light_model() -> str:
     return os.environ.get("OUROBOROS_MODEL_LIGHT", "").strip() or DEFAULT_AUX_LIGHT_MODEL
 
 
+def get_background_model() -> str:
+    if os.environ.get("CODEX_CONSCIOUSNESS_ACCESS") or os.environ.get("CODEX_CONSCIOUSNESS_REFRESH"):
+        model_name = os.environ.get("CODEX_CONSCIOUSNESS_MODEL", DEFAULT_CONSCIOUSNESS_CODEX_MODEL).strip()
+        return f"codex-consciousness/{model_name or DEFAULT_CONSCIOUSNESS_CODEX_MODEL}"
+    return os.environ.get("OUROBOROS_MODEL_BACKGROUND", "").strip() or get_aux_light_model() or DEFAULT_BACKGROUND_OPENROUTER_MODEL
+
+
+def get_background_reasoning_effort() -> str:
+    return os.environ.get("OUROBOROS_BG_REASONING_EFFORT", "").strip().lower() or "low"
+
+
 def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy:
     mode = get_active_mode(st)
     return ModeRuntimePolicy(
@@ -128,6 +144,8 @@ def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy
         intended_use=mode.intended_use,
         execution_style=mode.execution_style,
         aux_light_model=get_aux_light_model(),
+        background_model=get_background_model(),
+        background_reasoning_effort=get_background_reasoning_effort(),
     )
 
 
@@ -142,6 +160,8 @@ def mode_summary_text() -> str:
         f"• Execution: {policy.execution_style}",
         f"• Purpose: {policy.intended_use}",
         f"• Aux light model: {policy.aux_light_model}",
+        f"• Background model: {policy.background_model}",
+        f"• Background reasoning: {policy.background_reasoning_effort}",
     ]
     if policy.mode_key == "codex":
         try:
@@ -164,7 +184,6 @@ def tools_enabled_for_active_mode() -> bool:
 
 def max_rounds_for_active_mode() -> int:
     return get_runtime_policy().max_rounds
-
 
 
 def execution_style_for_active_mode() -> str:
