@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from ouroboros.model_modes import MODEL_MODES, bootstrap_mode_env, get_runtime_policy, mode_summary_text
+from ouroboros.model_modes import MODEL_MODES, bootstrap_mode_env, execution_style_for_active_mode, get_runtime_policy, mode_summary_text
 from supervisor.state import load_state, save_state
 
 
@@ -75,6 +75,31 @@ def test_mode_summary_text_for_codex_includes_mode_details(monkeypatch) -> None:
     assert "Main: codex/gpt-5.4" in summary
     assert "Rounds limit: 200" in summary
     assert "Tools: on" in summary
+    assert "Execution: loop" in summary
     assert "Aux light model: qwen/qwen3-coder:free" in summary
     assert "Account: acc2" in summary
     assert "Limits: 5h=11 7d=222" in summary
+
+
+
+def test_runtime_policy_exposes_execution_style(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
+    policy = get_runtime_policy({"active_model_mode": "opus"})
+    assert policy.mode_key == "opus"
+    assert policy.execution_style == "one_shot"
+
+
+def test_execution_style_for_active_mode_reads_persisted_mode() -> None:
+    st = load_state()
+    old_mode = st.get("active_model_mode")
+    try:
+        st["active_model_mode"] = "sonnet"
+        save_state(st)
+        assert execution_style_for_active_mode() == "one_shot"
+    finally:
+        st2 = load_state()
+        if old_mode is None:
+            st2.pop("active_model_mode", None)
+        else:
+            st2["active_model_mode"] = old_mode
+        save_state(st2)
