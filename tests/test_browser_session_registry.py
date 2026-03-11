@@ -8,6 +8,7 @@ from ouroboros.tools.browser_session_registry import (
     OWNER_ONLY_SCOPE,
     SESSION_STATUS_FRESH,
     SESSION_STATUS_STALE,
+    SESSION_STATUS_UNKNOWN,
     build_persisted_session_record,
     build_session_registry_key,
     get_persisted_session,
@@ -157,3 +158,78 @@ def test_browser_persist_session_requires_owner_scope(tmp_path, monkeypatch):
         account_scope=OWNER_ONLY_SCOPE,
     )
     assert result.startswith("Error:")
+
+
+def test_mark_persisted_session_checked_unknown_when_not_probed(tmp_path):
+    ctx = DummyToolContext(tmp_path)
+    key = build_session_registry_key(site_profile={"domain": "labs.example.edu"}, account_label="main")
+    record = build_persisted_session_record(
+        key=key,
+        storage_state={"cookies": [{"name": "sid"}], "origins": []},
+        cookies_count=1,
+        origins_count=0,
+        current_url="https://labs.example.edu/app",
+        site_profile={"domain": "labs.example.edu"},
+        account_label="main",
+        owner_authorized=True,
+        account_scope=OWNER_ONLY_SCOPE,
+    )
+    upsert_persisted_session(ctx, key=key, record=record)
+    updated = mark_persisted_session_checked(ctx, key=key, alive=None, check_details={"checked": False, "reason": "no_url"})
+    assert updated is not None
+    assert updated["session_status"] == SESSION_STATUS_UNKNOWN
+    assert updated["check_details"]["checked"] is False
+
+
+def test_browser_restore_without_probe_marks_unknown(tmp_path, monkeypatch):
+    ctx = DummyToolContext(tmp_path)
+
+    monkeypatch.setattr(persisted_mod, "_ensure_browser", lambda c: c.browser_state.page)
+    monkeypatch.setattr(persisted_mod, "_replace_browser_context", lambda c, storage_state=None: DummyPage("https://labs.example.edu/home"))
+    monkeypatch.setattr(persisted_mod, "_check_session_alive_via_protected_url", lambda c, protected_url, timeout=5000: {"checked": False, "alive": False, "reason": "no_url"})
+
+    json.loads(persisted_mod._browser_persist_session(
+        ctx,
+        account_label="student-main",
+        site_profile={"domain": "labs.example.edu", "site_name": "Labs"},
+        owner_authorized=True,
+        account_scope=OWNER_ONLY_SCOPE,
+    ))
+
+    restored = json.loads(persisted_mod._browser_restore_persisted_session(
+        ctx,
+        account_label="student-main",
+        site_profile={"domain": "labs.example.edu", "site_name": "Labs"},
+    ))
+    assert restored["restored"] is True
+    assert restored["session_status"] == SESSION_STATUS_UNKNOWN
+    assert restored["should_relogin"] is False
+
+
+def test_browser_restore_rejects_non_owner_record(tmp_path, monkeypatch):
+    ctx = DummyToolContext(tmp_path)
+    monkeypatch.setattr(persisted_mod, "_ensure_browser", lambda c: c.browser_state.page)
+    monkeypatch.setattr(persisted_mod, "_replace_browser_context", lambda c, storage_state=None: DummyPage("https://labs.example.edu/home"))
+
+    key = build_session_registry_key(site_profile={"domain": "labs.example.edu"}, account_label="shared")
+    record = build_persisted_session_record(
+        key=key,
+        storage_state={"cookies": [{"name": "sid"}], "origins": []},
+        cookies_count=1,
+        origins_count=0,
+        current_url="https://labs.example.edu/app",
+        site_profile={"domain": "labs.example.edu"},
+        account_label="shared",
+        owner_authorized=True,
+        account_scope="shared",
+    )
+    upsert_persisted_session(ctx, key=key, record=record)
+
+    restored = json.loads(persisted_mod._browser_restore_persisted_session(
+        ctx,
+        account_label="shared",
+        site_profile={"domain": "labs.example.edu"},
+    ))
+    assert restored["restored"] is False
+    assert restored["found"] is True
+    assert "owner_only" in restored["error"]

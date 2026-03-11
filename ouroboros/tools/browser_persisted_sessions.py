@@ -7,9 +7,11 @@ from ouroboros.tools.browser import _ensure_browser, _replace_browser_context, _
 from ouroboros.tools.browser_runtime import _check_session_alive_via_protected_url
 from ouroboros.tools.browser_session_registry import (
     OWNER_ONLY_SCOPE,
+    SESSION_STATUS_UNKNOWN,
     build_persisted_session_record,
     build_session_registry_key,
     get_persisted_session,
+    get_record_guard_error,
     mark_persisted_session_checked,
     upsert_persisted_session,
     validate_owner_authorized_scope,
@@ -100,6 +102,15 @@ def _browser_restore_persisted_session(
     if not record:
         return json.dumps({"restored": False, "found": False, "registry_key": key.compound}, ensure_ascii=False)
 
+    guard_error = get_record_guard_error(record)
+    if guard_error:
+        return json.dumps({
+            "restored": False,
+            "found": True,
+            "registry_key": key.compound,
+            "error": guard_error,
+        }, ensure_ascii=False)
+
     storage_state = record.get("storage_state") or {}
     _ensure_browser(ctx)
     page = _replace_browser_context(ctx, storage_state=storage_state)
@@ -107,7 +118,7 @@ def _browser_restore_persisted_session(
     if target_url:
         page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
     probe = _check_session_alive_via_protected_url(ctx, (protected_url or "").strip())
-    alive = True if not probe.get("checked") else bool(probe.get("alive"))
+    alive = None if not probe.get("checked") else bool(probe.get("alive"))
     updated = mark_persisted_session_checked(ctx, key=key, alive=alive, check_details=probe) or record
     result = {
         "restored": True,
@@ -116,7 +127,7 @@ def _browser_restore_persisted_session(
         "account_label": account_label,
         "current_url": page.url,
         "navigated": bool(target_url),
-        "session_status": updated.get("session_status"),
+        "session_status": updated.get("session_status", SESSION_STATUS_UNKNOWN),
         "probe": probe,
         "should_relogin": bool(probe.get("checked")) and not bool(probe.get("alive")),
     }

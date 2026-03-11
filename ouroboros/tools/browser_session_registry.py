@@ -15,6 +15,15 @@ SESSION_STATUS_STALE = "stale"
 SESSION_STATUS_UNKNOWN = "unknown"
 
 
+def get_record_guard_error(record: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(record, dict):
+        return "persisted session record is missing"
+    return validate_owner_authorized_scope(
+        owner_authorized=bool(record.get("owner_authorized")),
+        account_scope=str(record.get("account_scope") or OWNER_ONLY_SCOPE),
+    )
+
+
 @dataclass(frozen=True)
 class SessionRegistryKey:
     site_key: str
@@ -132,13 +141,16 @@ def mark_persisted_session_checked(
     ctx: ToolContext,
     *,
     key: SessionRegistryKey,
-    alive: bool,
+    alive: Optional[bool],
     check_details: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     record = get_persisted_session(ctx, key=key)
     if not record:
         return None
-    record["session_status"] = SESSION_STATUS_FRESH if alive else SESSION_STATUS_STALE
+    if alive is None:
+        record["session_status"] = SESSION_STATUS_UNKNOWN
+    else:
+        record["session_status"] = SESSION_STATUS_FRESH if alive else SESSION_STATUS_STALE
     record["last_checked_at"] = _utc_now()
     record["check_details"] = check_details or {}
     if alive:
