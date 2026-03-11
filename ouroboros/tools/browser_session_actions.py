@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -7,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ouroboros.tools.browser_runtime import _ensure_browser
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
-_ALLOWED_ACTIONS = {"assert_text", "click", "extract_text", "fill", "goto", "scroll", "select", "evaluate", "wait_for", "wait_for_text"}
+_ALLOWED_ACTIONS = {"assert_text", "click", "extract_text", "fill", "goto", "screenshot", "scroll", "select", "evaluate", "wait_for", "wait_for_text"}
 
 
 def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -130,6 +131,16 @@ def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
         if value is None or not str(value).strip():
             raise ValueError("evaluate action requires value")
         return {"evaluation_result": page.evaluate(str(value))}
+    elif action == "screenshot":
+        data = page.screenshot(type="png", full_page=False)
+        b64 = base64.b64encode(data).decode()
+        return {
+            "screenshot_captured": True,
+            "screenshot_base64_bytes": len(b64),
+            "last_screenshot_updated": True,
+            "screenshot_delivery_hint": "Call send_photo(image_base64='__last_screenshot__') to deliver it to the owner.",
+            "_last_screenshot_b64": b64,
+        }
     elif action == "extract_text":
         return {"text": _extract_text(page, selector, timeout)}
     elif action == "assert_text":
@@ -238,6 +249,9 @@ def _browser_run_actions(
         }
         try:
             execution = _run_single_step(page, step)
+            screenshot_b64 = execution.pop("_last_screenshot_b64", None) if isinstance(execution, dict) else None
+            if screenshot_b64:
+                ctx.browser_state.last_screenshot_b64 = screenshot_b64
             item.update(execution)
             verification = _verify_step(page, step)
             item.update(verification)
