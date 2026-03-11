@@ -128,6 +128,20 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             or "commit" in response_text.lower()
         )
 
+        # Fallback: if response_text empty/no SHA — check git log for recent commits
+        if not _has_commit:
+            try:
+                import subprocess
+                _git_result = subprocess.run(
+                    ["git", "log", "--oneline", "--since=5 minutes ago", "-5"],
+                    capture_output=True, text=True, timeout=5,
+                    cwd=str(ctx.REPO_DIR),
+                )
+                if _git_result.stdout.strip():
+                    _has_commit = True
+            except Exception:
+                pass
+
         # Validate payload: all three fields must be present for counting
         payload_complete = (
             raw_ok is not None

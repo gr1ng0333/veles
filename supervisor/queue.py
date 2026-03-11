@@ -529,6 +529,7 @@ def enqueue_evolution_task_if_needed() -> None:
             effective_cooldown = EVOLUTION_COOLDOWN_SEC * (2 ** min(no_commit_streak - 2, 4))
         else:
             effective_cooldown = EVOLUTION_COOLDOWN_SEC
+        effective_cooldown = min(effective_cooldown, 600)  # cap at 10 min
         if (now - last_ts) < effective_cooldown:
             return
 
