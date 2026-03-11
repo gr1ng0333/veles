@@ -27,7 +27,7 @@ from ouroboros.utils import (
     get_git_info, sanitize_task_for_event,
 )
 from ouroboros.llm import LLMClient, add_usage
-from ouroboros.model_modes import get_runtime_diagnostics
+from ouroboros.model_modes import get_runtime_diagnostics, sync_mode_env_from_state
 from ouroboros.tools import ToolRegistry
 from ouroboros.tools.registry import ToolContext
 from ouroboros.memory import Memory
@@ -396,6 +396,7 @@ class OuroborosAgent:
         return ctx, messages, cap_info
 
     def handle_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+        sync_mode_env_from_state()
         self._busy = True
         start_time = time.time()
         self._task_started_ts = start_time

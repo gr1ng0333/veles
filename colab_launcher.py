@@ -11,7 +11,7 @@ def install_launcher_deps() -> None:
 install_launcher_deps()
 from ouroboros.apply_patch import install as install_apply_patch
 from ouroboros.llm import DEFAULT_LIGHT_MODEL
-from ouroboros.model_modes import bootstrap_mode_env, mode_summary_text, persist_active_mode
+from ouroboros.model_modes import bootstrap_mode_env, get_active_mode, mode_summary_text, persist_active_mode
 install_apply_patch()
 _LEGACY_CFG_WARNED: Set[str] = set()
 def _userdata_get(key: str) -> Optional[str]:
@@ -91,7 +91,6 @@ os.environ["OUROBOROS_MODEL"] = str(MODEL_MAIN or "anthropic/claude-sonnet-4.6")
 os.environ["OUROBOROS_MODEL_CODE"] = str(MODEL_CODE or "anthropic/claude-sonnet-4.6")
 if MODEL_LIGHT:
     os.environ["OUROBOROS_MODEL_LIGHT"] = str(MODEL_LIGHT)
-ACTIVE_MODEL_MODE = bootstrap_mode_env()
 os.environ["OUROBOROS_DIAG_HEARTBEAT_SEC"] = str(DIAG_HEARTBEAT_SEC)
 os.environ["OUROBOROS_DIAG_SLOW_CYCLE_SEC"] = str(DIAG_SLOW_CYCLE_SEC)
 os.environ["OUROBOROS_EVOLUTION_HARD_TIMEOUT_SEC"] = str(EVOLUTION_HARD_TIMEOUT_SEC)
@@ -156,6 +155,7 @@ from supervisor.state import (
 )
 state_init(DRIVE_ROOT, TOTAL_BUDGET_LIMIT)
 init_state()
+ACTIVE_MODEL_MODE = bootstrap_mode_env()
 from supervisor.telegram import (
     init as telegram_init, TelegramClient, send_with_budget, log_chat,
 )
@@ -229,7 +229,7 @@ append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
     "sha": load_state().get("current_sha"),
     "max_workers": MAX_WORKERS,
     "launcher_session_id": _launcher_session_id,
-    "active_model_mode": ACTIVE_MODEL_MODE.key,
+    "active_model_mode": get_active_mode().key,
     "model_default": os.environ.get("OUROBOROS_MODEL", MODEL_MAIN), "model_code": MODEL_CODE, "model_light": os.environ.get("OUROBOROS_MODEL_LIGHT", MODEL_LIGHT),
     "soft_timeout_sec": SOFT_TIMEOUT_SEC, "hard_timeout_sec": HARD_TIMEOUT_SEC,
     "worker_start_method": str(os.environ.get("OUROBOROS_WORKER_START_METHOD") or ""),
@@ -256,7 +256,7 @@ def _dispatch_agent_post_restart_ack() -> None:
             "♻️ Restart completed: service layer is up.\n"
             f"Restart time: <code>{requested_at or 'unknown'}</code>\n"
             f"Source: <code>{source}</code>\n\n"
-            f"<code>launcher_start: {launcher_started_at} branch={BRANCH_DEV} sha={(current_sha or 'unknown')[:12]} mode={ACTIVE_MODEL_MODE.key}</code>"
+            f"<code>launcher_start: {launcher_started_at} branch={BRANCH_DEV} sha={(current_sha or 'unknown')[:12]} mode={get_active_mode().key}</code>"
         )
         send_with_budget(chat_id, service_text, force_budget=True, fmt="html")
         def _run_agent_ack() -> None:

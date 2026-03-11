@@ -11,6 +11,7 @@ from ouroboros.model_modes import (
     get_runtime_diagnostics,
     get_runtime_policy,
     mode_summary_text,
+    sync_mode_env_from_state,
 )
 from supervisor.state import load_state, save_state
 
@@ -166,3 +167,44 @@ def test_runtime_diagnostics_exposes_requested_transport_and_actual_models(monke
     assert diagnostics["main"]["actual_model"] == "claude-sonnet-4.6"
     assert diagnostics["aux_light"]["transport"] == "openrouter"
     assert diagnostics["background"]["transport"] == "codex-consciousness"
+
+
+
+def test_sync_mode_env_from_state_overrides_stale_env() -> None:
+    st = load_state()
+    old_mode = st.get("active_model_mode")
+    old_model = os.environ.get("OUROBOROS_MODEL")
+    old_rounds = os.environ.get("OUROBOROS_MAX_ROUNDS")
+    old_tools = os.environ.get("OUROBOROS_MODEL_TOOLS_ENABLED")
+    try:
+        st["active_model_mode"] = "codex"
+        save_state(st)
+        os.environ["OUROBOROS_MODEL"] = "copilot/claude-haiku-4.5"
+        os.environ["OUROBOROS_MAX_ROUNDS"] = "10"
+        os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] = "1"
+
+        mode = sync_mode_env_from_state()
+
+        assert mode.key == "codex"
+        assert os.environ["OUROBOROS_MODEL"] == MODEL_MODES["codex"].model
+        assert os.environ["OUROBOROS_MAX_ROUNDS"] == str(MODEL_MODES["codex"].max_rounds)
+        assert os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] == "1"
+    finally:
+        st2 = load_state()
+        if old_mode is None:
+            st2.pop("active_model_mode", None)
+        else:
+            st2["active_model_mode"] = old_mode
+        save_state(st2)
+        if old_model is None:
+            os.environ.pop("OUROBOROS_MODEL", None)
+        else:
+            os.environ["OUROBOROS_MODEL"] = old_model
+        if old_rounds is None:
+            os.environ.pop("OUROBOROS_MAX_ROUNDS", None)
+        else:
+            os.environ["OUROBOROS_MAX_ROUNDS"] = old_rounds
+        if old_tools is None:
+            os.environ.pop("OUROBOROS_MODEL_TOOLS_ENABLED", None)
+        else:
+            os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] = old_tools
