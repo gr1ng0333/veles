@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ouroboros.tools.browser_runtime import _ensure_browser
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
-_ALLOWED_ACTIONS = {"click", "fill", "select", "scroll", "evaluate", "wait_for", "goto"}
+_ALLOWED_ACTIONS = {"assert_text", "click", "extract_text", "fill", "goto", "scroll", "select", "evaluate", "wait_for"}
 
 
 def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -29,6 +29,8 @@ def _coerce_steps(actions: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optiona
             "expect_url_substring": str(raw.get("expect_url_substring") or "").strip(),
             "wait_for_navigation": bool(raw.get("wait_for_navigation") or False),
             "wait_until": str(raw.get("wait_until") or "").strip() or "load",
+            "match_substring": bool(raw.get("match_substring") if "match_substring" in raw else True),
+            "text_must_absent": bool(raw.get("text_must_absent") or False),
         }
         normalized.append(step)
     return normalized, None
@@ -45,6 +47,17 @@ def _scroll_page(page: Any, direction: str) -> None:
         page.evaluate("window.scrollBy(0, window.innerHeight)")
     else:
         raise ValueError("scroll action requires value: up/down/top/bottom")
+
+
+def _extract_text(page: Any, selector: str, timeout: int) -> str:
+    if not selector:
+        raise ValueError("text action requires selector")
+    page.wait_for_selector(selector, timeout=timeout, state="visible")
+    locator = page.locator(selector).first
+    text = locator.inner_text(timeout=timeout)
+    if text is None:
+        return ""
+    return str(text).strip()
 
 
 def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,6 +82,13 @@ def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
         if value is None or not str(value).strip():
             raise ValueError("evaluate action requires value")
         return {"evaluation_result": page.evaluate(str(value))}
+    elif action == "extract_text":
+        return {"text": _extract_text(page, selector, timeout)}
+    elif action == "assert_text":
+        expected = "" if value is None else str(value)
+        if not expected:
+            raise ValueError("assert_text action requires value")
+        return {"text": _extract_text(page, selector, timeout), "expected_text": expected}
     elif action == "scroll":
         _scroll_page(page, str(value or "").strip().lower())
     elif action == "wait_for":
@@ -98,6 +118,23 @@ def _verify_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
     if step.get("wait_for_navigation"):
         page.wait_for_url("**", timeout=timeout)
         checks["wait_for_navigation"] = {"matched": True, "current_url": page.url}
+
+    action = step.get("action") or ""
+    if action == "assert_text":
+        extracted = _extract_text(page, step.get("selector") or "", timeout)
+        expected_text = "" if step.get("value") is None else str(step.get("value"))
+        match_substring = bool(step.get("match_substring") if "match_substring" in step else True)
+        text_must_absent = bool(step.get("text_must_absent") or False)
+        matched = (expected_text not in extracted) if text_must_absent else ((expected_text in extracted) if match_substring else (extracted == expected_text))
+        checks["assert_text"] = {
+            "selector": step.get("selector") or "",
+            "expected_text": expected_text,
+            "matched": matched,
+            "match_substring": match_substring,
+            "text_must_absent": text_must_absent,
+            "text": extracted,
+        }
+        verified = verified and matched
 
     if expect_selector:
         try:
@@ -202,6 +239,8 @@ def get_tools() -> List[ToolEntry]:
                                     "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
                                     "wait_for_navigation": {"type": "boolean", "description": "Wait for page URL to change/become available after the step"},
                                     "wait_until": {"type": "string", "enum": ["commit", "domcontentloaded", "load", "networkidle"], "description": "Navigation readiness target for goto (default: load)"},
+                                    "match_substring": {"type": "boolean", "description": "For assert_text: substring match (default: true). If false, require exact equality."},
+                                    "text_must_absent": {"type": "boolean", "description": "For assert_text: require expected text to be absent instead of present."},
                                 },
                                 "required": ["action"],
                             },

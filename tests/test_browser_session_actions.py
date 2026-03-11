@@ -4,11 +4,28 @@ from ouroboros.tools.browser_session_actions import _browser_run_actions
 from ouroboros.tools.registry import ToolContext
 
 
+class DummyLocator:
+    def __init__(self, page, selector):
+        self._page = page
+        self._selector = selector
+
+    @property
+    def first(self):
+        return self
+
+    def inner_text(self, timeout=0):
+        self._page.calls.append(("inner_text", self._selector, timeout))
+        if self._selector not in self._page.visible:
+            raise RuntimeError(f"missing selector for text: {self._selector}")
+        return self._page.texts.get(self._selector, "")
+
+
 class DummyPage:
     def __init__(self):
         self.url = "https://example.com/login"
         self.calls = []
         self.visible = {"#ready"}
+        self.texts = {"#ready": "Ready"}
 
     def click(self, selector, timeout=0):
         self.calls.append(("click", selector, timeout))
@@ -44,6 +61,10 @@ class DummyPage:
         self.calls.append(("wait_for_url", pattern, timeout))
         if not self.url:
             raise RuntimeError("missing url")
+
+    def locator(self, selector):
+        self.calls.append(("locator", selector))
+        return DummyLocator(self, selector)
 
 
 class DummyBrowserState:
@@ -124,3 +145,42 @@ def test_browser_run_actions_supports_goto_and_navigation_wait(monkeypatch):
     assert payload["results"][0]["checks"]["wait_for_navigation"]["matched"] is True
     assert ("goto", "https://example.com/dashboard", 5000, "domcontentloaded") in page.calls
     assert ("wait_for_url", "**", 5000) in page.calls
+
+
+def test_browser_run_actions_can_extract_and_assert_text(monkeypatch):
+    page = DummyPage()
+    page.visible.update({"#flash", "#headline"})
+    page.texts.update({"#flash": "Welcome back, user", "#headline": "Dashboard"})
+    ctx = make_ctx(page)
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "extract_text", "selector": "#headline"},
+        {"action": "assert_text", "selector": "#flash", "value": "Welcome back"},
+        {"action": "assert_text", "selector": "#flash", "value": "Error", "text_must_absent": True},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["text"] == "Dashboard"
+    assert payload["results"][1]["checks"]["assert_text"]["matched"] is True
+    assert payload["results"][2]["checks"]["assert_text"]["text_must_absent"] is True
+
+
+def test_browser_run_actions_fails_on_exact_text_mismatch(monkeypatch):
+    page = DummyPage()
+    page.visible.add("#flash")
+    page.texts["#flash"] = "Welcome back, user"
+    ctx = make_ctx(page)
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "assert_text", "selector": "#flash", "value": "Welcome back", "match_substring": False},
+        {"action": "fill", "selector": "#after", "value": "x"},
+    ]))
+
+    assert payload["success"] is False
+    assert payload["stopped_early"] is True
+    assert payload["executed_steps"] == 1
+    assert payload["results"][0]["checks"]["assert_text"]["matched"] is False
