@@ -16,4 +16,7 @@ Architecture: agent.py (orchestrator), tools/ (plugin tools),
 __all__ = ['agent', 'tools', 'llm', 'memory', 'review', 'utils']
 
 from pathlib import Path as _Path
-__version__ = (_Path(__file__).resolve().parent.parent / 'VERSION').read_text(encoding='utf-8').strip()
+try:
+    __version__ = (_Path(__file__).resolve().parent.parent / 'VERSION').read_text(encoding='utf-8').strip()
+except (UnicodeDecodeError, FileNotFoundError):
+    __version__ = (_Path(__file__).resolve().parent.parent / 'VERSION').read_text(encoding='utf-16').strip()
