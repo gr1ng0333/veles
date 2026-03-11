@@ -11,6 +11,7 @@ def install_launcher_deps() -> None:
 install_launcher_deps()
 from ouroboros.apply_patch import install as install_apply_patch
 from ouroboros.llm import DEFAULT_LIGHT_MODEL
+from ouroboros.model_modes import bootstrap_mode_env, mode_summary_text, persist_active_mode
 install_apply_patch()
 _LEGACY_CFG_WARNED: Set[str] = set()
 def _userdata_get(key: str) -> Optional[str]:
@@ -90,6 +91,7 @@ os.environ["OUROBOROS_MODEL"] = str(MODEL_MAIN or "anthropic/claude-sonnet-4.6")
 os.environ["OUROBOROS_MODEL_CODE"] = str(MODEL_CODE or "anthropic/claude-sonnet-4.6")
 if MODEL_LIGHT:
     os.environ["OUROBOROS_MODEL_LIGHT"] = str(MODEL_LIGHT)
+ACTIVE_MODEL_MODE = bootstrap_mode_env()
 os.environ["OUROBOROS_DIAG_HEARTBEAT_SEC"] = str(DIAG_HEARTBEAT_SEC)
 os.environ["OUROBOROS_DIAG_SLOW_CYCLE_SEC"] = str(DIAG_SLOW_CYCLE_SEC)
 os.environ["OUROBOROS_EVOLUTION_HARD_TIMEOUT_SEC"] = str(EVOLUTION_HARD_TIMEOUT_SEC)
@@ -227,7 +229,8 @@ append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
     "sha": load_state().get("current_sha"),
     "max_workers": MAX_WORKERS,
     "launcher_session_id": _launcher_session_id,
-    "model_default": MODEL_MAIN, "model_code": MODEL_CODE, "model_light": MODEL_LIGHT,
+    "active_model_mode": ACTIVE_MODEL_MODE.key,
+    "model_default": os.environ.get("OUROBOROS_MODEL", MODEL_MAIN), "model_code": MODEL_CODE, "model_light": os.environ.get("OUROBOROS_MODEL_LIGHT", MODEL_LIGHT),
     "soft_timeout_sec": SOFT_TIMEOUT_SEC, "hard_timeout_sec": HARD_TIMEOUT_SEC,
     "worker_start_method": str(os.environ.get("OUROBOROS_WORKER_START_METHOD") or ""),
     "diag_heartbeat_sec": DIAG_HEARTBEAT_SEC,
@@ -253,7 +256,7 @@ def _dispatch_agent_post_restart_ack() -> None:
             "♻️ Restart completed: service layer is up.\n"
             f"Restart time: <code>{requested_at or 'unknown'}</code>\n"
             f"Source: <code>{source}</code>\n\n"
-            f"<code>launcher_start: {launcher_started_at} branch={BRANCH_DEV} sha={(current_sha or 'unknown')[:12]}...</code>"
+            f"<code>launcher_start: {launcher_started_at} branch={BRANCH_DEV} sha={(current_sha or 'unknown')[:12]} mode={ACTIVE_MODEL_MODE.key}</code>"
         )
         send_with_budget(chat_id, service_text, force_budget=True, fmt="html")
         def _run_agent_ack() -> None:
@@ -486,26 +489,40 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             send_with_budget(chat_id, f"🧠 Background consciousness: {bg_status}")
         return f"[Supervisor handled /bg {action}]\n"
     if lowered.startswith("/sonnet"):
-        os.environ["OUROBOROS_MODEL"] = "anthropic/claude-sonnet-4.6"
-        send_with_budget(chat_id, "🧠 Switched to Claude Sonnet 4.6. Deep conversation mode.")
+        mode = persist_active_mode("sonnet")
+        send_with_budget(chat_id, f"✅ Mode: sonnet\n• Main: {mode.model}\n• Rounds: {mode.max_rounds}\n• Tools: off")
         return True
     if lowered.startswith("/haiku"):
-        os.environ["OUROBOROS_MODEL"] = "anthropic/claude-haiku-4.5"
-        send_with_budget(chat_id, "⚡ Switched to Claude Haiku 4.5. Fast & cheap mode.")
+        mode = persist_active_mode("haiku")
+        send_with_budget(chat_id, f"✅ Mode: haiku\n• Main: {mode.model}\n• Rounds: {mode.max_rounds}\n• Tools: on")
+        return True
+    if lowered.startswith("/opus"):
+        mode = persist_active_mode("opus")
+        send_with_budget(chat_id, f"✅ Mode: opus\n• Main: {mode.model}\n• Rounds: {mode.max_rounds}\n• Tools: off")
         return True
     if lowered.startswith("/qwen"):
-        os.environ["OUROBOROS_MODEL"] = "qwen/qwen3.5-flash-02-23"
-        send_with_budget(chat_id, "⚡ Switched to Qwen 3.5 Flash. Ultra-cheap mode.")
+        send_with_budget(chat_id, "⚠️ /qwen removed from the primary mode surface. Use /codex, /haiku, /sonnet, /opus.")
         return True
     if lowered.startswith("/codex"):
-        os.environ["OUROBOROS_MODEL"] = "codex/gpt-5.3-codex"
-        send_with_budget(chat_id, "🤖 Switched to GPT-5.3 Codex (free via OAuth)")
+        mode = persist_active_mode("codex")
+        try:
+            from ouroboros.codex_proxy import get_accounts_status
+            statuses = get_accounts_status()
+            active = next((acc for acc in statuses if acc.get("is_active")), None)
+            if active is not None:
+                idx = int(active.get("index", 0))
+                five = int(active.get("usage_5h", 0))
+                seven = int(active.get("usage_7d", 0))
+                send_with_budget(chat_id, f"✅ Mode: codex\n• Main: {mode.model}\n• Account: acc{idx}\n• Limits: 5h={five} 7d={seven}")
+            else:
+                send_with_budget(chat_id, f"✅ Mode: codex\n• Main: {mode.model}")
+        except Exception:
+            send_with_budget(chat_id, f"✅ Mode: codex\n• Main: {mode.model}")
         return True
     if lowered.startswith("/model"):
-        current = os.environ.get("OUROBOROS_MODEL", "unknown")
-        light = os.environ.get("OUROBOROS_MODEL_LIGHT", "unknown")
-        send_with_budget(chat_id, f"🔧 Current models:\n• Main: {current}\n• Light: {light}")
+        send_with_budget(chat_id, mode_summary_text())
         return True
+
     if lowered.startswith("/accounts"):
         from ouroboros.codex_proxy import get_accounts_status
         statuses = get_accounts_status()
