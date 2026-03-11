@@ -41,6 +41,12 @@ from ouroboros.tools.browser_login_helpers import (
     infer_login_state,
     plan_login_flow,
 )
+from ouroboros.tools.browser_auth_flow import (
+    build_fill_login_plan_response,
+    build_post_submit_auth_result,
+    normalize_site_profile,
+)
+from ouroboros.tools.browser_tool_defs import build_browser_tool_entries
 from ouroboros.tools.captcha_solver import solve_captcha_image
 
 
@@ -129,7 +135,58 @@ def _safe_selector_presence(page: Any, selector: str, timeout: int) -> bool:
     except Exception:
         return False
 
+def _login_json_error(message: str, *, error: str, **extra: Any) -> str:
+    payload = {"success": False, "message": message, "error": error}
+    payload.update(extra)
+    return json.dumps(payload, ensure_ascii=False)
 
+
+def _advance_multi_step_login(
+    page: Any,
+    *,
+    plan: Dict[str, Any],
+    profile: Dict[str, Any],
+    username_selector: str,
+    password_selector: str,
+    submit_sel: str,
+    next_sel: str,
+    username_candidates_js: str,
+    password_candidates_js: str,
+    chosen: Dict[str, Any],
+    user_fill: Dict[str, Any],
+) -> Dict[str, Any]:
+    next_result = page.evaluate(
+        _SUBMIT_LOGIN_FORM_JS,
+        {"anchorSelector": username_selector, "submitSelector": next_sel or submit_sel},
+    )
+    _post_submit_wait(page)
+    chosen2 = choose_login_field_selectors(
+        username_candidates=page.evaluate(username_candidates_js),
+        password_candidates=page.evaluate(password_candidates_js),
+        username_selector=profile.get("username_selector") or username_selector,
+        password_selector=profile.get("password_selector") or password_selector,
+    )
+    pass_sel = chosen2["password_selector"]
+    if not pass_sel:
+        return {
+            "ok": False,
+            "response": _login_json_error(
+                "Error: multi-step login advanced past username but password field not found. "
+                f"submit_source={next_result.get('source', 'none')} current_url={page.url}",
+                error="password field not found after username step",
+                flow_plan=plan,
+                selectors=chosen2,
+                fill_results=[{"step": "username_fill", **user_fill}],
+                submit=next_result,
+                diagnostics={
+                    "site_profile": {"site_name": profile.get("site_name", ""), "domain": profile.get("domain", ""), "flow_type": profile.get("flow_type", "login")},
+                    "state": "username_step",
+                    "reason": "password field not found after username step",
+                    "next_action": {"action": "inspect_page", "reason": "password field not found after username step", "can_proceed": False, "required_selectors": {"next_selector": next_sel or submit_sel}},
+                },
+            ),
+        }
+    return {"ok": True, "submit": next_result, "chosen": chosen2, "pass_sel": pass_sel, "step_result": {"step": "username_submit", **next_result}}
 
 
 def _session_snapshot(context: Any) -> Dict[str, Any]:
@@ -215,7 +272,18 @@ def _browser_fill_login_form(
     allow_multi_step: bool = False,
     next_selector: str = "",
     timeout: int = 5000,
+    site_profile: Optional[Dict[str, Any]] = None,
+    protected_url: str = "",
 ) -> str:
+    profile = normalize_site_profile(site_profile)
+
+    if getattr(ctx, "browser_state", None) is None:
+        return build_fill_login_plan_response(
+            profile=profile,
+            username_selector=username_selector,
+            password_selector=password_selector,
+        )
+
     page = _ensure_browser(ctx)
     page.evaluate(_SELECTOR_HELPERS_JS)
 
@@ -224,64 +292,91 @@ def _browser_fill_login_form(
     chosen = choose_login_field_selectors(
         username_candidates=username_candidates,
         password_candidates=password_candidates,
-        username_selector=username_selector,
-        password_selector=password_selector,
+        username_selector=profile.get("username_selector") or username_selector,
+        password_selector=profile.get("password_selector") or password_selector,
     )
 
     user_sel = chosen["username_selector"]
     pass_sel = chosen["password_selector"]
-    submit_sel = _normalize_selector(submit_selector)
-    next_sel = _normalize_selector(next_selector)
+    submit_sel = _normalize_selector(profile.get("submit_selector") or submit_selector)
+    next_sel = _normalize_selector(profile.get("next_selector") or next_selector)
     plan = plan_login_flow(user_sel, pass_sel, allow_multi_step=allow_multi_step)
 
     if not plan["can_proceed"]:
-        return (
-            f"Error: {plan['reason']}. "
-            f"username_candidates={len(username_candidates)} password_candidates={len(password_candidates)} current_url={page.url}"
+        diagnostics = {
+            "site_profile": {"site_name": profile.get("site_name", ""), "domain": profile.get("domain", ""), "flow_type": profile.get("flow_type", "login")},
+            "state": "blocked",
+            "reason": plan.get("reason", "cannot proceed"),
+            "next_action": {"action": "inspect_page", "reason": plan.get("reason", "cannot proceed"), "can_proceed": False, "required_selectors": {}},
+        }
+        return _login_json_error(
+            f"Error: {plan['reason']}. username_candidates={len(username_candidates)} password_candidates={len(password_candidates)} current_url={page.url}",
+            error=plan.get("reason", "login form not ready"),
+            flow_plan=plan,
+            selectors=chosen,
+            diagnostics=diagnostics,
         )
 
     try:
         page.wait_for_selector(user_sel, timeout=timeout, state="visible")
     except Exception as e:
-        return f"Error: username/email field resolved but not interactable ({e}). current_url={page.url}"
+        return _login_json_error(
+            f"Error: username/email field resolved but not interactable ({e}). current_url={page.url}",
+            error=f"username/email field resolved but not interactable ({e})",
+            flow_plan=plan,
+            selectors=chosen,
+        )
 
     user_fill = page.evaluate(_FILL_INPUT_JS, {"selector": user_sel, "value": username})
     if not user_fill.get("ok"):
-        return f"Error: failed to fill username field ({user_sel}). current_url={page.url}"
+        return _login_json_error(
+            f"Error: failed to fill username field ({user_sel}). current_url={page.url}",
+            error=f"failed to fill username field ({user_sel})",
+            flow_plan=plan,
+            selectors=chosen,
+        )
 
     step_results = []
 
     if plan["mode"] == "multi_step_username_first":
-        next_result = page.evaluate(
-            _SUBMIT_LOGIN_FORM_JS,
-            {"anchorSelector": user_sel, "submitSelector": next_sel or submit_sel},
-        )
-        step_results.append({"step": "username_submit", **next_result})
-        _post_submit_wait(page)
-        password_candidates = page.evaluate(_PASSWORD_CANDIDATE_JS)
-        chosen = choose_login_field_selectors(
-            username_candidates=page.evaluate(_USERNAME_CANDIDATE_JS),
-            password_candidates=password_candidates,
-            username_selector=username_selector,
+        advanced = _advance_multi_step_login(
+            page,
+            plan=plan,
+            profile=profile,
+            username_selector=user_sel,
             password_selector=password_selector,
+            submit_sel=submit_sel,
+            next_sel=next_sel,
+            username_candidates_js=_USERNAME_CANDIDATE_JS,
+            password_candidates_js=_PASSWORD_CANDIDATE_JS,
+            chosen=chosen,
+            user_fill=user_fill,
         )
-        pass_sel = chosen["password_selector"]
-        if not pass_sel:
-            return (
-                "Error: multi-step login advanced past username but password field not found. "
-                f"submit_source={next_result.get('source', 'none')} current_url={page.url}"
-            )
+        if not advanced["ok"]:
+            return advanced["response"]
+        step_results.append(advanced["step_result"])
+        chosen = advanced["chosen"]
+        pass_sel = advanced["pass_sel"]
 
     try:
         page.wait_for_selector(pass_sel, timeout=timeout, state="visible")
     except Exception as e:
-        return f"Error: password field resolved but not interactable ({e}). current_url={page.url}"
+        return _login_json_error(
+            f"Error: password field resolved but not interactable ({e}). current_url={page.url}",
+            error=f"password field resolved but not interactable ({e})",
+            flow_plan=plan,
+            selectors=chosen,
+        )
 
     pass_fill = page.evaluate(_FILL_INPUT_JS, {"selector": pass_sel, "value": password})
     if not pass_fill.get("ok"):
-        return f"Error: failed to fill password field ({pass_sel}). current_url={page.url}"
+        return _login_json_error(
+            f"Error: failed to fill password field ({pass_sel}). current_url={page.url}",
+            error=f"failed to fill password field ({pass_sel})",
+            flow_plan=plan,
+            selectors=chosen,
+        )
 
-    # Auto-detect and solve captcha before submit
     try:
         captcha_check = page.evaluate(r"""(function() {
             var imgs = document.querySelectorAll('img');
@@ -322,7 +417,17 @@ def _browser_fill_login_form(
     step_results.append({"step": "password_submit", **submit_result})
     _post_submit_wait(page)
 
-    return (
+    post_signals = page.evaluate(_LOGIN_SIGNALS_JS)
+    auth_result = build_post_submit_auth_result(
+        page=page,
+        profile=profile,
+        protected_url=protected_url,
+        timeout=timeout,
+        post_signals=post_signals,
+        session_probe=_check_session_alive_via_protected_url,
+    )
+
+    message = (
         "Login form filled. "
         f"mode={plan['mode']}; "
         f"username_selector={user_sel} ({chosen.get('username_source') or 'heuristic'}); "
@@ -332,6 +437,17 @@ def _browser_fill_login_form(
         f"submit_selector={submit_result.get('selector', submit_sel or '')}; "
         f"current_url={page.url}"
     )
+    return json.dumps({
+        "success": auth_result["post_submit_state"].get("state") != "error",
+        "message": message,
+        "flow_plan": plan,
+        "selectors": chosen,
+        "fill_results": [{"step": "username_fill", **user_fill}, {"step": "password_fill", **pass_fill}],
+        "steps": step_results,
+        "submit": submit_result,
+        **auth_result,
+        "error": None if auth_result["post_submit_state"].get("state") != "error" else auth_result["post_submit_state"].get("reason"),
+    }, ensure_ascii=False)
 
 
 @_with_thread_safety_retry
@@ -345,23 +461,34 @@ def _browser_check_login_state(
     failure_text_substrings: Optional[List[str]] = None,
     protected_url: str = "",
     timeout: int = 5000,
+    site_profile: Optional[Dict[str, Any]] = None,
 ) -> str:
     page = _ensure_browser(ctx)
     page.evaluate(_SELECTOR_HELPERS_JS)
     _post_submit_wait(page)
+    profile = normalize_site_profile(site_profile)
 
     current_url = str(page.url or "")
-    expected_url = _normalize_selector(expected_url_substring).lower()
-    login_url_markers = ["login", "sign-in", "signin", "auth"]
+    expected_url = _normalize_selector(profile.get("expected_url_substring") or expected_url_substring).lower()
+    login_url_markers = ["login", "sign-in", "signin", "auth", "signup", "register"]
     submitted_from_login_url = any(marker in current_url.lower() for marker in login_url_markers)
 
+    effective_success_selector = profile.get("success_selector") or success_selector
+    effective_failure_selector = profile.get("failure_selector") or failure_selector
+    effective_logged_out_selector = profile.get("logged_out_selector") or logged_out_selector
+    effective_protected_url = profile.get("protected_url") or protected_url
+
     matched: List[str] = []
-    if _safe_selector_presence(page, success_selector, timeout):
+    if _safe_selector_presence(page, effective_success_selector, timeout):
         matched.append("success_selector")
-    if _safe_selector_presence(page, failure_selector, timeout):
+    if _safe_selector_presence(page, effective_failure_selector, timeout):
         matched.append("failure_selector")
-    if _safe_selector_presence(page, logged_out_selector, timeout):
+    if _safe_selector_presence(page, effective_logged_out_selector, timeout):
         matched.append("logged_out_selector")
+    if _safe_selector_presence(page, profile.get("captcha_selector", ""), timeout):
+        matched.append("captcha_selector")
+    if _safe_selector_presence(page, profile.get("mfa_selector", ""), timeout):
+        matched.append("mfa_selector")
 
     signals = page.evaluate(_LOGIN_SIGNALS_JS)
     cookies = []
@@ -372,32 +499,51 @@ def _browser_check_login_state(
 
     cookie_names = [str(cookie.get("name") or "") for cookie in cookies if cookie.get("name")]
     redirected_away_from_login = submitted_from_login_url and not any(marker in str(signals.get("url") or page.url).lower() for marker in login_url_markers)
-    protected_probe = _check_session_alive_via_protected_url(ctx, protected_url=protected_url, timeout=timeout)
+    protected_probe = _check_session_alive_via_protected_url(ctx, protected_url=effective_protected_url, timeout=timeout)
+    protected_url_alive = bool(protected_probe.get("alive")) if protected_probe.get("checked") else False
+
     signals.update({
         "matched": matched,
         "cookie_names": cookie_names,
         "success_cookie_names": list(success_cookie_names or []),
         "failure_text_substrings": list(failure_text_substrings or []),
-        "expected_url_substring": expected_url_substring or "",
+        "expected_url_substring": profile.get("expected_url_substring") or expected_url_substring or "",
         "expected_url_matched": bool(expected_url and expected_url in str(signals.get("url") or page.url).lower()),
         "body_text": str(signals.get("body_text") or signals.get("title") or ""),
         "submitted_from_login_url": submitted_from_login_url,
         "redirected_away_from_login": redirected_away_from_login,
         "has_error_classes": bool(signals.get("error_class_count") or 0),
         "protected_url_checked": bool(protected_probe.get("checked")),
-        "protected_url_alive": bool(protected_probe.get("alive")) if protected_probe.get("checked") else False,
+        "protected_url_alive": protected_url_alive,
     })
 
-    inferred = infer_login_state(signals)
+    legacy_inferred = infer_login_state(signals)
+    snapshot = build_auth_page_snapshot(
+        current_url=str(signals.get("url") or page.url),
+        page_signals=signals,
+        matched=matched,
+        profile=profile,
+        protected_url_alive=protected_url_alive,
+        submitted_from_login_url=submitted_from_login_url,
+    )
+    auth_state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, auth_state)
+    diagnostics = summarize_auth_diagnostics(snapshot, auth_state, next_action)
+
     result = {
-        "state": inferred["state"],
+        "state": auth_state["state"],
         "url": signals.get("url", page.url),
         "title": signals.get("title", ""),
         "matched": matched,
         "signals": signals,
-        "reason": inferred["reason"],
+        "reason": auth_state["reason"],
         "active_session_name": ctx.browser_state.active_session_name,
         "protected_url_check": protected_probe if protected_probe.get("checked") else None,
+        "legacy_state": legacy_inferred["state"],
+        "legacy_reason": legacy_inferred["reason"],
+        "diagnostics": diagnostics,
+        "site_profile": profile,
+        "next_action": next_action,
     }
     return json.dumps(result, ensure_ascii=False)
 
@@ -777,194 +923,12 @@ def _browser_solve_captcha(
 
 
 def get_tools() -> List[ToolEntry]:
-    return [
-        ToolEntry(
-            name="browse_page",
-            schema={
-                "name": "browse_page",
-                "description": (
-                    "Open a URL in headless browser. Returns page content as text, "
-                    "html, markdown, or screenshot (base64 PNG). "
-                    "Browser persists across calls within a task. "
-                    "For screenshots: use send_photo tool to deliver it to owner."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string", "description": "URL to open"},
-                        "output": {
-                            "type": "string",
-                            "enum": ["text", "html", "markdown", "screenshot"],
-                            "description": "Output format (default: text)",
-                        },
-                        "wait_for": {
-                            "type": "string",
-                            "description": "CSS selector to wait for before extraction",
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Page load timeout in ms (default: 30000)",
-                        },
-                    },
-                    "required": ["url"],
-                },
-            },
-            handler=_browse_page,
-            timeout_sec=60,
-        ),
-        ToolEntry(
-            name="browser_action",
-            schema={
-                "name": "browser_action",
-                "description": (
-                    "Perform action on current browser page. Actions: "
-                    "click (selector), fill (selector + value), select (selector + value), "
-                    "screenshot (base64 PNG), evaluate (JS code in value), "
-                    "scroll (value: up/down/top/bottom)."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": ["click", "fill", "select", "screenshot", "evaluate", "scroll"],
-                            "description": "Action to perform",
-                        },
-                        "selector": {
-                            "type": "string",
-                            "description": "CSS selector for click/fill/select",
-                        },
-                        "value": {
-                            "type": "string",
-                            "description": "Value for fill/select, JS for evaluate, direction for scroll",
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Action timeout in ms (default: 5000)",
-                        },
-                    },
-                    "required": ["action"],
-                },
-            },
-            handler=_browser_action,
-            timeout_sec=60,
-        ),
-        ToolEntry(
-            name="browser_fill_login_form",
-            schema={
-                "name": "browser_fill_login_form",
-                "description": (
-                    "Fills login/registration form fields and submits. "
-                    "Automatically handles verification images if present on the form."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "username": {"type": "string", "description": "Username or email to enter"},
-                        "password": {"type": "string", "description": "Password to enter"},
-                        "username_selector": {"type": "string", "description": "Optional CSS selector for username/email input"},
-                        "password_selector": {"type": "string", "description": "Optional CSS selector for password input"},
-                        "submit_selector": {"type": "string", "description": "Optional CSS selector for submit button/control"},
-                        "allow_multi_step": {"type": "boolean", "description": "Allow username-first multi-step login flows (default: false)"},
-                        "next_selector": {"type": "string", "description": "Optional CSS selector for the intermediate next/continue control in multi-step login"},
-                        "timeout": {"type": "integer", "description": "Field interaction timeout in ms (default: 5000)"},
-                    },
-                    "required": ["username", "password"],
-                },
-            },
-            handler=_browser_fill_login_form,
-            timeout_sec=60,
-        ),
-        ToolEntry(
-            name="browser_save_session",
-            schema={
-                "name": "browser_save_session",
-                "description": "Save the current browser context storage state in task memory for later reuse.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "session_name": {"type": "string", "description": "Name for the saved in-memory browser session"},
-                    },
-                    "required": ["session_name"],
-                },
-            },
-            handler=_browser_save_session,
-            timeout_sec=60,
-        ),
-        ToolEntry(
-            name="browser_restore_session",
-            schema={
-                "name": "browser_restore_session",
-                "description": "Restore a previously saved in-memory browser session inside the current task and optionally open a URL.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "session_name": {"type": "string", "description": "Previously saved session name"},
-                        "url": {"type": "string", "description": "Optional URL to open after restoring session"},
-                    },
-                    "required": ["session_name"],
-                },
-            },
-            handler=_browser_restore_session,
-            timeout_sec=60,
-        ),
-        ToolEntry(
-            name="browser_check_login_state",
-            schema={
-                "name": "browser_check_login_state",
-                "description": (
-                    "Inspect the current page and infer whether login succeeded, failed, "
-                    "is still logged out, or remains unclear."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "success_selector": {"type": "string", "description": "Optional CSS selector that indicates authenticated state"},
-                        "failure_selector": {"type": "string", "description": "Optional CSS selector that indicates login failure/error"},
-                        "logged_out_selector": {"type": "string", "description": "Optional CSS selector that indicates logged-out/login screen state"},
-                        "expected_url_substring": {"type": "string", "description": "Optional URL substring expected after successful login"},
-                        "success_cookie_names": {"type": "array", "items": {"type": "string"}, "description": "Optional cookie names that suggest authenticated state"},
-                        "failure_text_substrings": {"type": "array", "items": {"type": "string"}, "description": "Optional substrings that indicate login failure"},
-                        "protected_url": {"type": "string", "description": "Optional authenticated URL used for an internal session-alive probe"},
-                        "timeout": {"type": "integer", "description": "Selector wait timeout in ms (default: 5000)"},
-                    },
-                },
-            },
-            handler=_browser_check_login_state,
-            timeout_sec=60,
-        ),
-        ToolEntry(
-            name="browser_solve_captcha",
-            schema={
-                "name": "browser_solve_captcha",
-                "description": (
-                    "Read and enter text from a verification image element on the page. "
-                    "Uses local OCR with vision model fallback. "
-                    "Operates autonomously without LLM involvement in the reading process."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "captcha_image_selector": {
-                            "type": "string",
-                            "description": "CSS selector for the captcha image element (auto-detected if empty)",
-                        },
-                        "captcha_input_selector": {
-                            "type": "string",
-                            "description": "CSS selector for the captcha text input (auto-detected if empty)",
-                        },
-                        "submit_selector": {
-                            "type": "string",
-                            "description": "CSS selector for the submit button (skipped if empty)",
-                        },
-                        "max_retries": {
-                            "type": "integer",
-                            "description": "Number of OCR attempts before giving up (default: 3)",
-                        },
-                    },
-                },
-            },
-            handler=_browser_solve_captcha,
-            timeout_sec=60,
-        ),
-    ]
+    return build_browser_tool_entries(
+        browse_page_handler=_browse_page,
+        browser_action_handler=_browser_action,
+        browser_fill_login_form_handler=_browser_fill_login_form,
+        browser_save_session_handler=_browser_save_session,
+        browser_restore_session_handler=_browser_restore_session,
+        browser_check_login_state_handler=_browser_check_login_state,
+        browser_solve_captcha_handler=_browser_solve_captcha,
+    )
