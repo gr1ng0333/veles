@@ -9,6 +9,7 @@ def build_browser_tool_entries(
     *,
     browse_page_handler: Any,
     browser_action_handler: Any,
+    browser_run_actions_handler: Any,
     browser_fill_login_form_handler: Any,
     browser_save_session_handler: Any,
     browser_restore_session_handler: Any,
@@ -69,6 +70,42 @@ def build_browser_tool_entries(
                 },
             },
             handler=browser_action_handler,
+            timeout_sec=60,
+        ),
+        ToolEntry(
+            name="browser_run_actions",
+            schema={
+                "name": "browser_run_actions",
+                "description": (
+                    "Run a reusable batch of browser actions against the current live/restored browser session, "
+                    "with per-step verification and structured results."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "actions": {
+                            "type": "array",
+                            "description": "Ordered action list. Supported actions: click, fill, select, scroll, evaluate, wait_for.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string", "enum": ["click", "evaluate", "fill", "scroll", "select", "wait_for"]},
+                                    "selector": {"type": "string"},
+                                    "value": {"type": ["string", "number", "boolean"]},
+                                    "timeout": {"type": "integer", "description": "Timeout in ms for the step (default: 5000)"},
+                                    "label": {"type": "string", "description": "Optional human-readable step label"},
+                                    "expect_selector": {"type": "string", "description": "Optional selector that must become visible after the step"},
+                                    "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
+                                },
+                                "required": ["action"],
+                            },
+                        },
+                        "stop_on_error": {"type": "boolean", "description": "Stop at first failed step or failed verification (default: true)"},
+                    },
+                    "required": ["actions"],
+                },
+            },
+            handler=browser_run_actions_handler,
             timeout_sec=60,
         ),
         ToolEntry(
