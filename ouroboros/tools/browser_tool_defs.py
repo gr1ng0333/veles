@@ -30,6 +30,7 @@ def _browser_run_actions_schema() -> dict[str, Any]:
                             "expect_url_substring": {"type": "string", "description": "Optional URL substring expected after the step"},
                             "wait_for_navigation": {"type": "boolean", "description": "Wait for page URL to change/become available after the step"},
                             "wait_until": {"type": "string", "enum": ["commit", "domcontentloaded", "load", "networkidle"], "description": "Navigation readiness target for goto (default: load)"},
+                            "wait_for_state": {"type": "string", "enum": ["attached", "detached", "hidden", "visible"], "description": "For wait_for: selector state to wait for (default: visible)."},
                             "match_substring": {"type": "boolean", "description": "For assert_text: substring match (default: true). If false, require exact equality."},
                             "text_must_absent": {"type": "boolean", "description": "For assert_text/wait_for_text: require the expected value to be absent instead of present."},
                             "url_must_absent": {"type": "boolean", "description": "For wait_for_url: require the expected URL value to be absent instead of present. Legacy compatibility: wait_for_url also still honors text_must_absent."},

@@ -289,6 +289,77 @@ def test_browser_run_actions_wait_for_text_absence_survives_selector_disappearan
     assert "missing selector" in payload["results"][0]["checks"]["wait_for_text"]["note"]
 
 
+
+def test_browser_run_actions_wait_for_supports_hidden_state(monkeypatch):
+    page = DummyPage()
+    page.visible.add("#toast")
+    ctx = make_ctx(page)
+
+    def hide_after_wait(timeout):
+        page.calls.append(("wait_for_timeout", timeout))
+        page.visible.discard("#toast")
+
+    original_wait_for_selector = page.wait_for_selector
+
+    def stateful_wait_for_selector(selector, timeout=0, state="visible"):
+        page.calls.append(("wait_for_selector", selector, timeout, state))
+        if state == "hidden":
+            if selector in page.visible:
+                hide_after_wait(100)
+            if selector in page.visible:
+                raise RuntimeError(f"selector still visible: {selector}")
+            return
+        return original_wait_for_selector(selector, timeout=timeout, state=state)
+
+    page.wait_for_selector = stateful_wait_for_selector
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for", "selector": "#toast", "timeout": 1000, "wait_for_state": "hidden"},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["wait_for_state"] == "hidden"
+    assert ("wait_for_selector", "#toast", 1000, "hidden") in page.calls
+
+
+def test_browser_run_actions_wait_for_supports_detached_state(monkeypatch):
+    page = DummyPage()
+    page.visible.add("#loading")
+    ctx = make_ctx(page)
+
+    original_wait_for_selector = page.wait_for_selector
+
+    def stateful_wait_for_selector(selector, timeout=0, state="visible"):
+        page.calls.append(("wait_for_selector", selector, timeout, state))
+        if state == "detached":
+            page.visible.discard(selector)
+            return
+        return original_wait_for_selector(selector, timeout=timeout, state=state)
+
+    page.wait_for_selector = stateful_wait_for_selector
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for", "selector": "#loading", "timeout": 1000, "wait_for_state": "detached"},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["wait_for_state"] == "detached"
+    assert ("wait_for_selector", "#loading", 1000, "detached") in page.calls
+
+
+def test_browser_run_actions_rejects_invalid_wait_for_state(monkeypatch):
+    page = DummyPage()
+    ctx = make_ctx(page)
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    result = _browser_run_actions(ctx, actions=[
+        {"action": "wait_for", "selector": "#ready", "wait_for_state": "gone"},
+    ])
+
+    assert result == "Error: action #1 has unsupported wait_for_state 'gone'"
+
 def test_browser_run_actions_can_capture_screenshot(monkeypatch):
     page = DummyPage()
     ctx = make_ctx(page)
