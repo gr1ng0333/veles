@@ -1,6 +1,7 @@
 import json
 
 from ouroboros.tools.browser_auth_flow import (
+    build_auth_outcome,
     build_auth_page_snapshot,
     build_next_action_plan,
     build_verification_boundary,
@@ -299,3 +300,69 @@ def test_summarize_auth_diagnostics_includes_verification_boundary_even_when_abs
     assert diagnostics["verification"]["detected"] is False
     assert diagnostics["verification"]["kind"] == "none"
     assert diagnostics["verification"]["recommended_action"] == "continue"
+
+
+
+def test_build_auth_outcome_marks_captcha_as_auto_attempt_verification():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+
+    outcome = build_auth_outcome(state, next_action, verification)
+
+    assert outcome["status"] == "verification_required"
+    assert outcome["continuation"] == "auto_attempt_verification"
+    assert outcome["can_continue"] is False
+    assert outcome["should_auto_attempt_verification"] is True
+    assert outcome["requires_owner_input"] is False
+
+
+
+def test_build_auth_outcome_marks_mfa_as_owner_blocking_boundary():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/verify",
+        page_signals={"title": "Verify", "body_text": "Enter the verification code"},
+        matched=["mfa_selector"],
+        profile=normalize_site_profile({"mfa_selector": "input[name=otp]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+
+    outcome = build_auth_outcome(state, next_action, verification)
+
+    assert outcome["status"] == "blocked_by_verification"
+    assert outcome["continuation"] == "await_owner"
+    assert outcome["can_continue"] is False
+    assert outcome["should_auto_attempt_verification"] is False
+    assert outcome["requires_owner_input"] is True
+
+
+
+def test_summarize_auth_diagnostics_exposes_machine_readable_outcome():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(snapshot, state, next_action)
+
+    assert diagnostics["verification"]["kind"] == "captcha"
+    assert diagnostics["outcome"]["status"] == "verification_required"
+    assert diagnostics["outcome"]["continuation"] == "auto_attempt_verification"

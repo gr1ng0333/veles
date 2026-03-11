@@ -329,6 +329,77 @@ def build_verification_boundary(snapshot: Dict[str, Any], auth_state: Dict[str, 
 
 
 
+def build_auth_outcome(auth_state: Dict[str, Any], next_action: Dict[str, Any], verification: Dict[str, Any]) -> Dict[str, Any]:
+    state = str(auth_state.get("state") or "unknown")
+    action = str(next_action.get("action") or "inspect_page")
+    verification = dict(verification or {})
+
+    if verification.get("detected"):
+        if verification.get("requires_owner_input"):
+            status = "blocked_by_verification"
+            continuation = "await_owner"
+        elif verification.get("can_auto_attempt"):
+            status = "verification_required"
+            continuation = "auto_attempt_verification"
+        else:
+            status = "blocked_by_verification"
+            continuation = "stop"
+        return {
+            "status": status,
+            "continuation": continuation,
+            "state": state,
+            "action": action,
+            "can_continue": False,
+            "should_auto_attempt_verification": bool(verification.get("can_auto_attempt")),
+            "requires_owner_input": bool(verification.get("requires_owner_input")),
+            "is_authenticated": False,
+            "is_error": False,
+            "blocks_progress": bool(verification.get("blocks_progress")),
+        }
+
+    if state == "logged_in":
+        return {
+            "status": "continue",
+            "continuation": "continue",
+            "state": state,
+            "action": action,
+            "can_continue": True,
+            "should_auto_attempt_verification": False,
+            "requires_owner_input": False,
+            "is_authenticated": True,
+            "is_error": False,
+            "blocks_progress": False,
+        }
+
+    if state == "error":
+        return {
+            "status": "blocked_by_error",
+            "continuation": "stop",
+            "state": state,
+            "action": action,
+            "can_continue": False,
+            "should_auto_attempt_verification": False,
+            "requires_owner_input": False,
+            "is_authenticated": False,
+            "is_error": True,
+            "blocks_progress": True,
+        }
+
+    can_continue = bool(next_action.get("can_proceed"))
+    return {
+        "status": "continue" if can_continue else "needs_inspection",
+        "continuation": "continue" if can_continue else "inspect",
+        "state": state,
+        "action": action,
+        "can_continue": can_continue,
+        "should_auto_attempt_verification": False,
+        "requires_owner_input": False,
+        "is_authenticated": False,
+        "is_error": False,
+        "blocks_progress": not can_continue,
+    }
+
+
 def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, Any], next_action: Dict[str, Any]) -> Dict[str, Any]:
     profile = snapshot.get("profile") or {}
     state = auth_state.get("state", "unknown")
@@ -370,6 +441,7 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
         confidence = "low"
 
     verification = build_verification_boundary(snapshot, auth_state, next_action)
+    outcome = build_auth_outcome(auth_state, next_action, verification)
 
     return {
         "site_profile": {
@@ -382,6 +454,7 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
         "confidence": confidence,
         "evidence": evidence,
         "verification": verification,
+        "outcome": outcome,
         "next_action": next_action,
         "current_url": snapshot.get("current_url", ""),
         "matched": snapshot.get("matched", []),
@@ -505,6 +578,7 @@ def build_post_submit_auth_result(
     return {
         "diagnostics": diagnostics,
         "verification": diagnostics.get("verification"),
+        "outcome": diagnostics.get("outcome"),
         "post_submit_state": auth_state,
         "post_submit_signals": post_signals,
         "protected_url_alive": protected_url_alive,
