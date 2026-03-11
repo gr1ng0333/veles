@@ -6,10 +6,12 @@ import json
 import logging
 import os
 import re
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
+from io import BytesIO
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
@@ -426,11 +428,139 @@ def _render_markdown(payload: Dict[str, Any], topic: str, sources: List[ReportSo
     return "\n".join(lines)
 
 
-def _build_report_artifact(payload: Dict[str, Any], topic: str, sources: List[ReportSource], diagnostics: SearchDiagnostics, output_format: str) -> Tuple[str, str, str]:
+def _xml_escape(value: Any) -> str:
+    value = str(value or "")
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _docx_paragraph(text: Any, *, heading: bool = False) -> str:
+    body = _xml_escape(text) or "—"
+    style = '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>' if heading else ''
+    return (
+        '<w:p>'
+        f'{style}'
+        '<w:r><w:rPr><w:lang w:val="ru-RU"/></w:rPr>'
+        f'<w:t xml:space="preserve">{body}</w:t>'
+        '</w:r>'
+        '</w:p>'
+    )
+
+
+def _render_docx(payload: Dict[str, Any], topic: str, sources: List[ReportSource], diagnostics: SearchDiagnostics) -> bytes:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    title = str(payload.get("title") or f"Отчёт: {topic}")
+    summary = str(payload.get("summary") or "").strip() or "—"
+    conclusion = str(payload.get("conclusion") or "").strip() or "—"
+    key_findings = [str(item) for item in (payload.get("key_findings") or [])] or ["—"]
+    limitations = [str(item) for item in (payload.get("limitations") or [])] or ["—"]
+    source_notes = payload.get("source_notes") or []
+    notes_by_url = {str(item.get("url", "")): item for item in source_notes if isinstance(item, dict)}
+
+    paragraphs = [
+        _docx_paragraph(title, heading=True),
+        _docx_paragraph(f"Тема: {topic}"),
+        _docx_paragraph(f"Сформировано: {now}"),
+        _docx_paragraph(f"Источники: {len(sources)}"),
+        _docx_paragraph(f"Надёжность: {_reliability_label(diagnostics, len(sources))}"),
+        _docx_paragraph(f"Поиск: {diagnostics.backend} / {diagnostics.status}"),
+        _docx_paragraph("Краткое резюме", heading=True),
+        _docx_paragraph(summary),
+        _docx_paragraph("Ключевые выводы", heading=True),
+    ]
+    paragraphs.extend(_docx_paragraph(f"• {item}") for item in key_findings)
+    paragraphs.extend([
+        _docx_paragraph("Ограничения и надёжность", heading=True),
+        _docx_paragraph(_limitation_notice(diagnostics)),
+    ])
+    paragraphs.extend(_docx_paragraph(f"• {item}") for item in limitations)
+    paragraphs.append(_docx_paragraph("Источники", heading=True))
+    for idx, source in enumerate(sources, start=1):
+        note_item = notes_by_url.get(source.url, {})
+        note = str(note_item.get("note") or source.snippet or "Без дополнительной заметки.").strip()
+        paragraphs.extend([
+            _docx_paragraph(f"{idx}. {source.title}"),
+            _docx_paragraph(f"URL: {source.url}"),
+            _docx_paragraph(f"Домен: {source.domain or 'unknown'}"),
+            _docx_paragraph(f"Оценка: {source.score}"),
+            _docx_paragraph(f"Заметка: {note}"),
+        ])
+    paragraphs.extend([
+        _docx_paragraph("Диагностика поиска", heading=True),
+        _docx_paragraph(f"Статус поиска: {diagnostics.status}"),
+        _docx_paragraph(f"Backend: {diagnostics.backend}"),
+        _docx_paragraph(f"Ошибка: {diagnostics.error or '—'}"),
+        _docx_paragraph(f"Сырой answer: {diagnostics.answer or '—'}"),
+        _docx_paragraph("Вывод", heading=True),
+        _docx_paragraph(conclusion),
+    ])
+
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="w14 wp14">
+  <w:body>
+    {paragraphs}
+    <w:sectPr>
+      <w:pgSz w:w="11906" w:h="16838"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>
+""".replace("{paragraphs}", "".join(paragraphs))
+
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>
+"""
+    rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+"""
+    document_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>
+"""
+    styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+    <w:qFormat/>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+    <w:rPr><w:b/><w:sz w:val="32"/></w:rPr>
+  </w:style>
+</w:styles>
+"""
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("word/document.xml", document_xml)
+        zf.writestr("word/_rels/document.xml.rels", document_rels)
+        zf.writestr("word/styles.xml", styles)
+    return buf.getvalue()
+
+
+def _build_report_artifact(payload: Dict[str, Any], topic: str, sources: List[ReportSource], diagnostics: SearchDiagnostics, output_format: str) -> Tuple[bytes, str, str]:
     fmt = (output_format or "html").strip().lower()
     if fmt == "md":
-        return _render_markdown(payload, topic=topic, sources=sources, diagnostics=diagnostics), "md", "text/markdown"
-    return _render_html(payload, topic=topic, sources=sources, diagnostics=diagnostics), "html", "text/html"
+        return _render_markdown(payload, topic=topic, sources=sources, diagnostics=diagnostics).encode("utf-8"), "md", "text/markdown"
+    if fmt == "docx":
+        return _render_docx(payload, topic=topic, sources=sources, diagnostics=diagnostics), "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return _render_html(payload, topic=topic, sources=sources, diagnostics=diagnostics).encode("utf-8"), "html", "text/html"
 
 
 def _safe_filename(topic: str, extension: str) -> str:
@@ -497,7 +627,7 @@ def _research_report(
         model=chosen_model,
         diagnostics=diagnostics,
     )
-    report_text, resolved_format, mime_type = _build_report_artifact(
+    report_bytes, resolved_format, mime_type = _build_report_artifact(
         payload,
         topic=topic,
         sources=sources,
@@ -509,7 +639,7 @@ def _research_report(
     report_dir = ctx.drive_path("reports")
     report_dir.mkdir(parents=True, exist_ok=True)
     out_path = report_dir / filename
-    out_path.write_text(report_text, encoding="utf-8")
+    out_path.write_bytes(report_bytes)
 
     delivered = False
     if deliver and ctx.current_chat_id:
@@ -520,7 +650,7 @@ def _research_report(
                 "filename": filename,
                 "caption": f"Research report: {topic}",
                 "mime_type": mime_type,
-                "file_base64": base64.b64encode(report_text.encode("utf-8")).decode("ascii"),
+                "file_base64": base64.b64encode(report_bytes).decode("ascii"),
             }
         )
         delivered = True
@@ -555,7 +685,7 @@ def get_tools() -> List[ToolEntry]:
             schema={
                 "name": "research_report",
                 "description": (
-                    "Search the web, synthesize a short research report, render it as a polished HTML or Markdown file, "
+                    "Search the web, synthesize a short research report, render it as a polished HTML, Markdown, or DOCX file, "
                     "save it locally, and optionally send it to the current Telegram chat as a document."
                 ),
                 "parameters": {
@@ -567,13 +697,13 @@ def get_tools() -> List[ToolEntry]:
                         "search_query": {"type": "string", "description": "Optional custom web search query"},
                         "deliver": {
                             "type": "boolean",
-                            "description": "Whether to send the resulting HTML file to Telegram",
+                            "description": "Whether to send the resulting report file to Telegram",
                             "default": True,
                         },
                         "model": {"type": "string", "description": "Optional LLM model override for synthesis"},
                         "output_format": {
                             "type": "string",
-                            "enum": ["html", "md"],
+                            "enum": ["html", "md", "docx"],
                             "description": "Output file format for the saved and delivered report",
                             "default": "html"
                         },
