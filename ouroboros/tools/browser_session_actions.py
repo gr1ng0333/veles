@@ -177,7 +177,7 @@ def _run_single_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def _verify_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
+def _verify_step(page: Any, step: Dict[str, Any], *, previous_url: str = "") -> Dict[str, Any]:
     verified = True
     checks: Dict[str, Any] = {}
     expect_selector = step.get("expect_selector") or ""
@@ -185,8 +185,32 @@ def _verify_step(page: Any, step: Dict[str, Any]) -> Dict[str, Any]:
     timeout = int(step.get("timeout") or 5000)
 
     if step.get("wait_for_navigation"):
-        page.wait_for_url("**", timeout=timeout)
-        checks["wait_for_navigation"] = {"matched": True, "current_url": page.url}
+        current_url = str(page.url or "")
+        matched = bool(current_url) and current_url != str(previous_url or "")
+        if not matched and hasattr(page, "wait_for_function"):
+            try:
+                page.wait_for_function(
+                    "previousUrl => window.location.href !== previousUrl",
+                    arg=str(previous_url or ""),
+                    timeout=timeout,
+                )
+                current_url = str(page.url or "")
+                matched = bool(current_url) and current_url != str(previous_url or "")
+            except Exception as exc:
+                checks["wait_for_navigation"] = {
+                    "matched": False,
+                    "previous_url": str(previous_url or ""),
+                    "current_url": current_url,
+                    "error": str(exc),
+                }
+                verified = False
+        if "wait_for_navigation" not in checks:
+            checks["wait_for_navigation"] = {
+                "matched": matched,
+                "previous_url": str(previous_url or ""),
+                "current_url": current_url,
+            }
+            verified = verified and matched
 
     action = step.get("action") or ""
     if action in {"assert_text", "wait_for_text"}:
@@ -248,12 +272,13 @@ def _browser_run_actions(
             "current_url": page.url,
         }
         try:
+            previous_url = str(page.url or "")
             execution = _run_single_step(page, step)
             screenshot_b64 = execution.pop("_last_screenshot_b64", None) if isinstance(execution, dict) else None
             if screenshot_b64:
                 ctx.browser_state.last_screenshot_b64 = screenshot_b64
             item.update(execution)
-            verification = _verify_step(page, step)
+            verification = _verify_step(page, step, previous_url=previous_url)
             item.update(verification)
             item["success"] = bool(verification["verified"])
             item["current_url"] = page.url

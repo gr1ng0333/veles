@@ -75,6 +75,11 @@ class DummyPage:
         if not self.url:
             raise RuntimeError("missing url")
 
+    def wait_for_function(self, expression, arg=None, timeout=0):
+        self.calls.append(("wait_for_function", expression, arg, timeout))
+        if self.url == arg:
+            raise RuntimeError("navigation did not change URL")
+
     def locator(self, selector):
         self.calls.append(("locator", selector))
         return DummyLocator(self, selector)
@@ -156,8 +161,9 @@ def test_browser_run_actions_supports_goto_and_navigation_wait(monkeypatch):
     assert payload["current_url"].endswith('/dashboard')
     assert payload["results"][0]["navigated_to"].endswith('/dashboard')
     assert payload["results"][0]["checks"]["wait_for_navigation"]["matched"] is True
+    assert payload["results"][0]["checks"]["wait_for_navigation"]["previous_url"].endswith("/login")
     assert ("goto", "https://example.com/dashboard", 5000, "domcontentloaded") in page.calls
-    assert ("wait_for_url", "**", 5000) in page.calls
+    assert not any(call[0] == "wait_for_url" for call in page.calls)
 
 
 def test_browser_run_actions_can_extract_and_assert_text(monkeypatch):
@@ -253,3 +259,23 @@ def test_browser_run_actions_can_capture_screenshot(monkeypatch):
     assert "__last_screenshot__" in payload["results"][0]["screenshot_delivery_hint"]
     assert ctx.browser_state.last_screenshot_b64
     assert ("screenshot", "png", False) in page.calls
+
+
+def test_browser_run_actions_fails_when_navigation_url_does_not_change(monkeypatch):
+    page = DummyPage()
+    ctx = make_ctx(page)
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "wait_for", "timeout": 50, "wait_for_navigation": True},
+        {"action": "fill", "selector": "#after", "value": "x"},
+    ]))
+
+    assert payload["success"] is False
+    assert payload["stopped_early"] is True
+    assert payload["executed_steps"] == 1
+    assert payload["results"][0]["checks"]["wait_for_navigation"]["matched"] is False
+    assert payload["results"][0]["checks"]["wait_for_navigation"]["previous_url"].endswith('/login')
+    assert payload["results"][0]["checks"]["wait_for_navigation"]["current_url"].endswith('/login')
+    assert any(call[0] == "wait_for_function" for call in page.calls)
