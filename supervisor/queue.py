@@ -415,8 +415,29 @@ def enforce_task_timeouts() -> None:
 # ---------------------------------------------------------------------------
 
 def build_evolution_task_text(cycle: int) -> str:
-    """Build evolution task text. Minimal trigger — SYSTEM.md has the full instructions."""
-    return f"EVOLUTION #{cycle}"
+    """Build evolution task text with context: cycle, no-commit streak, scratchpad summary."""
+    st = load_state()
+    streak = int(st.get("no_commit_streak") or 0)
+
+    # Read scratchpad summary
+    scratchpad_summary = "empty"
+    scratchpad_path = DRIVE_ROOT / "memory" / "scratchpad.md"
+    try:
+        if scratchpad_path.exists():
+            raw = scratchpad_path.read_text(encoding="utf-8").strip()
+            if raw:
+                scratchpad_summary = raw[:500]
+    except Exception:
+        scratchpad_summary = "(read error)"
+
+    return (
+        f"EVOLUTION #{cycle}\n"
+        f"No-commit streak: {streak}\n"
+        f"Scratchpad summary: {scratchpad_summary}\n\n"
+        "Your task: pick ONE high-leverage improvement, implement it, run tests, commit. "
+        "Do not analyze without action. Every evolution must end with a commit or "
+        "explicit \"nothing worth changing\" verdict."
+    )
 
 
 def build_review_task_text(reason: str) -> str:

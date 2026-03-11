@@ -162,9 +162,14 @@ def _apply_context_overrides_and_compaction(
         ctx.active_effort_override = None
 
     pending_compaction = getattr(ctx, "_pending_compaction", None)
+    task_type = getattr(ctx, "current_task_type", None) or ""
     if pending_compaction is not None:
         messages = compact_tool_history_llm(messages, keep_recent=pending_compaction)
         ctx._pending_compaction = None
+    elif task_type == "evolution" and round_idx > 4:
+        messages = compact_tool_history(messages, keep_recent=6)
+    elif task_type == "evolution" and round_idx > 2 and len(messages) > 30:
+        messages = compact_tool_history(messages, keep_recent=6)
     elif round_idx > 8:
         messages = compact_tool_history(messages, keep_recent=6)
     elif round_idx > 3 and len(messages) > 60:
@@ -394,21 +399,29 @@ def _get_evolution_round_limit(task_type: str, default_task_max_rounds: int) -> 
     if task_type != "evolution":
         return default_task_max_rounds
     try:
-        return max(1, int(os.environ.get("OUROBOROS_EVOLUTION_MAX_ROUNDS", "10")))
+        return max(1, int(os.environ.get("OUROBOROS_EVOLUTION_MAX_ROUNDS", "40")))
     except (ValueError, TypeError):
-        log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS, falling back to 10")
-        return 10
+        log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS, falling back to 40")
+        return 40
+
+
+def _get_prompt_token_guard_threshold(task_type: str) -> int:
+    """Return prompt token guard threshold: 120k for evolution/review, 40k otherwise."""
+    if task_type in ("evolution", "review"):
+        return 120_000
+    return PROMPT_TOKEN_GUARD_THRESHOLD
 
 
 def _update_large_prompt_streak(
     task_type: str,
     current_streak: int,
     round_prompt_tokens: int,
-    threshold: int = PROMPT_TOKEN_GUARD_THRESHOLD,
+    threshold: int = 0,
 ) -> int:
-    if task_type != "evolution":
+    if task_type not in ("evolution", "review"):
         return 0
-    if round_prompt_tokens > threshold:
+    effective = threshold or _get_prompt_token_guard_threshold(task_type)
+    if round_prompt_tokens > effective:
         return current_streak + 1
     return 0
 
@@ -417,7 +430,7 @@ def _should_finalize_evolution_for_prompt_tokens(
     task_type: str,
     large_prompt_streak: int,
 ) -> bool:
-    return task_type == "evolution" and large_prompt_streak >= 2
+    return task_type in ("evolution", "review") and large_prompt_streak >= 2
 
 
 def _append_assistant_with_tool_calls(messages: List[Dict[str, Any]], content: Optional[str], tool_calls: List[Dict[str, Any]], emit_progress: Callable[[str], None], llm_trace: Dict[str, Any]) -> None:
@@ -625,9 +638,10 @@ def _process_llm_response_or_continue(
 
     state["evolution_large_prompt_streak"] = _update_large_prompt_streak(task_type, state["evolution_large_prompt_streak"], round_prompt_tokens)
     if _should_finalize_evolution_for_prompt_tokens(task_type, state["evolution_large_prompt_streak"]):
+        guard_threshold = _get_prompt_token_guard_threshold(task_type)
         reason = (
-            "⚠️ Evolution prompt_tokens guard triggered: prompt_tokens > "
-            f"{PROMPT_TOKEN_GUARD_THRESHOLD} for 2 consecutive rounds. Формирую финальный ответ."
+            f"⚠️ Evolution prompt_tokens guard triggered: prompt_tokens > "
+            f"{guard_threshold} for 2 consecutive rounds. Формирую финальный ответ."
         )
         return _finalize_due_to_reason(
             reason=reason,
@@ -645,7 +659,11 @@ def _process_llm_response_or_continue(
             task_type=task_type,
         )
 
-    if is_small_completion_stagnation(state["recent_completion_tokens"], state["anti"]):
+    if is_small_completion_stagnation(
+        state["recent_completion_tokens"], state["anti"],
+        task_type=task_type,
+        has_tool_calls=bool(msg.get("tool_calls")),
+    ):
         reason = (
             f"⚠️ Small completion stagnation: {state['anti'].small_completion_max_rounds} rounds "
             f"in a row with completion_tokens < {state['anti'].small_completion_threshold}. "

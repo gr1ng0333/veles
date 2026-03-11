@@ -64,7 +64,7 @@ def teststagnation_action_force_after_grace():
 
 def test_get_evolution_round_limit_uses_default_env_fallback(monkeypatch):
     monkeypatch.delenv("OUROBOROS_EVOLUTION_MAX_ROUNDS", raising=False)
-    assert _get_evolution_round_limit("evolution", 15) == 10
+    assert _get_evolution_round_limit("evolution", 15) == 40
 
 
 def test_get_evolution_round_limit_keeps_regular_task_limit(monkeypatch):
@@ -82,14 +82,14 @@ def test_large_prompt_streak_resets_for_non_evolution():
 
 
 def test_large_prompt_streak_tracks_two_consecutive_rounds():
-    streak = _update_large_prompt_streak("evolution", 0, 50001)
+    streak = _update_large_prompt_streak("evolution", 0, 120001)
     assert streak == 1
-    streak = _update_large_prompt_streak("evolution", streak, 50002)
+    streak = _update_large_prompt_streak("evolution", streak, 120002)
     assert streak == 2
     assert _should_finalize_evolution_for_prompt_tokens("evolution", streak) is True
 
 
 def test_large_prompt_streak_resets_after_small_round():
-    streak = _update_large_prompt_streak("evolution", 1, 39999)
+    streak = _update_large_prompt_streak("evolution", 1, 119999)
     assert streak == 0
     assert _should_finalize_evolution_for_prompt_tokens("evolution", streak) is False
