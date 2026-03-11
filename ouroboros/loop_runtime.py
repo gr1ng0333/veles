@@ -14,7 +14,7 @@ PROMPT_TOKEN_GUARD_THRESHOLD = 40000
 
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
 from ouroboros.llm import LLMClient, normalize_reasoning_effort
-from ouroboros.model_modes import max_rounds_for_active_mode, tools_enabled_for_active_mode
+from ouroboros.model_modes import execution_style_for_active_mode, max_rounds_for_active_mode, tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.antistagnation import (
@@ -340,6 +340,54 @@ def _handle_no_tool_call_finalize(content: Optional[str], llm_trace: Dict[str, A
         recent_progress = recent_progress[-64:]
     final = _handle_text_response(content, llm_trace, accumulated_usage)
     return final[0], final[1], final[2], recent_progress, 0
+
+
+def _run_one_shot_mode(
+    *,
+    messages: List[Dict[str, Any]],
+    llm: LLMClient,
+    drive_logs: pathlib.Path,
+    emit_progress: Callable[[str], None],
+    task_type: str,
+    task_id: str,
+    event_queue: Optional[queue.Queue],
+    accumulated_usage: Dict[str, Any],
+    llm_trace: Dict[str, Any],
+    active_model: str,
+    active_effort: str,
+    tool_schemas: List[Dict[str, Any]],
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    msg = _call_llm_with_fallback(
+        llm=llm,
+        messages=messages,
+        active_model=active_model,
+        tool_schemas=tool_schemas,
+        active_effort=active_effort,
+        max_retries=3,
+        drive_logs=drive_logs,
+        task_id=task_id,
+        round_idx=1,
+        event_queue=event_queue,
+        accumulated_usage=accumulated_usage,
+        task_type=task_type,
+        emit_progress=emit_progress,
+    )
+    if msg is None:
+        return (
+            "⚠️ Failed to get a response from the model after retries/fallback. Try rephrasing your request.",
+            accumulated_usage,
+            llm_trace,
+        )
+    tool_calls = msg.get("tool_calls") or []
+    if tool_calls:
+        llm_trace["assistant_notes"].append(
+            "Mode policy blocked tool-calling in one-shot mode; returning assistant text only."
+        )
+    content = msg.get("content")
+    final_text, final_usage, final_trace, _, _ = _handle_no_tool_call_finalize(
+        content, llm_trace, accumulated_usage, []
+    )
+    return final_text, final_usage, final_trace
 
 
 def _get_evolution_round_limit(task_type: str, default_task_max_rounds: int) -> int:
@@ -805,6 +853,7 @@ def run_llm_loop_impl(
         "prev_prompt_tokens": 0,
         "evolution_large_prompt_streak": 0,
         "original_task_text": _extract_original_task(messages),
+        "execution_style": execution_style_for_active_mode(),
     }
     # If caller provides a persistent executor (direct-chat), reuse it and
     # do NOT shut it down when this task ends — it survives across messages.
@@ -813,6 +862,21 @@ def run_llm_loop_impl(
     owner_msg_seen: set = set()
 
     try:
+        if state["execution_style"] == "one_shot":
+            return _run_one_shot_mode(
+                messages=messages,
+                llm=llm,
+                drive_logs=drive_logs,
+                emit_progress=emit_progress,
+                task_type=task_type,
+                task_id=task_id,
+                event_queue=event_queue,
+                accumulated_usage=accumulated_usage,
+                llm_trace=llm_trace,
+                active_model=state["active_model"],
+                active_effort=state["active_effort"],
+                tool_schemas=[],
+            )
         while True:
             result = _run_single_round(
                 state=state,

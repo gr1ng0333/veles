@@ -16,8 +16,7 @@ class ModelMode:
     max_rounds: int
     tools_enabled: bool
     intended_use: str
-
-
+    execution_style: str
 
 
 @dataclass(frozen=True)
@@ -27,6 +26,7 @@ class ModeRuntimePolicy:
     max_rounds: int
     tools_enabled: bool
     intended_use: str
+    execution_style: str
     aux_light_model: str
 
 MODEL_MODES: Dict[str, ModelMode] = {
@@ -38,6 +38,7 @@ MODEL_MODES: Dict[str, ModelMode] = {
         max_rounds=200,
         tools_enabled=True,
         intended_use="основная рабочая модель",
+        execution_style="loop",
     ),
     "haiku": ModelMode(
         key="haiku",
@@ -47,6 +48,7 @@ MODEL_MODES: Dict[str, ModelMode] = {
         max_rounds=10,
         tools_enabled=True,
         intended_use="короткие рабочие задачи и дешёвый fallback-режим",
+        execution_style="loop",
     ),
     "sonnet": ModelMode(
         key="sonnet",
@@ -56,6 +58,7 @@ MODEL_MODES: Dict[str, ModelMode] = {
         max_rounds=1,
         tools_enabled=False,
         intended_use="разговор и одноходовый ответ",
+        execution_style="one_shot",
     ),
     "opus": ModelMode(
         key="opus",
@@ -65,6 +68,7 @@ MODEL_MODES: Dict[str, ModelMode] = {
         max_rounds=1,
         tools_enabled=False,
         intended_use="подробное планирование и one-shot анализ",
+        execution_style="one_shot",
     ),
 }
 
@@ -119,6 +123,7 @@ def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy
         max_rounds=mode.max_rounds,
         tools_enabled=mode.tools_enabled,
         intended_use=mode.intended_use,
+        execution_style=mode.execution_style,
         aux_light_model=get_aux_light_model(),
     )
 
@@ -131,6 +136,7 @@ def mode_summary_text() -> str:
         f"• Main: {policy.main_model}",
         f"• Rounds limit: {policy.max_rounds}",
         f"• Tools: {'on' if policy.tools_enabled else 'off'}",
+        f"• Execution: {policy.execution_style}",
         f"• Purpose: {policy.intended_use}",
         f"• Aux light model: {policy.aux_light_model}",
     ]
@@ -155,3 +161,8 @@ def tools_enabled_for_active_mode() -> bool:
 
 def max_rounds_for_active_mode() -> int:
     return get_runtime_policy().max_rounds
+
+
+
+def execution_style_for_active_mode() -> str:
+    return get_runtime_policy().execution_style
