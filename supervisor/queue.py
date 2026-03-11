@@ -508,6 +508,8 @@ def enqueue_evolution_task_if_needed() -> None:
     st = load_state()
     if not bool(st.get("evolution_mode_enabled")):
         return
+    if bool(st.get("suppress_auto_resume_until_owner_message")):
+        return
     owner_chat_id = st.get("owner_chat_id")
     if not owner_chat_id:
         return
