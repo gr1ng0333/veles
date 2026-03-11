@@ -32,7 +32,8 @@ from ouroboros.utils import (
     utc_now_iso, read_text, append_jsonl, clip_text,
     truncate_for_log, sanitize_tool_result_for_log, sanitize_tool_args_for_log,
 )
-from ouroboros.llm import LLMClient, DEFAULT_LIGHT_MODEL
+from ouroboros.llm import LLMClient
+from ouroboros.model_modes import get_background_model, get_background_reasoning_effort
 
 log = logging.getLogger(__name__)
 
@@ -139,12 +140,7 @@ class BackgroundConsciousness:
 
     @property
     def _model(self) -> str:
-        # If a separate Codex token for consciousness is configured, use it
-        if os.environ.get("CODEX_CONSCIOUSNESS_ACCESS") or os.environ.get("CODEX_CONSCIOUSNESS_REFRESH"):
-            model_name = os.environ.get("CODEX_CONSCIOUSNESS_MODEL", "gpt-5.1-codex-mini")
-            return f"codex-consciousness/{model_name}"
-        # Otherwise fall back to the standard light model via OpenRouter
-        return os.environ.get("OUROBOROS_MODEL_LIGHT", "") or DEFAULT_LIGHT_MODEL
+        return get_background_model()
 
     def start(self) -> str:
         if self.is_running:
@@ -308,7 +304,7 @@ class BackgroundConsciousness:
                     messages=messages,
                     model=model,
                     tools=tools,
-                    reasoning_effort="low",
+                    reasoning_effort=get_background_reasoning_effort(),
                     max_tokens=2048,
                 )
                 cost = float(usage.get("cost") or 0)

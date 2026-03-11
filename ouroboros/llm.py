@@ -12,7 +12,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from ouroboros.model_modes import DEFAULT_AUX_LIGHT_MODEL, MODEL_MODES, get_active_mode
+from ouroboros.model_modes import DEFAULT_AUX_LIGHT_MODEL, MODEL_MODES, get_active_mode, get_aux_light_model
 
 log = logging.getLogger(__name__)
 
@@ -347,7 +347,7 @@ class LLMClient:
         """Return list of available models from mode registry + env extras."""
         main = self.default_model()
         code = os.environ.get("OUROBOROS_MODEL_CODE", "")
-        light = os.environ.get("OUROBOROS_MODEL_LIGHT", "") or DEFAULT_LIGHT_MODEL
+        light = get_aux_light_model()
         models = [main]
         if code and code != main:
             models.append(code)

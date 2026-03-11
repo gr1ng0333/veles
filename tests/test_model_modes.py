@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import os
 
-from ouroboros.model_modes import MODEL_MODES, bootstrap_mode_env, execution_style_for_active_mode, get_runtime_policy, mode_summary_text
+from ouroboros.model_modes import (
+    MODEL_MODES,
+    bootstrap_mode_env,
+    execution_style_for_active_mode,
+    get_background_model,
+    get_background_reasoning_effort,
+    get_runtime_policy,
+    mode_summary_text,
+)
 from supervisor.state import load_state, save_state
 
 
@@ -48,9 +56,11 @@ def test_bootstrap_mode_env_uses_persisted_active_mode() -> None:
             os.environ["OUROBOROS_MODEL_LIGHT"] = old_light
 
 
-
 def test_runtime_policy_uses_active_mode_registry(monkeypatch) -> None:
     monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
+    monkeypatch.delenv("OUROBOROS_MODEL_BACKGROUND", raising=False)
+    monkeypatch.delenv("CODEX_CONSCIOUSNESS_ACCESS", raising=False)
+    monkeypatch.delenv("CODEX_CONSCIOUSNESS_REFRESH", raising=False)
     policy = get_runtime_policy({"active_model_mode": "haiku"})
     assert policy.mode_key == "haiku"
     assert policy.main_model == MODEL_MODES["haiku"].model
@@ -58,12 +68,18 @@ def test_runtime_policy_uses_active_mode_registry(monkeypatch) -> None:
     assert policy.tools_enabled is True
     assert policy.main_model == "copilot/claude-haiku-4.5"
     assert policy.aux_light_model == "qwen/qwen3-coder:free"
+    assert policy.background_model == "qwen/qwen3-coder:free"
+    assert policy.background_reasoning_effort == "low"
 
 
 def test_mode_summary_text_for_codex_includes_mode_details(monkeypatch) -> None:
     from ouroboros import model_modes as mm
 
     monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
+    monkeypatch.setenv("OUROBOROS_MODEL_BACKGROUND", "google/gemini-2.5-pro-preview")
+    monkeypatch.setenv("OUROBOROS_BG_REASONING_EFFORT", "minimal")
+    monkeypatch.delenv("CODEX_CONSCIOUSNESS_ACCESS", raising=False)
+    monkeypatch.delenv("CODEX_CONSCIOUSNESS_REFRESH", raising=False)
     monkeypatch.setattr(mm, "get_active_mode", lambda st=None: MODEL_MODES["codex"])
 
     def _fake_statuses():
@@ -79,9 +95,10 @@ def test_mode_summary_text_for_codex_includes_mode_details(monkeypatch) -> None:
     assert "Tools: on" in summary
     assert "Execution: loop" in summary
     assert "Aux light model: qwen/qwen3-coder:free" in summary
+    assert "Background model: google/gemini-2.5-pro-preview" in summary
+    assert "Background reasoning: minimal" in summary
     assert "Account: acc2" in summary
     assert "Limits: 5h=11 7d=222" in summary
-
 
 
 def test_runtime_policy_exposes_execution_style(monkeypatch) -> None:
@@ -115,3 +132,24 @@ def test_runtime_policy_uses_copilot_tags_for_sonnet_and_opus(monkeypatch) -> No
     assert opus.main_model == "copilot/claude-opus-4.6"
     assert sonnet.execution_style == "one_shot"
     assert opus.execution_style == "one_shot"
+
+
+def test_background_model_prefers_explicit_background_override(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
+    monkeypatch.setenv("OUROBOROS_MODEL_BACKGROUND", "google/gemini-2.5-pro-preview")
+    monkeypatch.delenv("CODEX_CONSCIOUSNESS_ACCESS", raising=False)
+    monkeypatch.delenv("CODEX_CONSCIOUSNESS_REFRESH", raising=False)
+    assert get_background_model() == "google/gemini-2.5-pro-preview"
+
+
+def test_background_model_prefers_consciousness_codex_tokens(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
+    monkeypatch.setenv("OUROBOROS_MODEL_BACKGROUND", "google/gemini-2.5-pro-preview")
+    monkeypatch.setenv("CODEX_CONSCIOUSNESS_ACCESS", "token")
+    monkeypatch.setenv("CODEX_CONSCIOUSNESS_MODEL", "gpt-5.1-codex-mini")
+    assert get_background_model() == "codex-consciousness/gpt-5.1-codex-mini"
+
+
+def test_background_reasoning_effort_reads_explicit_env(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_BG_REASONING_EFFORT", "minimal")
+    assert get_background_reasoning_effort() == "minimal"
