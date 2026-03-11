@@ -44,6 +44,10 @@ class DummyPage:
         self.calls.append(("evaluate", js))
         return {"ok": True, "script": js}
 
+    def screenshot(self, type="png", full_page=False):
+        self.calls.append(("screenshot", type, full_page))
+        return b"png-bytes"
+
     def wait_for_selector(self, selector, timeout=0, state="visible"):
         self.calls.append(("wait_for_selector", selector, timeout, state))
         if selector not in self.visible:
@@ -230,3 +234,22 @@ def test_browser_run_actions_waits_for_text_absence(monkeypatch):
     assert payload["success"] is True
     assert payload["results"][0]["text_must_absent"] is True
     assert payload["results"][0]["checks"]["wait_for_text"]["matched"] is True
+
+
+def test_browser_run_actions_can_capture_screenshot(monkeypatch):
+    page = DummyPage()
+    ctx = make_ctx(page)
+
+    monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
+
+    payload = json.loads(_browser_run_actions(ctx, actions=[
+        {"action": "screenshot", "label": "capture current state"},
+    ]))
+
+    assert payload["success"] is True
+    assert payload["results"][0]["screenshot_captured"] is True
+    assert payload["results"][0]["last_screenshot_updated"] is True
+    assert payload["results"][0]["screenshot_base64_bytes"] > 0
+    assert "__last_screenshot__" in payload["results"][0]["screenshot_delivery_hint"]
+    assert ctx.browser_state.last_screenshot_b64
+    assert ("screenshot", "png", False) in page.calls
