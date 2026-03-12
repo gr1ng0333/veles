@@ -150,6 +150,86 @@ def _repo_info(repo_dir: pathlib.Path) -> Dict[str, str]:
     return {"path": str(repo_dir), "branch": branch, "sha": sha}
 
 
+def _git_lines(repo_dir: pathlib.Path, args: List[str], timeout: int = 30) -> List[str]:
+    res = _git(args, repo_dir, timeout=timeout)
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or res.stdout.strip() or f"git {' '.join(args)} failed")
+    return [line for line in (res.stdout or "").splitlines() if line.strip()]
+
+
+def _project_status(ctx: ToolContext, name: str) -> str:
+    repo_dir = _require_local_project(name)
+    project_name = _normalize_project_name(name)
+
+    status_lines = _git_lines(repo_dir, ["status", "--porcelain", "--untracked-files=all"])
+    remotes = []
+    for line in _git_lines(repo_dir, ["remote", "-v"]):
+        parts = line.split()
+        if len(parts) >= 3:
+            remotes.append({
+                "name": parts[0],
+                "url": parts[1],
+                "direction": parts[2].strip("()"),
+            })
+
+    latest_commit = {"sha": None, "subject": None}
+    latest_sha_lines = _git_lines(repo_dir, ["rev-parse", "HEAD"])
+    latest_subject_lines = _git_lines(repo_dir, ["log", "-1", "--pretty=%s"])
+    if latest_sha_lines:
+        latest_commit["sha"] = latest_sha_lines[0]
+    if latest_subject_lines:
+        latest_commit["subject"] = latest_subject_lines[0]
+
+    changes = []
+    staged = 0
+    unstaged = 0
+    untracked = 0
+    for line in status_lines:
+        if len(line) < 4:
+            continue
+        index_flag = line[0]
+        worktree_flag = line[1]
+        rel_path = line[3:]
+        if index_flag == '?' and worktree_flag == '?':
+            kind = 'untracked'
+            untracked += 1
+        elif index_flag != ' ' and index_flag != '?':
+            kind = 'staged'
+            staged += 1
+        else:
+            kind = 'unstaged'
+            unstaged += 1
+        changes.append({
+            "path": rel_path,
+            "index": index_flag,
+            "worktree": worktree_flag,
+            "kind": kind,
+        })
+
+    payload = {
+        "status": "ok",
+        "checked_at": _utc_now_iso(),
+        "project": {
+            "name": project_name,
+            "path": str(repo_dir),
+        },
+        "repo": _repo_info(repo_dir),
+        "working_tree": {
+            "clean": len(changes) == 0,
+            "counts": {
+                "total": len(changes),
+                "staged": staged,
+                "unstaged": unstaged,
+                "untracked": untracked,
+            },
+            "changes": changes,
+        },
+        "latest_commit": latest_commit,
+        "remotes": remotes,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 def _require_local_project(name: str) -> pathlib.Path:
     repo_dir = _project_dir(name)
     if not repo_dir.exists():
@@ -530,6 +610,16 @@ def get_tools() -> List[ToolEntry]:
             },
             ["name"],
             _project_push,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            "project_status",
+            "Return an honest git status snapshot for an existing bootstrapped local project repository, including branch, HEAD, remotes, and current working tree changes.",
+            {
+                "name": {"type": "string", "description": "Existing local project name under the projects root"},
+            },
+            ["name"],
+            _project_status,
             is_code_tool=True,
         ),
     ]
