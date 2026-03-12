@@ -84,6 +84,127 @@ def _base_payload(project_name: str, repo_dir, server: Dict[str, Any]) -> Dict[s
     }
 
 
+def _service_diagnostics(service: Dict[str, Any]) -> Dict[str, Any]:
+    load_state = str(service.get('load_state') or '')
+    active_state = str(service.get('active_state') or '')
+    sub_state = str(service.get('sub_state') or '')
+    result_state = str(service.get('result_state') or '')
+    exists = bool(service.get('exists'))
+    running = bool(service.get('running'))
+
+    severity = 'healthy'
+    summary = 'service is active'
+    likely_causes: List[str] = []
+    recommended_checks: List[str] = []
+
+    if not exists or load_state == 'not-found':
+        severity = 'critical'
+        summary = 'systemd unit not found'
+        likely_causes = [
+            'service was not installed on the target host',
+            'service_name points to the wrong systemd unit',
+        ]
+        recommended_checks = [
+            'render and install the unit with project_service_control(action=install)',
+            'verify the exact service_name and unit_path on the server',
+        ]
+    elif active_state == 'active' and running:
+        severity = 'healthy'
+        summary = 'service is running'
+        recommended_checks = [
+            'inspect project_service_logs if you need recent runtime output',
+        ]
+    elif active_state in {'failed', 'inactive', 'deactivating'} or result_state not in {'', 'success'}:
+        severity = 'critical' if active_state == 'failed' or result_state not in {'', 'success'} else 'warning'
+        summary = f'service is {active_state or "not running"}'
+        likely_causes = [
+            'ExecStart command exited with a non-zero status',
+            'working directory, environment file, or permissions are invalid',
+            'application process crashed during startup',
+        ]
+        recommended_checks = [
+            'read project_service_logs for the most recent journal output',
+            'verify project_deploy_status to compare deploy path and last deploy outcome',
+            'check ExecStart, WorkingDirectory, environment, and remote permissions',
+        ]
+    else:
+        severity = 'warning'
+        summary = f'service is in transitional state: {active_state or "unknown"}/{sub_state or "unknown"}'
+        recommended_checks = [
+            're-check project_service_status after the lifecycle action settles',
+            'read project_service_logs if the service does not become active',
+        ]
+
+    return {
+        'severity': severity,
+        'summary': summary,
+        'likely_causes': likely_causes,
+        'recommended_checks': recommended_checks,
+    }
+
+
+
+def _deploy_diagnostics(deploy: Dict[str, Any], last_deploy: Dict[str, Any] | None, service: Dict[str, Any] | None) -> Dict[str, Any]:
+    summary_parts: List[str] = []
+    issues: List[str] = []
+    recommended_checks: List[str] = []
+
+    if deploy.get('exists'):
+        summary_parts.append('deploy path exists')
+    else:
+        summary_parts.append('deploy path missing')
+        issues.append('remote deploy_path does not exist yet')
+        recommended_checks.append('run project_server_validate to verify remote path preconditions')
+
+    if deploy.get('exists') and not deploy.get('writable'):
+        issues.append('deploy_path exists but is not writable for the configured SSH user')
+        recommended_checks.append('fix ownership/permissions or change deploy_path/server user metadata')
+
+    if deploy.get('exists') and int(deploy.get('top_level_entry_count') or 0) == 0:
+        issues.append('deploy_path is empty; sync/apply may not have materialized project files')
+        recommended_checks.append('run project_deploy_apply or project_server_sync and re-check status')
+
+    if last_deploy:
+        last_status = str(last_deploy.get('status') or 'unknown')
+        summary_parts.append(f'last deploy: {last_status}')
+        if last_status != 'ok':
+            failed_step = str(last_deploy.get('failed_step') or '')
+            issues.append(f'last recorded deploy ended with status={last_status}' + (f' at step={failed_step}' if failed_step else ''))
+            recommended_checks.append('inspect last_deploy.outcome and repeat project_deploy_apply after fixing the failed step')
+    else:
+        summary_parts.append('no recorded deploy outcome')
+        recommended_checks.append('run project_deploy_apply to create a recorded deploy outcome for future diagnostics')
+
+    service_diag = None
+    if service is not None:
+        service_diag = _service_diagnostics(service)
+        summary_parts.append(service_diag['summary'])
+        if service_diag['severity'] != 'healthy':
+            issues.append(service_diag['summary'])
+            for item in service_diag['recommended_checks']:
+                if item not in recommended_checks:
+                    recommended_checks.append(item)
+
+    severity = 'healthy'
+    if any('not found' in item or 'failed' in item or 'not writable' in item for item in issues):
+        severity = 'critical'
+    elif issues:
+        severity = 'warning'
+
+    deduped_checks: List[str] = []
+    for item in recommended_checks:
+        if item not in deduped_checks:
+            deduped_checks.append(item)
+
+    return {
+        'severity': severity,
+        'summary': '; '.join(summary_parts),
+        'issues': issues,
+        'recommended_checks': deduped_checks,
+        'service': service_diag,
+    }
+
+
 def _service_status_snapshot(
     server: Dict[str, Any],
     service_unit: str,
@@ -227,6 +348,7 @@ def _project_service_status(
         'status': snapshot['status'],
         **_base_payload(project_name, repo_dir, server),
         'service': snapshot['service'],
+        'diagnostics': _service_diagnostics(snapshot['service']),
         'command': snapshot['command'],
         'result': snapshot['result'],
     }
@@ -267,6 +389,7 @@ def _project_service_logs(
         'logs': {
             'lines_requested': line_count,
             'content': _clip_server_run_output(stdout, max_chars),
+            'empty': not bool((stdout or '').strip()),
         },
         'command': {
             'raw': command,
@@ -361,9 +484,15 @@ def _project_deploy_status(
             'max_output_chars': max_chars,
         },
     }
+    service_view = service_payload['service'] if service_payload is not None else None
     if service_payload is not None:
-        payload['service'] = service_payload['service']
+        payload['service'] = service_view
         payload['service_result'] = service_payload['result']
+    payload['diagnostics'] = _deploy_diagnostics(
+        payload['deploy'],
+        last_deploy if isinstance(last_deploy, dict) else None,
+        service_view,
+    )
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 

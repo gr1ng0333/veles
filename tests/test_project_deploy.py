@@ -260,6 +260,8 @@ def test_project_service_status_reads_structured_systemd_snapshot(tmp_path, monk
     assert payload['service']['exec_main_pid'] == '1234'
     assert captured['timeout'] == 30
     assert captured['args'][-1].startswith('systemctl show demo-api.service --no-page')
+    assert payload['diagnostics']['severity'] == 'healthy'
+    assert payload['diagnostics']['summary'] == 'service is running'
 
 
 def test_project_service_logs_reads_journalctl_output(tmp_path, monkeypatch):
@@ -367,6 +369,10 @@ def test_project_deploy_status_combines_deploy_probe_and_service_snapshot(tmp_pa
     assert payload['service']['active_state'] == 'failed'
     assert payload['service']['result_state'] == 'exit-code'
     assert len(calls) == 2
+    assert payload['diagnostics']['severity'] == 'critical'
+    assert 'service is failed' in payload['diagnostics']['summary']
+    assert any('last recorded deploy' not in item for item in payload['diagnostics']['issues'])
+    assert payload['diagnostics']['service']['severity'] == 'critical'
 def test_project_service_control_registered():
     tmp = pathlib.Path("/tmp")
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
@@ -1105,3 +1111,48 @@ def test_project_server_validate_reports_not_ready_when_service_is_missing(tmp_p
     assert payload['validation']['ok'] is False
     assert payload['validation']['checks']['service_unit_exists'] is False
     assert len(calls) == 2
+
+
+def test_project_deploy_status_surfaces_missing_deploy_record_and_path_problem(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_observability import _project_deploy_status
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fake_run_ssh_text(args, timeout):
+        stdout = (
+            'DEPLOY_EXISTS=0\n'
+            'DEPLOY_REALPATH=\n'
+            'DEPLOY_TOP_LEVEL_COUNT=0\n'
+            'DEPLOY_WRITABLE=0\n'
+            'DEPLOY_GIT=0\n'
+        )
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_observability._run_ssh_text', fake_run_ssh_text)
+
+    payload = json.loads(
+        _project_deploy_status(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            timeout=15,
+            sudo=False,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['last_deploy']['exists'] is False
+    assert payload['diagnostics']['severity'] == 'warning'
+    assert 'deploy path missing' in payload['diagnostics']['summary']
+    assert 'no recorded deploy outcome' in payload['diagnostics']['summary']
+    assert any('project_server_validate' in item for item in payload['diagnostics']['recommended_checks'])
+    assert any('project_deploy_apply' in item for item in payload['diagnostics']['recommended_checks'])
