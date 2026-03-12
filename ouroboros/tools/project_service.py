@@ -23,6 +23,23 @@ from ouroboros.tools.registry import ToolContext, ToolEntry
 _ALLOWED_SERVICE_ACTIONS = {'install', 'start', 'stop', 'restart', 'status', 'enable', 'disable'}
 
 
+def _normalize_service_unit_name(service_name: str) -> tuple[str, str]:
+    raw = str(service_name or '').strip()
+    if not raw:
+        raise ValueError('service_name must be non-empty')
+    if '/' in raw or raw in {'.', '..'}:
+        raise ValueError('service_name must be a plain systemd unit name')
+    unit_name = raw if raw.endswith('.service') else f'{raw}.service'
+    base_name = unit_name[:-len('.service')]
+    if not base_name:
+        raise ValueError('service_name must contain characters before .service')
+    return base_name, unit_name
+
+
+def _default_unit_path(unit_name: str) -> str:
+    return f'/etc/systemd/system/{unit_name}'
+
+
 def _run_ssh_text(args: List[str], timeout: int) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -59,9 +76,7 @@ def _project_service_control(
     project_name = _normalize_project_name(name)
     server = _find_project_server(repo_dir, alias)
 
-    service = str(service_name or '').strip()
-    if not service:
-        raise ValueError('service_name must be non-empty')
+    service_base, service_unit = _normalize_service_unit_name(service_name)
     action_name = str(action or '').strip().lower()
     if action_name not in _ALLOWED_SERVICE_ACTIONS:
         raise ValueError(f"action must be one of: {', '.join(sorted(_ALLOWED_SERVICE_ACTIONS))}")
@@ -80,7 +95,7 @@ def _project_service_control(
     if max_chars <= 0:
         raise ValueError('max_output_chars must be > 0')
 
-    unit_target = str(unit_path or f'/etc/systemd/system/{service}.service').strip()
+    unit_target = str(unit_path or _default_unit_path(service_unit)).strip()
     if not unit_target.startswith('/'):
         raise ValueError('unit_path must be absolute')
 
@@ -102,16 +117,17 @@ def _project_service_control(
             raise ValueError('unit_content must be non-empty for action=install')
         quoted_target = shlex.quote(unit_target)
         tee_prefix = 'sudo tee' if sudo else 'tee'
+        mkdir_prefix = 'sudo mkdir -p' if sudo else 'mkdir -p'
         command_parts = [
-            f"mkdir -p {shlex.quote(unit_target.rsplit('/', 1)[0] or '/')}",
+            f"{mkdir_prefix} {shlex.quote(unit_target.rsplit('/', 1)[0] or '/')}",
             f"{tee_prefix} {quoted_target} >/dev/null",
         ]
         systemctl = _systemctl_prefix(bool(sudo))
         command_parts.append(f'{systemctl} daemon-reload')
         if enable_on_install:
-            command_parts.append(f'{systemctl} enable {shlex.quote(service)}')
+            command_parts.append(f'{systemctl} enable {shlex.quote(service_unit)}')
         if start_on_install:
-            command_parts.append(f'{systemctl} start {shlex.quote(service)}')
+            command_parts.append(f'{systemctl} start {shlex.quote(service_unit)}')
         command = ' && '.join(command_parts)
         res = _run_ssh_stream(ssh_prefix + [command], stdin_bytes=raw_unit.encode('utf-8'), timeout=timeout_value)
         stdout = _decode_output(res.stdout)
@@ -125,7 +141,7 @@ def _project_service_control(
         }
     else:
         systemctl = _systemctl_prefix(bool(sudo))
-        command = f'{systemctl} {action_name} {shlex.quote(service)}'
+        command = f'{systemctl} {action_name} {shlex.quote(service_unit)}'
         res = _run_ssh_text(ssh_prefix + [command], timeout=timeout_value)
         stdout = res.stdout or ''
         stderr = res.stderr or ''
@@ -147,7 +163,8 @@ def _project_service_control(
             'registry_path': str(_project_server_registry_path(repo_dir)),
         },
         'service': {
-            'name': service,
+            'name': service_base,
+            'unit_name': service_unit,
             'action': action_name,
             'sudo': bool(sudo),
             'unit_path': unit_target,
