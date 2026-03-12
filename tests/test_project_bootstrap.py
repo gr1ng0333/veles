@@ -17,6 +17,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_server_run,
     _project_status,
 )
+from ouroboros.tools.project_github_dev import _project_pr_create
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
@@ -289,6 +290,57 @@ def test_project_github_create_refuses_when_origin_already_exists(tmp_path):
 def test_project_github_create_requires_existing_local_project(tmp_path):
     with pytest.raises(ValueError):
         _project_github_create(_ctx(tmp_path), name="missing-project")
+
+
+def test_project_pr_create_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_create" in names
+
+
+def test_project_pr_create_uses_current_branch_and_reports_url(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="https://github.com/acme/demo-api/pull/7\n", stderr="")
+
+    from ouroboros.tools.project_github_dev import _git as real_git
+
+    def fake_git(args, cwd, timeout=20):
+        if args[:3] == ["ls-remote", "--heads", "origin"]:
+            return subprocess.CompletedProcess(["git", *args], 0, stdout="abc	refs/heads/feature/auth\n", stderr="")
+        return real_git(args, cwd, timeout)
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._git', fake_git)
+
+    payload = json.loads(_project_pr_create(_ctx(tmp_path), name="demo-api", title="Add auth"))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['pull_request']['base'] == 'main'
+    assert payload['github']['pull_request']['head'] == 'feature/auth'
+    assert payload['github']['pull_request']['url'] == 'https://github.com/acme/demo-api/pull/7'
+    assert calls[0]['args'][:2] == ['pr', 'create']
+    assert '--base=main' in calls[0]['args']
+    assert '--head=feature/auth' in calls[0]['args']
+    assert calls[0]['input'] is None
+
+
+def test_project_pr_create_requires_pushed_head_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    with pytest.raises(ValueError, match='head branch is not pushed to origin'):
+        _project_pr_create(_ctx(tmp_path), name="demo-api", title="Add auth")
 
 
 def test_project_commit_creates_new_git_commit_for_local_project(tmp_path):
