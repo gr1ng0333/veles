@@ -420,3 +420,87 @@ def build_owner_handoff(
         "required_inputs": dedup_required_inputs,
         "selectors": selectors,
     }
+
+
+
+def build_owner_handoff_resume(
+    verification: Dict[str, Any],
+    verification_attempt: Dict[str, Any],
+    verification_attempt_result: Dict[str, Any],
+    verification_continuation: Dict[str, Any],
+    owner_handoff: Dict[str, Any],
+) -> Dict[str, Any]:
+    verification = dict(verification or {})
+    verification_attempt = dict(verification_attempt or {})
+    verification_attempt_result = dict(verification_attempt_result or {})
+    verification_continuation = dict(verification_continuation or {})
+    owner_handoff = dict(owner_handoff or {})
+
+    continuation_status = str(verification_continuation.get("status") or "continue_login")
+    continuation_action = str(verification_continuation.get("action") or continuation_status)
+    attempt_status = str(verification_attempt_result.get("status") or "not_attempted")
+    attempt_strategy = str(verification_attempt.get("strategy") or verification_attempt_result.get("strategy") or "none")
+    kind = str(owner_handoff.get("kind") or verification.get("kind") or "none")
+    selectors = dict(owner_handoff.get("selectors") or verification.get("selectors") or {})
+
+    if not owner_handoff.get("required"):
+        return {
+            "status": "not_needed",
+            "can_resume_auth": bool(verification_continuation.get("can_resume_auth", True)),
+            "resume_action": continuation_action,
+            "kind": "none",
+            "reason": "owner handoff is not required",
+            "source": "owner_handoff",
+            "selectors": selectors,
+        }
+
+    if continuation_status == "continue_login":
+        return {
+            "status": "resume_ready",
+            "can_resume_auth": True,
+            "resume_action": continuation_action,
+            "kind": kind,
+            "reason": verification_continuation.get("reason") or "owner verification step appears completed; auth flow can resume",
+            "source": "verification_continuation",
+            "selectors": selectors,
+        }
+
+    if continuation_status == "retry_verification":
+        return {
+            "status": "retry_auto_before_owner",
+            "can_resume_auth": False,
+            "resume_action": continuation_action,
+            "kind": kind,
+            "reason": verification_continuation.get("reason") or "retry automatic verification before asking the owner again",
+            "source": "verification_continuation",
+            "selectors": selectors,
+            "attempt_status": attempt_status,
+            "attempt_strategy": attempt_strategy,
+        }
+
+    if continuation_status == "await_owner":
+        blocked_statuses = {"failed", "planned_but_not_executed"}
+        status = "still_blocked" if attempt_status in blocked_statuses else "awaiting_owner"
+        return {
+            "status": status,
+            "can_resume_auth": False,
+            "resume_action": continuation_action,
+            "kind": kind,
+            "reason": verification_continuation.get("reason") or owner_handoff.get("reason") or "waiting for owner verification input",
+            "source": "verification_continuation",
+            "selectors": selectors,
+            "attempt_status": attempt_status,
+            "attempt_strategy": attempt_strategy,
+        }
+
+    return {
+        "status": "still_blocked",
+        "can_resume_auth": False,
+        "resume_action": continuation_action,
+        "kind": kind,
+        "reason": verification_continuation.get("reason") or owner_handoff.get("reason") or "verification remains blocked after owner handoff",
+        "source": "verification_continuation",
+        "selectors": selectors,
+        "attempt_status": attempt_status,
+        "attempt_strategy": attempt_strategy,
+    }

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from .browser_auth_verification import (
     build_owner_handoff,
+    build_owner_handoff_resume,
     build_verification_attempt_plan,
     build_verification_attempt_result,
     build_verification_continuation,
@@ -497,6 +498,13 @@ def summarize_auth_diagnostics(
         verification_handoff,
         verification_continuation,
     )
+    owner_handoff_resume = build_owner_handoff_resume(
+        verification,
+        verification_attempt,
+        verification_attempt_result,
+        verification_continuation,
+        owner_handoff,
+    )
 
     return {
         "site_profile": {
@@ -515,6 +523,7 @@ def summarize_auth_diagnostics(
         "verification_attempt_result": verification_attempt_result,
         "verification_continuation": verification_continuation,
         "owner_handoff": owner_handoff,
+        "owner_handoff_resume": owner_handoff_resume,
         "next_action": next_action,
         "current_url": snapshot.get("current_url", ""),
         "matched": snapshot.get("matched", []),
@@ -654,6 +663,7 @@ def build_post_submit_auth_result(
         "verification_attempt_result": diagnostics.get("verification_attempt_result"),
         "verification_continuation": diagnostics.get("verification_continuation"),
         "owner_handoff": diagnostics.get("owner_handoff"),
+        "owner_handoff_resume": diagnostics.get("owner_handoff_resume"),
         "post_submit_state": auth_state,
         "post_submit_signals": post_signals,
         "protected_url_alive": protected_url_alive,
