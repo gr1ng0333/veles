@@ -16,6 +16,7 @@ from ouroboros.tools.project_bootstrap import (
     _tool_entry,
     _utc_now_iso,
 )
+from ouroboros.tools.project_deploy_state import _project_deploy_state_path, _read_project_deploy_state
 from ouroboros.tools.project_service import (
     _DEFAULT_SERVER_RUN_TIMEOUT,
     _default_unit_path,
@@ -327,6 +328,8 @@ def _project_deploy_status(
             max_output_chars=max_chars,
         )
 
+    deploy_state_path = _project_deploy_state_path(repo_dir)
+    last_deploy = _read_project_deploy_state(repo_dir)
     payload = {
         'status': 'ok' if probe.returncode == 0 and (service_payload is None or service_payload['status'] == 'ok') else 'error',
         **_base_payload(project_name, repo_dir, server),
@@ -337,6 +340,11 @@ def _project_deploy_status(
             'realpath': parsed.get('DEPLOY_REALPATH') or '',
             'top_level_entry_count': int(parsed.get('DEPLOY_TOP_LEVEL_COUNT') or 0),
             'looks_like_git_checkout': _as_bool_flag(parsed.get('DEPLOY_GIT', '0')),
+        },
+        'last_deploy': {
+            'path': str(deploy_state_path),
+            'exists': deploy_state_path.exists(),
+            'outcome': last_deploy,
         },
         'command': {
             'raw': command,

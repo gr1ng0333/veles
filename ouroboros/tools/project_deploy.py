@@ -19,6 +19,7 @@ from ouroboros.tools.project_bootstrap import (
     _tool_entry,
     _utc_now_iso,
 )
+from ouroboros.tools.project_deploy_state import _record_project_deploy_outcome
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 _EXCLUDED_ROOT_NAMES = {'.git', '.veles'}
@@ -254,21 +255,20 @@ def _project_deploy_fail(
     lifecycle_action: str,
     failed_step: str,
 ) -> str:
-    return json.dumps(
-        _project_deploy_base_payload(
-            recipe_payload,
-            project_name=project_name,
-            mode_value=mode_value,
-            steps=steps,
-            service_name=service_name,
-            lifecycle_action=lifecycle_action,
-            status='error',
-            failed_step=failed_step,
-            status_ok=False,
-        ),
-        ensure_ascii=False,
-        indent=2,
+    repo_dir = _require_local_project(project_name)
+    payload = _project_deploy_base_payload(
+        recipe_payload,
+        project_name=project_name,
+        mode_value=mode_value,
+        steps=steps,
+        service_name=service_name,
+        lifecycle_action=lifecycle_action,
+        status='error',
+        failed_step=failed_step,
+        status_ok=False,
     )
+    payload['deploy_record'] = _record_project_deploy_outcome(repo_dir, payload)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 def _project_deploy_apply(
     ctx: ToolContext,
@@ -446,21 +446,19 @@ def _project_deploy_apply(
     status_payload = _decode_tool_payload(_project_service_control(ctx, **status_args))
     steps.append(_step_result('status', 'project_service_control', status_args, status_payload))
 
-    return json.dumps(
-        _project_deploy_base_payload(
-            recipe_payload,
-            project_name=project_name,
-            mode_value=mode_value,
-            steps=steps,
-            service_name=install_args['service_name'],
-            lifecycle_action=lifecycle_action,
-            status='ok' if status_payload.get('status') == 'ok' else 'error',
-            failed_step='status' if status_payload.get('status') != 'ok' else '',
-            status_ok=status_payload.get('status') == 'ok',
-        ),
-        ensure_ascii=False,
-        indent=2,
+    payload = _project_deploy_base_payload(
+        recipe_payload,
+        project_name=project_name,
+        mode_value=mode_value,
+        steps=steps,
+        service_name=install_args['service_name'],
+        lifecycle_action=lifecycle_action,
+        status='ok' if status_payload.get('status') == 'ok' else 'error',
+        failed_step='status' if status_payload.get('status') != 'ok' else '',
+        status_ok=status_payload.get('status') == 'ok',
     )
+    payload['deploy_record'] = _record_project_deploy_outcome(_require_local_project(project_name), payload)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _detect_recipe_runtime(repo_dir: pathlib.Path) -> str:
