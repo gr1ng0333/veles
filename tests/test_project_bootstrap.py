@@ -28,6 +28,12 @@ from ouroboros.tools.project_issue_update import (
     _project_issue_unassign,
     _project_issue_update,
 )
+from ouroboros.tools.project_pr_update import (
+    _project_pr_close,
+    _project_pr_reopen,
+    _project_pr_review_list,
+    _project_pr_review_submit,
+)
 from ouroboros.tools.project_github_dev import (
     _project_branch_checkout,
     _project_issue_comment,
@@ -886,6 +892,34 @@ def test_project_pr_merge_registered():
     assert "project_pr_merge" in names
 
 
+def test_project_pr_close_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_close" in names
+
+
+def test_project_pr_reopen_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_reopen" in names
+
+
+def test_project_pr_review_list_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_review_list" in names
+
+
+def test_project_pr_review_submit_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_review_submit" in names
+
+
 def test_project_pr_create_uses_current_branch_and_reports_url(tmp_path, monkeypatch):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
     repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
@@ -1109,6 +1143,117 @@ def test_project_pr_merge_uses_requested_method_and_delete_branch(tmp_path, monk
     assert calls[0]['args'] == ['pr', 'merge', '8', '--squash', '--delete-branch']
     assert calls[0]['input'] is None
 
+
+
+
+def test_project_pr_close_calls_gh(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="Closed pull request #8\n", stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_pr_update._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_pr_close(_ctx(tmp_path), name="demo-api", number=8))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['pull_request_close']['number'] == 8
+    assert payload['github']['pull_request_close']['result'] == 'Closed pull request #8'
+    assert calls[0]['args'] == ['pr', 'close', '8']
+
+
+def test_project_pr_reopen_calls_gh(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="Reopened pull request #8\n", stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_pr_update._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_pr_reopen(_ctx(tmp_path), name="demo-api", number=8))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['pull_request_reopen']['number'] == 8
+    assert payload['github']['pull_request_reopen']['result'] == 'Reopened pull request #8'
+    assert calls[0]['args'] == ['pr', 'reopen', '8']
+
+
+def test_project_pr_review_list_reads_reviews(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(
+            ["gh", *args],
+            0,
+            stdout=json.dumps({
+                'reviews': [
+                    {'id': 'r1', 'author': {'login': 'veles'}, 'state': 'APPROVED', 'body': 'ok'},
+                    {'id': 'r2', 'author': {'login': 'andrey'}, 'state': 'COMMENTED', 'body': 'nit'},
+                ]
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr('ouroboros.tools.project_pr_update._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_pr_review_list(_ctx(tmp_path), name="demo-api", number=8))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['pull_request_reviews']['number'] == 8
+    assert payload['github']['pull_request_reviews']['count'] == 2
+    assert payload['github']['pull_request_reviews']['items'][0]['state'] == 'APPROVED'
+    assert calls[0]['args'] == ['pr', 'view', '8', '--json', 'reviews']
+
+
+def test_project_pr_review_submit_approve_calls_gh(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="Review submitted\n", stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_pr_update._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_pr_review_submit(_ctx(tmp_path), name="demo-api", number=8, event='approve', body='Ship it'))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['pull_request_review_submit']['number'] == 8
+    assert payload['github']['pull_request_review_submit']['event'] == 'approve'
+    assert payload['github']['pull_request_review_submit']['body'] == 'Ship it'
+    assert calls[0]['args'] == ['pr', 'review', '8', '--approve', '--body-file', '-']
+    assert calls[0]['input'] == 'Ship it'
+
+
+def test_project_pr_review_submit_rejects_unknown_event(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    with pytest.raises(ValueError, match='event must be one of: comment, approve, request_changes'):
+        _project_pr_review_submit(_ctx(tmp_path), name="demo-api", number=8, event='dismiss')
 
 def test_project_pr_merge_rejects_unknown_method(tmp_path):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
