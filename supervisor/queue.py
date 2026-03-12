@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 EVOLUTION_COOLDOWN_SEC: int = int(os.environ.get("EVOLUTION_COOLDOWN_SEC", "120"))
 EVOLUTION_MAX_CYCLES_PER_HOUR: int = int(os.environ.get("EVOLUTION_MAX_CYCLES_PER_HOUR", "25"))
 CODEX_5H_CAPACITY_THRESHOLD: float = 0.70  # skip evolution when 5h usage > 70%
-CODEX_5H_CAPACITY_LIMIT: int = int(os.environ.get("CODEX_5H_CAPACITY_LIMIT", "800"))
+CODEX_5H_CAPACITY_LIMIT: int = int(os.environ.get("CODEX_5H_CAPACITY_LIMIT", "10000"))
 EVOLUTION_CAPACITY_MAX_BACKOFF_SEC: int = 1800  # 30 min cap on capacity backoff
 
 

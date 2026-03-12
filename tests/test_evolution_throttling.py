@@ -240,7 +240,7 @@ class TestCodexCapacityGate:
     def test_capacity_gate_blocks_above_threshold(self, tmp_drive, monkeypatch):
         from supervisor import queue as q
 
-        statuses = [{"requests_5h": 400}, {"requests_5h": 200}]
+        statuses = [{"requests_5h": 6000}, {"requests_5h": 2000}]
         monkeypatch.setattr(
             "ouroboros.codex_proxy.get_accounts_status",
             lambda: statuses,
@@ -248,7 +248,7 @@ class TestCodexCapacityGate:
 
         blocked, details = q._evolution_blocked_by_codex_capacity("2026-03-06T20:00:00+00:00")
         assert blocked is True
-        assert details["total_5h"] == 600
+        assert details["total_5h"] == 8000
 
     def test_capacity_gate_fail_open_on_error_with_log(self, tmp_drive, monkeypatch):
         from supervisor import queue as q
