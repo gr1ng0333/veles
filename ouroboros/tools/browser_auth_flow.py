@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from .browser_auth_verification import (
     build_owner_handoff,
+    build_owner_handoff_completion,
     build_owner_handoff_resume,
     build_verification_attempt_plan,
     build_verification_attempt_result,
@@ -505,6 +506,12 @@ def summarize_auth_diagnostics(
         verification_continuation,
         owner_handoff,
     )
+    owner_handoff_completion = build_owner_handoff_completion(
+        verification,
+        owner_handoff,
+        owner_handoff_resume,
+        verification_continuation,
+    )
 
     return {
         "site_profile": {
@@ -524,6 +531,7 @@ def summarize_auth_diagnostics(
         "verification_continuation": verification_continuation,
         "owner_handoff": owner_handoff,
         "owner_handoff_resume": owner_handoff_resume,
+        "owner_handoff_completion": owner_handoff_completion,
         "next_action": next_action,
         "current_url": snapshot.get("current_url", ""),
         "matched": snapshot.get("matched", []),

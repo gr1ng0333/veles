@@ -9,6 +9,7 @@ from ouroboros.tools.browser_auth_flow import (
     build_verification_boundary,
     build_verification_continuation,
     build_verification_handoff,
+    build_owner_handoff_completion,
     infer_auth_state,
     normalize_site_profile,
     summarize_auth_diagnostics,
@@ -1073,3 +1074,93 @@ def test_summarize_auth_diagnostics_exposes_owner_handoff_resume_for_mfa():
     assert diagnostics["owner_handoff_resume"]["status"] == "awaiting_owner"
     assert diagnostics["owner_handoff_resume"]["kind"] == "mfa"
     assert diagnostics["owner_handoff_resume"]["can_resume_auth"] is False
+
+
+def test_build_owner_handoff_completion_not_applicable_without_owner_handoff():
+    completion = build_owner_handoff_completion(
+        {},
+        {"required": False},
+        {"status": "not_needed", "resume_action": "continue_login"},
+        {"status": "continue_login", "action": "continue_login", "can_resume_auth": True},
+    )
+
+    assert completion["status"] == "not_applicable"
+    assert completion["completed"] is False
+    assert completion["can_resume_auth"] is True
+
+
+def test_build_owner_handoff_completion_marks_completed_when_resume_ready():
+    completion = build_owner_handoff_completion(
+        {"detected": True, "kind": "mfa", "selectors": {"mfa_selector": "input[name=otp]"}},
+        {"required": True, "kind": "mfa", "selectors": {"mfa_selector": "input[name=otp]"}},
+        {"status": "resume_ready", "resume_action": "continue_login", "reason": "owner completed MFA step"},
+        {"status": "continue_login", "action": "continue_login", "can_resume_auth": True},
+    )
+
+    assert completion["status"] == "completed"
+    assert completion["completed"] is True
+    assert completion["can_resume_auth"] is True
+    assert completion["kind"] == "mfa"
+
+
+def test_build_owner_handoff_completion_marks_still_waiting_for_owner():
+    completion = build_owner_handoff_completion(
+        {"detected": True, "kind": "mfa", "selectors": {"mfa_selector": "input[name=otp]"}},
+        {"required": True, "kind": "mfa", "selectors": {"mfa_selector": "input[name=otp]"}},
+        {"status": "awaiting_owner", "resume_action": "await_owner", "reason": "waiting for owner verification input"},
+        {"status": "await_owner", "action": "await_owner", "can_resume_auth": False},
+    )
+
+    assert completion["status"] == "still_waiting"
+    assert completion["completed"] is False
+    assert completion["can_resume_auth"] is False
+
+
+def test_build_owner_handoff_completion_marks_blocked_when_boundary_not_cleared():
+    completion = build_owner_handoff_completion(
+        {"detected": True, "kind": "captcha", "selectors": {"captcha_selector": ".captcha"}},
+        {"required": True, "kind": "captcha", "selectors": {"captcha_selector": ".captcha"}},
+        {"status": "still_blocked", "resume_action": "await_owner", "reason": "captcha remained unsolved"},
+        {"status": "await_owner", "action": "await_owner", "can_resume_auth": False},
+    )
+
+    assert completion["status"] == "blocked"
+    assert completion["completed"] is False
+    assert completion["can_resume_auth"] is False
+
+
+def test_summarize_auth_diagnostics_exposes_owner_handoff_completion_for_mfa():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/verify",
+        page_signals={"title": "Verify", "body_text": "Enter the verification code"},
+        matched=["mfa_selector"],
+        profile=normalize_site_profile({"mfa_selector": "input[name=otp]", "submit_selector": "button[type=submit]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(snapshot, state, next_action)
+
+    assert diagnostics["owner_handoff_completion"]["status"] == "still_waiting"
+    assert diagnostics["owner_handoff_completion"]["kind"] == "mfa"
+    assert diagnostics["owner_handoff_completion"]["can_resume_auth"] is False
+
+
+def test_summarize_auth_diagnostics_exposes_completed_owner_handoff_after_verification_clears():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/app",
+        page_signals={"title": "Dashboard", "body_text": "Welcome back"},
+        matched=["success_selector"],
+        profile=normalize_site_profile({"success_selector": ".dashboard"}),
+        protected_url_alive=True,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(snapshot, state, next_action)
+
+    assert diagnostics["owner_handoff_completion"]["status"] == "not_applicable"
+    assert diagnostics["owner_handoff_completion"]["can_resume_auth"] is True
