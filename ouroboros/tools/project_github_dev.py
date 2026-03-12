@@ -307,6 +307,107 @@ def _project_issue_get(
     )
 
 
+def _project_issue_create(
+    ctx: ToolContext,
+    name: str,
+    title: str,
+    body: str = '',
+) -> str:
+    del ctx
+    repo_dir = _require_local_project(name)
+    project_name = str(name or '').strip()
+    title_value = str(title or '').strip()
+    if not title_value:
+        raise ValueError('title must be non-empty')
+
+    repo_slug = _project_github_slug(repo_dir)
+    args = ['issue', 'create', f'--title={title_value}']
+    raw_body = str(body or '')
+    if raw_body:
+        args.append('--body-file=-')
+        res = _run_gh(args, cwd=repo_dir, timeout=180, input_data=raw_body)
+    else:
+        res = _run_gh(args, cwd=repo_dir, timeout=180)
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or res.stdout.strip() or 'gh issue create failed')
+
+    url = (res.stdout or '').strip()
+    return json.dumps(
+        {
+            'status': 'ok',
+            'created_at': _utc_now_iso(),
+            'project': {
+                'name': project_name,
+                'path': str(repo_dir),
+            },
+            'github': {
+                'repo': repo_slug,
+                'issue': {
+                    'title': title_value,
+                    'body_provided': bool(raw_body),
+                    'url': url,
+                },
+            },
+            'repo': _repo_info(repo_dir),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _project_issue_comment(
+    ctx: ToolContext,
+    name: str,
+    number: int,
+    body: str,
+) -> str:
+    del ctx
+    repo_dir = _require_local_project(name)
+    project_name = str(name or '').strip()
+    try:
+        issue_number = int(number)
+    except (TypeError, ValueError) as e:
+        raise ValueError('number must be an integer') from e
+    if issue_number <= 0:
+        raise ValueError('number must be positive')
+    body_value = str(body or '').strip()
+    if not body_value:
+        raise ValueError('body must be non-empty')
+
+    repo_slug = _project_github_slug(repo_dir)
+    res = _run_gh(
+        ['issue', 'comment', str(issue_number), '--body-file', '-'],
+        cwd=repo_dir,
+        timeout=180,
+        input_data=body_value,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or res.stdout.strip() or 'gh issue comment failed')
+
+    result_text = (res.stdout or '').strip() or 'comment added'
+    return json.dumps(
+        {
+            'status': 'ok',
+            'commented_at': _utc_now_iso(),
+            'project': {
+                'name': project_name,
+                'path': str(repo_dir),
+            },
+            'github': {
+                'repo': repo_slug,
+                'issue_comment': {
+                    'number': issue_number,
+                    'body': body_value,
+                    'result': result_text,
+                },
+            },
+            'repo': _repo_info(repo_dir),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def _project_pr_list(
     ctx: ToolContext,
     name: str,
@@ -434,6 +535,30 @@ def get_tools() -> List[ToolEntry]:
             },
             ['name', 'number'],
             _project_issue_get,
+        ),
+        _tool_entry(
+            'project_issue_create',
+            'Create a GitHub issue directly from an existing bootstrapped local project repository, using its configured origin remote.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'title': {'type': 'string', 'description': 'Issue title'},
+                'body': {'type': 'string', 'description': 'Optional issue body/description'},
+            },
+            ['name', 'title'],
+            _project_issue_create,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            'project_issue_comment',
+            'Add a GitHub comment to an issue in an existing bootstrapped local project repository, using its configured origin remote.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'number': {'type': 'integer', 'description': 'Issue number to comment on'},
+                'body': {'type': 'string', 'description': 'Comment body'},
+            },
+            ['name', 'number', 'body'],
+            _project_issue_comment,
+            is_code_tool=True,
         ),
         _tool_entry(
             'project_pr_list',
