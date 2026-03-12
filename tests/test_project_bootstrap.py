@@ -17,7 +17,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_server_run,
     _project_status,
 )
-from ouroboros.tools.project_github_dev import _project_pr_create
+from ouroboros.tools.project_github_dev import _project_branch_checkout, _project_pr_create
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
@@ -290,6 +290,73 @@ def test_project_github_create_refuses_when_origin_already_exists(tmp_path):
 def test_project_github_create_requires_existing_local_project(tmp_path):
     with pytest.raises(ValueError):
         _project_github_create(_ctx(tmp_path), name="missing-project")
+
+
+def test_project_branch_checkout_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_branch_checkout" in names
+
+
+def test_project_branch_checkout_creates_and_switches_new_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    payload = json.loads(
+        _project_branch_checkout(
+            _ctx(tmp_path),
+            name="demo-api",
+            branch="feature/auth",
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['branch']['action'] == 'created'
+    assert payload['branch']['created'] is True
+    assert payload['branch']['switched'] is True
+    assert payload['branch']['previous'] == 'main'
+    assert payload['branch']['current'] == 'feature/auth'
+    assert payload['branch']['base'] == 'main'
+    assert payload['repo']['branch'] == 'feature/auth'
+
+
+def test_project_branch_checkout_switches_existing_branch_when_clean(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True)
+
+    payload = json.loads(
+        _project_branch_checkout(
+            _ctx(tmp_path),
+            name="demo-api",
+            branch="feature/auth",
+            create=False,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['branch']['action'] == 'switched'
+    assert payload['branch']['created'] is False
+    assert payload['branch']['switched'] is True
+    assert payload['branch']['previous'] == 'main'
+    assert payload['branch']['current'] == 'feature/auth'
+
+
+def test_project_branch_checkout_refuses_switch_with_dirty_working_tree(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True)
+    (repo_dir / "README.md").write_text("dirty\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match='working tree must be clean'):
+        _project_branch_checkout(
+            _ctx(tmp_path),
+            name="demo-api",
+            branch="feature/auth",
+            create=False,
+        )
 
 
 def test_project_pr_create_registered():
