@@ -518,6 +518,80 @@ def build_verification_attempt_plan(
     }
 
 
+def build_verification_attempt_result(
+    verification: Dict[str, Any],
+    verification_attempt: Dict[str, Any],
+    raw_attempt_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    verification = dict(verification or {})
+    verification_attempt = dict(verification_attempt or {})
+    raw_attempt_result = dict(raw_attempt_result or {})
+
+    if not verification.get("detected"):
+        return {
+            "status": "not_attempted",
+            "kind": "none",
+            "attempted": False,
+            "strategy": str(verification_attempt.get("strategy") or "none"),
+            "success": False,
+            "confidence": None,
+            "text": "",
+            "attempts": 0,
+            "reason": "no verification boundary was active",
+            "error": None,
+        }
+
+    if not raw_attempt_result:
+        planned_status = str(verification_attempt.get("status") or "blocked")
+        if planned_status == "ready":
+            return {
+                "status": "planned_but_not_executed",
+                "kind": str(verification.get("kind") or "none"),
+                "attempted": False,
+                "strategy": str(verification_attempt.get("strategy") or "none"),
+                "success": False,
+                "confidence": None,
+                "text": "",
+                "attempts": 0,
+                "reason": "verification attempt was planned but not executed",
+                "error": None,
+            }
+        return {
+            "status": "not_attempted",
+            "kind": str(verification.get("kind") or "none"),
+            "attempted": False,
+            "strategy": str(verification_attempt.get("strategy") or "none"),
+            "success": False,
+            "confidence": None,
+            "text": "",
+            "attempts": 0,
+            "reason": str(verification_attempt.get("reason") or verification.get("reason") or "verification attempt was not executed"),
+            "error": None,
+        }
+
+    success = bool(raw_attempt_result.get("success"))
+    error = raw_attempt_result.get("error")
+    confidence = raw_attempt_result.get("confidence")
+    attempts = int(raw_attempt_result.get("attempts") or 0)
+    text = str(raw_attempt_result.get("text") or "")
+    method = str(raw_attempt_result.get("method") or raw_attempt_result.get("strategy") or verification_attempt.get("strategy") or "none")
+
+    return {
+        "status": "succeeded" if success else "failed",
+        "kind": str(verification.get("kind") or "none"),
+        "attempted": True,
+        "strategy": str(verification_attempt.get("strategy") or "none"),
+        "method": method,
+        "success": success,
+        "confidence": confidence,
+        "text": text,
+        "attempts": attempts,
+        "reason": str(raw_attempt_result.get("reason") or verification_attempt.get("reason") or verification.get("reason") or "verification attempt executed"),
+        "error": error,
+        "selectors": dict(verification.get("selectors") or verification_attempt.get("selectors") or {}),
+    }
+
+
 def build_verification_handoff(
     verification: Dict[str, Any],
     outcome: Dict[str, Any],
@@ -598,7 +672,12 @@ def build_verification_handoff(
     }
 
 
-def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, Any], next_action: Dict[str, Any]) -> Dict[str, Any]:
+def summarize_auth_diagnostics(
+    snapshot: Dict[str, Any],
+    auth_state: Dict[str, Any],
+    next_action: Dict[str, Any],
+    raw_verification_attempt_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     profile = snapshot.get("profile") or {}
     state = auth_state.get("state", "unknown")
     evidence: List[str] = []
@@ -642,6 +721,7 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
     outcome = build_auth_outcome(auth_state, next_action, verification)
     verification_handoff = build_verification_handoff(verification, outcome, next_action)
     verification_attempt = build_verification_attempt_plan(verification, outcome, verification_handoff)
+    verification_attempt_result = build_verification_attempt_result(verification, verification_attempt, raw_verification_attempt_result)
 
     return {
         "site_profile": {
@@ -657,6 +737,7 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
         "outcome": outcome,
         "verification_handoff": verification_handoff,
         "verification_attempt": verification_attempt,
+        "verification_attempt_result": verification_attempt_result,
         "next_action": next_action,
         "current_url": snapshot.get("current_url", ""),
         "matched": snapshot.get("matched", []),
@@ -721,7 +802,11 @@ def build_fill_login_plan_response(
     )
     auth_state = infer_auth_state(snapshot)
     next_action = build_next_action_plan(snapshot, auth_state)
-    diagnostics = summarize_auth_diagnostics(snapshot, auth_state, next_action)
+    diagnostics = summarize_auth_diagnostics(
+        snapshot,
+        auth_state,
+        next_action,
+    )
     return json.dumps({
         "success": True,
         "state": "planned",
@@ -744,6 +829,7 @@ def build_post_submit_auth_result(
     timeout: int,
     post_signals: Dict[str, Any],
     session_probe: Any,
+    raw_verification_attempt_result: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     profile = normalize_site_profile(profile)
     protected_url_to_check = profile.get("protected_url") or protected_url
@@ -782,6 +868,8 @@ def build_post_submit_auth_result(
         "verification": diagnostics.get("verification"),
         "outcome": diagnostics.get("outcome"),
         "verification_handoff": diagnostics.get("verification_handoff"),
+        "verification_attempt": diagnostics.get("verification_attempt"),
+        "verification_attempt_result": diagnostics.get("verification_attempt_result"),
         "post_submit_state": auth_state,
         "post_submit_signals": post_signals,
         "protected_url_alive": protected_url_alive,
