@@ -15,6 +15,7 @@ import ssl
 import time
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -30,7 +31,13 @@ from ouroboros import copilot_proxy_accounts as _accounts_impl
 # HTTP request
 # ---------------------------------------------------------------------------
 
-def _do_request(copilot_token: str, payload: Dict[str, Any], endpoint: str = "") -> Dict[str, Any]:
+def _do_request(
+    copilot_token: str,
+    payload: Dict[str, Any],
+    endpoint: str = "",
+    initiator: str = "user",
+    interaction_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Send POST to Copilot Chat Completions endpoint and return parsed JSON."""
     url = endpoint or (COPILOT_DEFAULT_API_BASE + "/chat/completions")
     body = json.dumps(payload).encode()
@@ -42,8 +49,13 @@ def _do_request(copilot_token: str, payload: Dict[str, Any], endpoint: str = "")
         "Editor-Plugin-Version": "copilot-chat/0.24.0",
         "Copilot-Integration-Id": "vscode-chat",
         "Openai-Organization": "github-copilot",
-        "Openai-Intent": "conversation-panel",
+        "Openai-Intent": "conversation-agent",
+        "X-Initiator": initiator,
+        "X-Interaction-Type": "conversation-agent",
+        "X-Request-Id": str(uuid.uuid4()),
     }
+    if interaction_id:
+        headers["X-Interaction-Id"] = interaction_id
     req = urllib.request.Request(
         url, data=body, headers=headers, method="POST",
     )
@@ -57,7 +69,11 @@ def _do_request(copilot_token: str, payload: Dict[str, Any], endpoint: str = "")
 # Multi-account request with rotation
 # ---------------------------------------------------------------------------
 
-def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _call_with_rotation(
+    payload: Dict[str, Any],
+    initiator: str = "user",
+    interaction_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Execute request with multi-account rotation on errors."""
     tried: set = set()
     last_error: Optional[Exception] = None
@@ -86,7 +102,10 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         for attempt in range(MAX_RETRIES + 1):
             try:
-                data = _do_request(copilot_token, payload, endpoint=endpoint)
+                data = _do_request(
+                    copilot_token, payload, endpoint=endpoint,
+                    initiator=initiator, interaction_id=interaction_id,
+                )
                 log.info("Copilot request succeeded via account #%d", idx)
                 _accounts_impl._record_successful_request(idx)
                 return data
@@ -153,6 +172,7 @@ def call_copilot(
     tools: Optional[List[Dict[str, Any]]] = None,
     model: str = "claude-sonnet-4-5",
     max_tokens: int = 16384,
+    interaction_id: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Call LLM via GitHub Copilot API.
@@ -172,10 +192,16 @@ def call_copilot(
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
+    # Determine initiator from last message role
+    last_role = messages[-1].get("role", "user") if messages else "user"
+    initiator = "user" if last_role == "user" else "agent"
+
     response_data: Dict[str, Any] = {}
 
     if _accounts_impl._is_multi_account():
-        response_data = _call_with_rotation(payload)
+        response_data = _call_with_rotation(
+            payload, initiator=initiator, interaction_id=interaction_id,
+        )
     else:
         # Single account path
         result = _accounts_impl._get_active_account()
@@ -195,7 +221,10 @@ def call_copilot(
             endpoint = api_base.rstrip("/") + "/chat/completions"
 
             try:
-                response_data = _do_request(copilot_token, payload, endpoint=endpoint)
+                response_data = _do_request(
+                    copilot_token, payload, endpoint=endpoint,
+                    initiator=initiator, interaction_id=interaction_id,
+                )
                 _accounts_impl._record_successful_request(idx)
                 break
             except urllib.error.HTTPError as e:

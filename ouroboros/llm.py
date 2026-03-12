@@ -196,6 +196,7 @@ class LLMClient:
         reasoning_effort: str = "medium",
         max_tokens: int = 16384,
         tool_choice: str = "auto",
+        interaction_id: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
         transport = model_transport(model)
@@ -217,7 +218,8 @@ class LLMClient:
         if transport == "copilot":
             from ouroboros.copilot_proxy import call_copilot
             return call_copilot(messages, tools=tools, model=actual_model,
-                                max_tokens=max_tokens)
+                                max_tokens=max_tokens,
+                                interaction_id=interaction_id)
 
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
