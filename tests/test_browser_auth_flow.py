@@ -5,6 +5,7 @@ from ouroboros.tools.browser_auth_flow import (
     build_auth_page_snapshot,
     build_next_action_plan,
     build_verification_attempt_plan,
+    build_verification_attempt_result,
     build_verification_boundary,
     build_verification_handoff,
     infer_auth_state,
@@ -647,3 +648,116 @@ def test_summarize_auth_diagnostics_exposes_verification_attempt_plan():
 
     assert diagnostics["verification_attempt"]["status"] == "ready"
     assert diagnostics["verification_attempt"]["strategy"] == "solve_simple_captcha_from_screenshot"
+
+
+def test_build_verification_attempt_result_reports_not_attempted_without_boundary():
+    result = build_verification_attempt_result({}, {"strategy": "none"}, None)
+
+    assert result["status"] == "not_attempted"
+    assert result["attempted"] is False
+    assert result["kind"] == "none"
+
+
+def test_build_verification_attempt_result_marks_successful_captcha_auto_attempt():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+    attempt = build_verification_attempt_plan(verification, outcome, handoff)
+
+    result = build_verification_attempt_result(
+        verification,
+        attempt,
+        {
+            "success": True,
+            "text": "AB12",
+            "confidence": 0.91,
+            "method": "browser_solve_captcha",
+            "attempts": 1,
+            "error": None,
+            "reason": "captcha auto-attempt succeeded",
+        },
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["attempted"] is True
+    assert result["success"] is True
+    assert result["text"] == "AB12"
+    assert result["method"] == "browser_solve_captcha"
+
+
+def test_build_verification_attempt_result_marks_failed_captcha_auto_attempt():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+    attempt = build_verification_attempt_plan(verification, outcome, handoff)
+
+    result = build_verification_attempt_result(
+        verification,
+        attempt,
+        {
+            "success": False,
+            "text": "",
+            "confidence": 0.12,
+            "method": "browser_solve_captcha",
+            "attempts": 2,
+            "error": "OCR confidence too low",
+            "reason": "captcha auto-attempt failed",
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert result["attempted"] is True
+    assert result["success"] is False
+    assert result["error"] == "OCR confidence too low"
+
+
+def test_summarize_auth_diagnostics_exposes_verification_attempt_result():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(
+        snapshot,
+        state,
+        next_action,
+        raw_verification_attempt_result={
+            "success": True,
+            "text": "AB12",
+            "confidence": 0.91,
+            "method": "browser_solve_captcha",
+            "attempts": 1,
+            "error": None,
+            "reason": "captcha auto-attempt succeeded",
+        },
+    )
+
+    assert diagnostics["verification_attempt_result"]["status"] == "succeeded"
+    assert diagnostics["verification_attempt_result"]["success"] is True
+    assert diagnostics["verification_attempt_result"]["text"] == "AB12"

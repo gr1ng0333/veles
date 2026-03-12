@@ -379,38 +379,7 @@ def _browser_fill_login_form(
             selectors=chosen,
         )
 
-    try:
-        captcha_check = page.evaluate(r"""(function() {
-            var imgs = document.querySelectorAll('img');
-            for (var i = 0; i < imgs.length; i++) {
-                var src = (imgs[i].src || '').toLowerCase();
-                var attrs = ((imgs[i].id || '') + ' ' + (imgs[i].className || '') + ' ' + (imgs[i].alt || '') + ' ' + (imgs[i].getAttribute('name') || '')).toLowerCase();
-                if (/captcha|verify|code|vcode|yzm|kaptcha|securimage/.test(src + ' ' + attrs)) return {found: true};
-            }
-            var canvases = document.querySelectorAll('canvas');
-            for (var i = 0; i < canvases.length; i++) {
-                var a = ((canvases[i].id || '') + ' ' + (canvases[i].className || '')).toLowerCase();
-                if (/captcha|verify|code/.test(a)) return {found: true};
-            }
-            return {found: false};
-        })()""")
-        if captcha_check and captcha_check.get("found"):
-            log.info("Captcha detected on login form, auto-solving")
-            solve_fn = getattr(_browser_solve_captcha, "__wrapped__", _browser_solve_captcha)
-            captcha_raw = solve_fn(
-                ctx,
-                captcha_image_selector="",
-                captcha_input_selector="",
-                submit_selector="",
-                max_retries=3,
-            )
-            try:
-                captcha_res = json.loads(captcha_raw) if isinstance(captcha_raw, str) else captcha_raw
-                log.info("Auto-captcha result: success=%s", captcha_res.get("success", False))
-            except Exception:
-                pass
-    except Exception as e:
-        log.warning("Auto-captcha detection/solving failed: %s", e)
+    raw_verification_attempt_result = _capture_pre_submit_verification_attempt(ctx, page)
 
     submit_result = page.evaluate(
         _SUBMIT_LOGIN_FORM_JS,
@@ -427,6 +396,7 @@ def _browser_fill_login_form(
         timeout=timeout,
         post_signals=post_signals,
         session_probe=_check_session_alive_via_protected_url,
+        raw_verification_attempt_result=raw_verification_attempt_result,
     )
 
     message = (
@@ -774,6 +744,69 @@ _CAPTCHA_INPUT_HEURISTIC_JS = r"""() => {
 # ---------------------------------------------------------------------------
 
 @_with_thread_safety_retry
+def _capture_pre_submit_verification_attempt(ctx: ToolContext, page: Any) -> Optional[Dict[str, Any]]:
+    try:
+        captcha_check = page.evaluate(r"""(function() {
+            var imgs = document.querySelectorAll('img');
+            for (var i = 0; i < imgs.length; i++) {
+                var src = (imgs[i].src || '').toLowerCase();
+                var attrs = ((imgs[i].id || '') + ' ' + (imgs[i].className || '') + ' ' + (imgs[i].alt || '') + ' ' + (imgs[i].getAttribute('name') || '')).toLowerCase();
+                if (/captcha|verify|code|vcode|yzm|kaptcha|securimage/.test(src + ' ' + attrs)) return {found: true};
+            }
+            var canvases = document.querySelectorAll('canvas');
+            for (var i = 0; i < canvases.length; i++) {
+                var a = ((canvases[i].id || '') + ' ' + (canvases[i].className || '')).toLowerCase();
+                if (/captcha|verify|code/.test(a)) return {found: true};
+            }
+            return {found: false};
+        })()""")
+        if not (captcha_check and captcha_check.get("found")):
+            return None
+
+        log.info("Captcha detected on login form, auto-solving")
+        solve_fn = getattr(_browser_solve_captcha, "__wrapped__", _browser_solve_captcha)
+        captcha_raw = solve_fn(
+            ctx,
+            captcha_image_selector="",
+            captcha_input_selector="",
+            submit_selector="",
+            max_retries=3,
+        )
+        try:
+            captcha_res = json.loads(captcha_raw) if isinstance(captcha_raw, str) else captcha_raw
+            log.info("Auto-captcha result: success=%s", captcha_res.get("success", False))
+            return {
+                "success": bool(captcha_res.get("success")),
+                "text": str(captcha_res.get("text") or ""),
+                "confidence": captcha_res.get("confidence"),
+                "method": str(captcha_res.get("method") or "browser_solve_captcha"),
+                "attempts": int(captcha_res.get("attempts") or 0),
+                "error": captcha_res.get("error"),
+                "reason": captcha_res.get("reason") or ("captcha auto-attempt succeeded" if captcha_res.get("success") else "captcha auto-attempt failed"),
+            }
+        except Exception:
+            return {
+                "success": False,
+                "text": "",
+                "confidence": 0,
+                "method": "browser_solve_captcha",
+                "attempts": 0,
+                "error": "failed to parse captcha solver result",
+                "reason": "captcha auto-attempt returned an unreadable result",
+            }
+    except Exception as e:
+        log.warning("Auto-captcha detection/solving failed: %s", e)
+        return {
+            "success": False,
+            "text": "",
+            "confidence": 0,
+            "method": "browser_solve_captcha",
+            "attempts": 0,
+            "error": str(e),
+            "reason": "captcha auto-attempt crashed before submit",
+        }
+
+
 def _browser_solve_captcha(
     ctx: ToolContext,
     captcha_image_selector: str = "",
