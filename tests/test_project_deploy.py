@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from ouroboros.tools.project_bootstrap import _project_init, _project_server_register
+from ouroboros.tools.project_deploy_state import _project_deploy_state_path
 from ouroboros.tools.project_deploy import _build_sync_archive, _project_deploy_apply, _project_deploy_recipe, _project_server_sync
 from ouroboros.tools.project_service import _project_service_control, _project_service_render_unit
 from ouroboros.tools.registry import ToolContext, ToolRegistry
@@ -690,6 +691,13 @@ def test_project_deploy_apply_install_runs_sync_setup_install_start_status(tmp_p
     assert payload['steps'][1]['payload']['setup']['skipped'] is False
     assert payload['summary']['lifecycle_action'] == 'start'
     assert payload['summary']['status_ok'] is True
+    assert payload['deploy_record']['exists'] is True
+    assert payload['deploy_record']['outcome']['status'] == 'ok'
+    assert payload['deploy_record']['outcome']['deploy']['mode'] == 'install'
+    assert payload['deploy_record']['outcome']['deploy']['lifecycle_action'] == 'start'
+    state_payload = json.loads(_project_deploy_state_path(pathlib.Path(_ctx(tmp_path).drive_root) / 'projects' / 'demo-api').read_text(encoding='utf-8'))
+    assert state_payload['status'] == 'ok'
+    assert state_payload['deploy']['step_statuses']['status'] == 'ok'
 
 
 def test_project_deploy_apply_update_restarts_after_setup_and_install(tmp_path, monkeypatch):
@@ -782,6 +790,8 @@ def test_project_deploy_apply_dry_run_returns_planned_trace_without_execution(tm
     assert payload['steps'][1]['payload']['setup']['count'] == 3
     assert payload['summary']['lifecycle_action'] == 'start'
     assert payload['summary']['status_ok'] is None
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / 'projects' / 'demo-api'
+    assert _project_deploy_state_path(repo_dir).exists() is False
 
 
 
@@ -824,6 +834,8 @@ def test_project_deploy_apply_stops_on_setup_failure(tmp_path, monkeypatch):
     assert payload['status'] == 'error'
     assert payload['failed_step'] == 'setup'
     assert [step['key'] for step in payload['steps']] == ['sync', 'setup']
+    assert payload['deploy_record']['outcome']['failed_step'] == 'setup'
+    assert payload['deploy_record']['outcome']['deploy']['step_statuses']['setup'] == 'error'
 
 
 def test_project_deploy_apply_stops_on_sync_failure(tmp_path, monkeypatch):
@@ -861,6 +873,76 @@ def test_project_deploy_apply_stops_on_sync_failure(tmp_path, monkeypatch):
     assert payload['status'] == 'error'
     assert payload['failed_step'] == 'sync'
     assert [step['key'] for step in payload['steps']] == ['sync']
+    assert payload['deploy_record']['outcome']['failed_step'] == 'sync'
+    assert payload['deploy_record']['outcome']['deploy']['step_statuses']['sync'] == 'error'
+
+
+def test_project_deploy_status_includes_last_recorded_deploy_outcome(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_observability import _project_deploy_status
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / 'projects' / 'demo-api'
+    _project_deploy_state_path(repo_dir).parent.mkdir(parents=True, exist_ok=True)
+    _project_deploy_state_path(repo_dir).write_text(json.dumps({
+        'kind': 'project_deploy_outcome',
+        'status': 'ok',
+        'failed_step': '',
+        'deploy': {'mode': 'update', 'lifecycle_action': 'restart'},
+    }), encoding='utf-8')
+
+    calls = []
+
+    def fake_run_ssh_text(args, timeout):
+        calls.append(args[-1])
+        if 'systemctl show' in args[-1]:
+            stdout = (
+                'LoadState=loaded\n'
+                'ActiveState=active\n'
+                'SubState=running\n'
+                'UnitFileState=enabled\n'
+                'FragmentPath=/etc/systemd/system/demo-api.service\n'
+                'ExecMainPID=1234\n'
+                'ExecMainStatus=0\n'
+                'Result=success\n'
+                'enabled\n'
+            )
+            return subprocess.CompletedProcess(['ssh', *args], 0, stdout=stdout, stderr='')
+        stdout = (
+            'DEPLOY_EXISTS=1\n'
+            'DEPLOY_REALPATH=/srv/demo-api\n'
+            'DEPLOY_TOP_LEVEL_COUNT=7\n'
+            'DEPLOY_WRITABLE=1\n'
+            'DEPLOY_GIT=0\n'
+        )
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_observability._run_ssh_text', fake_run_ssh_text)
+
+    payload = json.loads(
+        _project_deploy_status(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            timeout=15,
+            sudo=False,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['last_deploy']['exists'] is True
+    assert payload['last_deploy']['outcome']['status'] == 'ok'
+    assert payload['last_deploy']['outcome']['deploy']['mode'] == 'update'
+    assert len(calls) == 2
 
 
 
