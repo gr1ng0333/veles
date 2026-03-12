@@ -213,6 +213,51 @@ def _project_file_write(ctx: ToolContext, name: str, path: str, content: str) ->
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _normalize_commit_message(message: str) -> str:
+    normalized = str(message or "").strip()
+    if not normalized:
+        raise ValueError("commit message must be non-empty")
+    return normalized
+
+
+def _project_commit(ctx: ToolContext, name: str, message: str) -> str:
+    repo_dir = _require_local_project(name)
+    commit_message = _normalize_commit_message(message)
+
+    status_res = _git(["status", "--porcelain"], repo_dir, timeout=30)
+    if status_res.returncode != 0:
+        raise RuntimeError(status_res.stderr.strip() or status_res.stdout.strip() or "git status failed")
+    status_lines = [line for line in (status_res.stdout or "").splitlines() if line.strip()]
+    if not status_lines:
+        raise ValueError("project has no changes to commit")
+
+    _ensure_external_repo_git_identity(repo_dir)
+
+    add_res = _git(["add", "-A"], repo_dir, timeout=60)
+    if add_res.returncode != 0:
+        raise RuntimeError(add_res.stderr.strip() or add_res.stdout.strip() or "git add failed")
+
+    commit_res = _git(["commit", "-m", commit_message], repo_dir, timeout=60)
+    if commit_res.returncode != 0:
+        raise RuntimeError(commit_res.stderr.strip() or commit_res.stdout.strip() or "git commit failed")
+
+    payload = {
+        "status": "ok",
+        "committed_at": _utc_now_iso(),
+        "project": {
+            "name": _normalize_project_name(name),
+            "path": str(repo_dir),
+        },
+        "commit_message": commit_message,
+        "changes": {
+            "count": len(status_lines),
+            "paths": [line[3:] for line in status_lines if len(line) > 3],
+        },
+        "repo": _repo_info(repo_dir),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 def _project_github_create(
     ctx: ToolContext,
     name: str,
@@ -356,6 +401,17 @@ def get_tools() -> List[ToolEntry]:
             },
             ["name", "path", "content"],
             _project_file_write,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            "project_commit",
+            "Commit all current changes inside an existing bootstrapped local project repository.",
+            {
+                "name": {"type": "string", "description": "Existing local project name under the projects root"},
+                "message": {"type": "string", "description": "Git commit message for the project-local changes"},
+            },
+            ["name", "message"],
+            _project_commit,
             is_code_tool=True,
         ),
     ]

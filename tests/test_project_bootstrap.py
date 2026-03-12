@@ -6,6 +6,7 @@ import pytest
 
 from ouroboros.tools.project_bootstrap import (
     _normalize_project_name,
+    _project_commit,
     _project_file_write,
     _project_github_create,
     _project_init,
@@ -85,6 +86,13 @@ def test_project_file_write_registered():
     assert "project_file_write" in names
 
 
+def test_project_commit_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_commit" in names
+
+
 def test_project_file_write_updates_file_inside_local_project(tmp_path):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
     payload = json.loads(
@@ -154,3 +162,35 @@ def test_project_github_create_refuses_when_origin_already_exists(tmp_path):
 def test_project_github_create_requires_existing_local_project(tmp_path):
     with pytest.raises(ValueError):
         _project_github_create(_ctx(tmp_path), name="missing-project")
+
+
+def test_project_commit_creates_new_git_commit_for_local_project(tmp_path):
+    init_payload = json.loads(_project_init(_ctx(tmp_path), name="Demo API", language="python"))
+    before_sha = init_payload["repo"]["sha"]
+    _project_file_write(
+        _ctx(tmp_path),
+        name="demo-api",
+        path="src/demo_api/config.json",
+        content='{"port": 8080}\n',
+    )
+
+    payload = json.loads(_project_commit(_ctx(tmp_path), name="demo-api", message="Add config"))
+    repo_path = pathlib.Path(payload["project"]["path"])
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True).stdout.strip()
+    log_subject = subprocess.run(["git", "log", "-1", "--pretty=%s"], cwd=repo_path, check=True, capture_output=True, text=True).stdout.strip()
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_path, check=True, capture_output=True, text=True).stdout.strip()
+
+    assert payload["status"] == "ok"
+    assert payload["commit_message"] == "Add config"
+    assert payload["changes"]["count"] == 1
+    assert payload["changes"]["paths"] == ["src/demo_api/config.json"]
+    assert payload["repo"]["sha"] != before_sha
+    assert payload["repo"]["sha"] == head
+    assert log_subject == "Add config"
+    assert status == ""
+
+
+def test_project_commit_rejects_clean_repo(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    with pytest.raises(ValueError):
+        _project_commit(_ctx(tmp_path), name="demo-api", message="Nothing changed")
