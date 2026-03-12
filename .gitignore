@@ -29,3 +29,4 @@ Thumbs.db
 venv/
 # Local scratch/untracked artifacts
 ouroboros/codex_responses.py
+research/
