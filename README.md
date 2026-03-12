@@ -274,6 +274,7 @@ python colab_launcher.py
 
 ## Changelog
 
+- **v6.18.30** — added `owner_handoff_resume` semantics to browser auth diagnostics and post-submit results, so owner-assisted verification exposes machine-readable resume states (`not_needed`, `awaiting_owner`, `resume_ready`, `still_blocked`, `retry_auto_before_owner`).
 ### v6.18.29 (2026-03-12)
 - Added structured `owner_handoff` to browser auth diagnostics so verification states that require owner action now export clear instruction, resume hint, blocking flag, and required inputs instead of relying only on generic verification handoff semantics.
 

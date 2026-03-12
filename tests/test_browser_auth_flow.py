@@ -968,3 +968,108 @@ def test_summarize_auth_diagnostics_exposes_verification_continuation():
 
     assert diagnostics["verification_continuation"]["status"] == "retry_verification"
     assert diagnostics["verification_continuation"]["should_retry_verification"] is True
+
+
+def test_build_owner_handoff_resume_not_needed_without_owner_handoff():
+    from ouroboros.tools.browser_auth_flow import build_owner_handoff_resume
+
+    resume = build_owner_handoff_resume(
+        {},
+        {},
+        {},
+        {"status": "continue_login", "action": "continue_login", "can_resume_auth": True},
+        {"required": False},
+    )
+
+    assert resume["status"] == "not_needed"
+    assert resume["can_resume_auth"] is True
+    assert resume["kind"] == "none"
+
+
+
+def test_build_owner_handoff_resume_awaiting_owner_for_mfa_boundary():
+    from ouroboros.tools.browser_auth_flow import build_owner_handoff_resume
+
+    verification = {"detected": True, "kind": "mfa", "selectors": {"mfa_selector": "input[name=otp]"}}
+    attempt = {"strategy": "owner_handoff"}
+    attempt_result = {"status": "not_attempted", "strategy": "owner_handoff"}
+    continuation = {
+        "status": "await_owner",
+        "action": "await_owner",
+        "can_resume_auth": False,
+        "requires_owner_input": True,
+        "reason": "verification requires owner input",
+    }
+    owner_handoff = {"required": True, "kind": "mfa", "selectors": {"mfa_selector": "input[name=otp]"}}
+
+    resume = build_owner_handoff_resume(verification, attempt, attempt_result, continuation, owner_handoff)
+
+    assert resume["status"] == "awaiting_owner"
+    assert resume["can_resume_auth"] is False
+    assert resume["kind"] == "mfa"
+
+
+
+def test_build_owner_handoff_resume_still_blocked_after_failed_captcha_escalation():
+    from ouroboros.tools.browser_auth_flow import build_owner_handoff_resume
+
+    verification = {"detected": True, "kind": "captcha", "selectors": {"captcha_selector": ".captcha"}}
+    attempt = {"strategy": "solve_simple_captcha_from_screenshot"}
+    attempt_result = {"status": "failed", "strategy": "solve_simple_captcha_from_screenshot"}
+    continuation = {
+        "status": "await_owner",
+        "action": "await_owner",
+        "can_resume_auth": False,
+        "requires_owner_input": True,
+        "reason": "captcha remained unsolved",
+    }
+    owner_handoff = {"required": True, "kind": "captcha", "selectors": {"captcha_selector": ".captcha"}}
+
+    resume = build_owner_handoff_resume(verification, attempt, attempt_result, continuation, owner_handoff)
+
+    assert resume["status"] == "still_blocked"
+    assert resume["attempt_status"] == "failed"
+    assert resume["attempt_strategy"] == "solve_simple_captcha_from_screenshot"
+
+
+
+def test_build_owner_handoff_resume_ready_after_owner_completed_step():
+    from ouroboros.tools.browser_auth_flow import build_owner_handoff_resume
+
+    verification = {"detected": True, "kind": "mfa", "selectors": {"mfa_selector": "input[name=otp]"}}
+    attempt = {"strategy": "owner_handoff"}
+    attempt_result = {"status": "not_attempted", "strategy": "owner_handoff"}
+    continuation = {
+        "status": "continue_login",
+        "action": "continue_login",
+        "can_resume_auth": True,
+        "requires_owner_input": False,
+        "reason": "verification boundary is cleared",
+    }
+    owner_handoff = {"required": True, "kind": "mfa", "selectors": {"mfa_selector": "input[name=otp]"}}
+
+    resume = build_owner_handoff_resume(verification, attempt, attempt_result, continuation, owner_handoff)
+
+    assert resume["status"] == "resume_ready"
+    assert resume["can_resume_auth"] is True
+    assert resume["resume_action"] == "continue_login"
+
+
+
+def test_summarize_auth_diagnostics_exposes_owner_handoff_resume_for_mfa():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/verify",
+        page_signals={"title": "Verify", "body_text": "Enter the verification code"},
+        matched=["mfa_selector"],
+        profile=normalize_site_profile({"mfa_selector": "input[name=otp]", "submit_selector": "button[type=submit]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(snapshot, state, next_action)
+
+    assert diagnostics["owner_handoff_resume"]["status"] == "awaiting_owner"
+    assert diagnostics["owner_handoff_resume"]["kind"] == "mfa"
+    assert diagnostics["owner_handoff_resume"]["can_resume_auth"] is False
