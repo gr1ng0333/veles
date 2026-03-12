@@ -171,6 +171,7 @@ def _project_deploy_base_payload(
         'recipe': recipe_payload,
         'steps': steps,
         'summary': _project_deploy_summary(recipe_payload, service_name, lifecycle_action, status_ok),
+        'execution': _project_deploy_execution_summary(steps, dry_run=dry_run, failed_step=failed_step),
         'repo': recipe_payload.get('repo') or _repo_info(_require_local_project(project_name)),
     }
     if dry_run:
@@ -178,6 +179,38 @@ def _project_deploy_base_payload(
     if failed_step:
         payload['failed_step'] = failed_step
     return payload
+
+
+def _project_deploy_execution_summary(steps: List[Dict[str, Any]], *, dry_run: bool, failed_step: str = '') -> Dict[str, Any]:
+    total = len(steps)
+    statuses = [str(step.get('status') or 'unknown') for step in steps]
+    planned = sum(1 for status in statuses if status == 'planned')
+    ok = sum(1 for status in statuses if status == 'ok')
+    error = sum(1 for status in statuses if status == 'error')
+    skipped = sum(
+        1
+        for step in steps
+        if str(step.get('payload', {}).get('setup', {}).get('skipped')).lower() == 'true'
+        or step.get('payload', {}).get('setup', {}).get('skipped') is True
+    )
+    executed = total - planned
+    completed = ok + error
+    last_step_key = ''
+    if steps:
+        last_step_key = str(steps[-1].get('key') or '')
+    return {
+        'dry_run': bool(dry_run),
+        'total_steps': total,
+        'planned_steps': planned,
+        'executed_steps': executed,
+        'completed_steps': completed,
+        'ok_steps': ok,
+        'error_steps': error,
+        'skipped_steps': skipped,
+        'failed_step': failed_step or '',
+        'last_step_key': last_step_key,
+        'step_keys': [step.get('key') for step in steps],
+    }
 
 
 def _project_deploy_planned_steps(

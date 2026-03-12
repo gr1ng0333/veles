@@ -11,6 +11,29 @@ def _project_deploy_state_path(repo_dir: pathlib.Path) -> pathlib.Path:
     return repo_dir / '.veles' / 'deploy-state.json'
 
 
+def _normalize_project_deploy_state(payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(payload)
+    deploy = normalized.get('deploy')
+    if not isinstance(deploy, dict):
+        return normalized
+    deploy_copy = dict(deploy)
+    execution = deploy_copy.get('execution')
+    if not isinstance(execution, dict):
+        deploy_copy['execution'] = {
+            'dry_run': None,
+            'total_steps': None,
+            'planned_steps': None,
+            'executed_steps': None,
+            'completed_steps': None,
+            'ok_steps': None,
+            'error_steps': None,
+            'skipped_steps': None,
+            'last_step_key': '',
+        }
+    normalized['deploy'] = deploy_copy
+    return normalized
+
+
 def _read_project_deploy_state(repo_dir: pathlib.Path) -> Dict[str, Any] | None:
     path = _project_deploy_state_path(repo_dir)
     if not path.exists():
@@ -21,11 +44,12 @@ def _read_project_deploy_state(repo_dir: pathlib.Path) -> Dict[str, Any] | None:
         raise RuntimeError('project deploy state file contains invalid JSON') from e
     if not isinstance(payload, dict):
         raise RuntimeError('project deploy state file must contain a JSON object')
-    return payload
+    return _normalize_project_deploy_state(payload)
 
 
 def _build_project_deploy_outcome(payload: Dict[str, Any]) -> Dict[str, Any]:
     summary = payload.get('summary') or {}
+    execution = payload.get('execution') or {}
     recipe = payload.get('recipe') or {}
     service = recipe.get('service') or {}
     server = payload.get('server') or {}
@@ -63,6 +87,17 @@ def _build_project_deploy_outcome(payload: Dict[str, Any]) -> Dict[str, Any]:
             'sync_file_count': summary.get('sync_file_count'),
             'step_keys': [step.get('key') for step in steps],
             'step_statuses': step_statuses,
+            'execution': {
+                'dry_run': execution.get('dry_run'),
+                'total_steps': execution.get('total_steps'),
+                'planned_steps': execution.get('planned_steps'),
+                'executed_steps': execution.get('executed_steps'),
+                'completed_steps': execution.get('completed_steps'),
+                'ok_steps': execution.get('ok_steps'),
+                'error_steps': execution.get('error_steps'),
+                'skipped_steps': execution.get('skipped_steps'),
+                'last_step_key': execution.get('last_step_key') or '',
+            },
         },
     }
 
