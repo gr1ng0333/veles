@@ -126,7 +126,6 @@ READ_ONLY_PARALLEL_TOOLS = frozenset({
 # Stateful browser tools require thread-affinity (Playwright sync uses greenlet)
 STATEFUL_BROWSER_TOOLS = frozenset({"browse_page", "browser_action", "send_browser_screenshot"})
 
-
 def _truncate_tool_result(result: Any) -> str:
     """
     Hard-cap tool result string to 15000 characters.
@@ -137,7 +136,6 @@ def _truncate_tool_result(result: Any) -> str:
         return result_str
     original_len = len(result_str)
     return result_str[:15000] + f"\n... (truncated from {original_len} chars)"
-
 
 def _execute_single_tool(
     tools: ToolRegistry,
@@ -202,15 +200,7 @@ def _execute_single_tool(
 
 
 class _StatefulToolExecutor:
-    """
-    Thread-sticky executor for stateful tools (browser, etc).
-
-    Playwright sync API uses greenlet internally which has strict thread-affinity:
-    once a greenlet starts in a thread, all subsequent calls must happen in the same thread.
-    This executor ensures browse_page/browser_action always run in the same thread.
-
-    On timeout: we shutdown the executor and create a fresh one to reset state.
-    """
+    """Sticky single-thread executor for stateful browser tools."""
     def __init__(self):
         self._executor: Optional[ThreadPoolExecutor] = None
 
@@ -232,6 +222,48 @@ class _StatefulToolExecutor:
             self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
             self._executor = None
 
+def _tool_result_from_error(
+    *,
+    fn_name: str,
+    tool_call_id: str,
+    is_code_tool: bool,
+    tc: Dict[str, Any],
+    drive_logs: pathlib.Path,
+    event_type: str,
+    result_text: str,
+    task_id: str = "",
+    extra_event_fields: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    args_for_log = {}
+    try:
+        args = json.loads(tc["function"]["arguments"] or "{}")
+        args_for_log = sanitize_tool_args_for_log(fn_name, args if isinstance(args, dict) else {})
+    except Exception:
+        pass
+
+    event = {
+        "ts": utc_now_iso(),
+        "type": event_type,
+        "task_id": task_id,
+        "tool": fn_name,
+        "args": args_for_log,
+    }
+    if extra_event_fields:
+        event.update(extra_event_fields)
+    append_jsonl(drive_logs / "events.jsonl", event)
+    append_jsonl(drive_logs / "tools.jsonl", {
+        "ts": utc_now_iso(), "tool": fn_name, "task_id": task_id,
+        "args": args_for_log, "result_preview": result_text,
+    })
+
+    return {
+        "tool_call_id": tool_call_id,
+        "fn_name": fn_name,
+        "result": result_text,
+        "is_error": True,
+        "args_for_log": args_for_log,
+        "is_code_tool": is_code_tool,
+    }
 
 def _make_timeout_result(
     fn_name: str,
@@ -251,38 +283,55 @@ def _make_timeout_result(
 
     Returns: Dict with tool_call_id, fn_name, result, is_error, args_for_log, is_code_tool
     """
-    args_for_log = {}
-    try:
-        args = json.loads(tc["function"]["arguments"] or "{}")
-        args_for_log = sanitize_tool_args_for_log(fn_name, args if isinstance(args, dict) else {})
-    except Exception:
-        pass
-
     result = (
         f"⚠️ TOOL_TIMEOUT ({fn_name}): exceeded {timeout_sec}s limit. "
         f"The tool is still running in background but control is returned to you. "
         f"{reset_msg}Try a different approach or inform the owner{' about the issue' if not reset_msg else ''}."
     )
+    return _tool_result_from_error(
+        fn_name=fn_name,
+        tool_call_id=tool_call_id,
+        is_code_tool=is_code_tool,
+        tc=tc,
+        drive_logs=drive_logs,
+        event_type="tool_timeout",
+        result_text=result,
+        task_id=task_id,
+        extra_event_fields={"timeout_sec": timeout_sec},
+    )
 
-    append_jsonl(drive_logs / "events.jsonl", {
-        "ts": utc_now_iso(), "type": "tool_timeout",
-        "tool": fn_name, "args": args_for_log,
-        "timeout_sec": timeout_sec,
-    })
-    append_jsonl(drive_logs / "tools.jsonl", {
-        "ts": utc_now_iso(), "tool": fn_name,
-        "args": args_for_log, "result_preview": result,
-    })
-
-    return {
-        "tool_call_id": tool_call_id,
-        "fn_name": fn_name,
-        "result": result,
-        "is_error": True,
-        "args_for_log": args_for_log,
-        "is_code_tool": is_code_tool,
-    }
-
+def _make_execution_error_result(
+    *,
+    fn_name: str,
+    tool_call_id: str,
+    is_code_tool: bool,
+    tc: Dict[str, Any],
+    drive_logs: pathlib.Path,
+    task_id: str = "",
+    stage: str,
+    exc: Exception,
+    reset_msg: str = "",
+) -> Dict[str, Any]:
+    result = (
+        f"⚠️ TOOL_EXECUTION_ERROR ({fn_name}): {type(exc).__name__}: {exc}. "
+        f"Execution failed during {stage}. {reset_msg}"
+        "The task loop stayed alive; choose a narrower tool call, another tool, or report the issue."
+    )
+    return _tool_result_from_error(
+        fn_name=fn_name,
+        tool_call_id=tool_call_id,
+        is_code_tool=is_code_tool,
+        tc=tc,
+        drive_logs=drive_logs,
+        event_type="tool_execution_error",
+        result_text=result,
+        task_id=task_id,
+        extra_event_fields={
+            "stage": stage,
+            "error_type": type(exc).__name__,
+            "error": repr(exc),
+        },
+    )
 
 def _execute_with_timeout(
     tools: ToolRegistry,
@@ -292,13 +341,7 @@ def _execute_with_timeout(
     task_id: str = "",
     stateful_executor: Optional[_StatefulToolExecutor] = None,
 ) -> Dict[str, Any]:
-    """
-    Execute a tool call with a hard timeout.
-
-    On timeout: returns TOOL_TIMEOUT error so the LLM regains control.
-    For stateful tools (browser): resets the sticky executor to recover state.
-    For regular tools: the hung worker thread leaks as daemon — watchdog handles recovery.
-    """
+    """Execute one tool with hard timeout and degrade to structured error on failure."""
     fn_name = tc["function"]["name"]
     tool_call_id = tc["id"]
     is_code_tool = fn_name in tools.CODE_TOOLS
@@ -306,8 +349,22 @@ def _execute_with_timeout(
 
     # Two distinct paths: stateful (thread-sticky) vs regular (per-call)
     if use_stateful:
-        # Stateful executor: submit + wait, reset on timeout
-        future = stateful_executor.submit(_execute_single_tool, tools, tc, drive_logs, task_id)
+        # Stateful executor: submit + wait, reset on timeout/unexpected executor failures
+        try:
+            future = stateful_executor.submit(_execute_single_tool, tools, tc, drive_logs, task_id)
+        except Exception as exc:
+            stateful_executor.reset()
+            return _make_execution_error_result(
+                fn_name=fn_name,
+                tool_call_id=tool_call_id,
+                is_code_tool=is_code_tool,
+                tc=tc,
+                drive_logs=drive_logs,
+                task_id=task_id,
+                stage="submit",
+                exc=exc,
+                reset_msg="Browser state has been reset. ",
+            )
         try:
             return future.result(timeout=timeout_sec)
         except TimeoutError:
@@ -317,11 +374,36 @@ def _execute_with_timeout(
                 fn_name, tool_call_id, is_code_tool, tc, drive_logs,
                 timeout_sec, task_id, reset_msg
             )
+        except Exception as exc:
+            stateful_executor.reset()
+            return _make_execution_error_result(
+                fn_name=fn_name,
+                tool_call_id=tool_call_id,
+                is_code_tool=is_code_tool,
+                tc=tc,
+                drive_logs=drive_logs,
+                task_id=task_id,
+                stage="result",
+                exc=exc,
+                reset_msg="Browser state has been reset. ",
+            )
     else:
         # Regular executor: explicit lifecycle to avoid shutdown(wait=True) deadlock
         executor = ThreadPoolExecutor(max_workers=1)
         try:
-            future = executor.submit(_execute_single_tool, tools, tc, drive_logs, task_id)
+            try:
+                future = executor.submit(_execute_single_tool, tools, tc, drive_logs, task_id)
+            except Exception as exc:
+                return _make_execution_error_result(
+                    fn_name=fn_name,
+                    tool_call_id=tool_call_id,
+                    is_code_tool=is_code_tool,
+                    tc=tc,
+                    drive_logs=drive_logs,
+                    task_id=task_id,
+                    stage="submit",
+                    exc=exc,
+                )
             try:
                 return future.result(timeout=timeout_sec)
             except TimeoutError:
@@ -329,9 +411,19 @@ def _execute_with_timeout(
                     fn_name, tool_call_id, is_code_tool, tc, drive_logs,
                     timeout_sec, task_id, reset_msg=""
                 )
+            except Exception as exc:
+                return _make_execution_error_result(
+                    fn_name=fn_name,
+                    tool_call_id=tool_call_id,
+                    is_code_tool=is_code_tool,
+                    tc=tc,
+                    drive_logs=drive_logs,
+                    task_id=task_id,
+                    stage="result",
+                    exc=exc,
+                )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
-
 
 def _handle_tool_calls(
     tool_calls: List[Dict[str, Any]],
@@ -343,11 +435,7 @@ def _handle_tool_calls(
     llm_trace: Dict[str, Any],
     emit_progress: Callable[[str], None],
 ) -> Tuple[int, bool]:
-    """
-    Execute tool calls and append results to messages.
-
-    Returns: (error_count, made_progress)
-    """
+    """Execute tool calls and append results to messages."""
     # Parallelize only for a strict read-only whitelist; all calls wrapped with timeout.
     can_parallel = (
         len(tool_calls) > 1 and
@@ -379,13 +467,28 @@ def _handle_tool_calls(
             results = [None] * len(tool_calls)
             for future in as_completed(future_to_index):
                 idx = future_to_index[future]
-                results[idx] = future.result()
+                tc = tool_calls[idx]
+                fn_name = tc["function"]["name"]
+                tool_call_id = tc["id"]
+                is_code_tool = fn_name in tools.CODE_TOOLS
+                try:
+                    results[idx] = future.result()
+                except Exception as exc:
+                    results[idx] = _make_execution_error_result(
+                        fn_name=fn_name,
+                        tool_call_id=tool_call_id,
+                        is_code_tool=is_code_tool,
+                        tc=tc,
+                        drive_logs=drive_logs,
+                        task_id=task_id,
+                        stage="parallel_result",
+                        exc=exc,
+                    )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
     # Process results in original order
     return _process_tool_results(results, messages, llm_trace, emit_progress)
-
 
 def _handle_text_response(
     content: Optional[str],
@@ -400,7 +503,6 @@ def _handle_text_response(
     if content and content.strip():
         llm_trace["assistant_notes"].append(content.strip()[:320])
     return (content or ""), accumulated_usage, llm_trace
-
 
 def _check_budget_limits(
     budget_remaining_usd: Optional[float],
@@ -451,7 +553,6 @@ def _check_budget_limits(
 
     return None
 
-
 def _maybe_inject_self_check(
     round_idx: int,
     max_rounds: int,
@@ -492,7 +593,6 @@ def _maybe_inject_self_check(
     )
     messages.append({"role": "system", "content": reminder})
     emit_progress(f"🔄 Checkpoint {checkpoint_num} at round {round_idx}: ~{ctx_tokens} tokens, ${task_cost:.2f} spent")
-
 
 def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
     """
@@ -553,7 +653,6 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
 
     return tool_schemas, enabled_extra
 
-
 def _drain_incoming_messages(
     messages: List[Dict[str, Any]],
     incoming_messages: queue.Queue,
@@ -594,8 +693,6 @@ def _drain_incoming_messages(
                 except Exception:
                     pass
 
-
-
 def _finalize_with_summary(
     *,
     reason: str,
@@ -622,7 +719,6 @@ def _finalize_with_summary(
     except Exception:
         log.warning("Forced finalize failed", exc_info=True)
     return reason, accumulated_usage, {"assistant_notes": [], "tool_calls": []}
-
 
 def run_llm_loop(
     messages: List[Dict[str, Any]],
@@ -657,7 +753,6 @@ def run_llm_loop(
         drive_root=drive_root,
         persistent_executor=persistent_executor,
     )
-
 
 def _emit_llm_usage_event(
     event_queue: Optional[queue.Queue],
@@ -700,7 +795,6 @@ def _emit_llm_usage_event(
         })
     except Exception:
         log.debug("Failed to put llm_usage event to queue", exc_info=True)
-
 
 def _call_llm_with_retry(
     llm: LLMClient,
@@ -809,7 +903,6 @@ def _call_llm_with_retry(
 
     return None, 0.0
 
-
 def _process_tool_results(
     results: List[Dict[str, Any]],
     messages: List[Dict[str, Any]],
@@ -862,16 +955,13 @@ def _process_tool_results(
     guard["errors"] = list(emitted_errors)
     return error_count, made_progress
 
-
 def _build_call_signature(fn_name: str, args: Any) -> str:
     payload = {"tool": fn_name, "args": _safe_args(args)}
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
 
-
 def _normalize_error_text(result: Any) -> str:
     text = result if isinstance(result, str) else repr(result)
     return " ".join(text.strip().lower().split())[:500]
-
 
 def _count_recent_repeats(tool_calls: List[Dict[str, Any]], field: str, value: Optional[str]) -> int:
     if not value:
@@ -882,7 +972,6 @@ def _count_recent_repeats(tool_calls: List[Dict[str, Any]], field: str, value: O
             break
         count += 1
     return count
-
 
 def _safe_args(v: Any) -> Any:
     """Ensure args are JSON-serializable for trace logging."""
