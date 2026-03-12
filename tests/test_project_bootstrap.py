@@ -10,6 +10,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_file_write,
     _project_github_create,
     _project_init,
+    _project_push,
 )
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
@@ -91,6 +92,13 @@ def test_project_commit_registered():
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     names = {t["function"]["name"] for t in registry.schemas()}
     assert "project_commit" in names
+
+
+def test_project_push_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_push" in names
 
 
 def test_project_file_write_updates_file_inside_local_project(tmp_path):
@@ -194,3 +202,40 @@ def test_project_commit_rejects_clean_repo(tmp_path):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
     with pytest.raises(ValueError):
         _project_commit(_ctx(tmp_path), name="demo-api", message="Nothing changed")
+
+
+def test_project_push_pushes_current_branch_to_origin(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_file_write(
+        _ctx(tmp_path),
+        name="demo-api",
+        path="src/demo_api/config.json",
+        content='{"port": 8080}\n',
+    )
+    _project_commit(_ctx(tmp_path), name="demo-api", message="Add config")
+
+    projects_root = pathlib.Path(_ctx(tmp_path).drive_root) / "projects"
+    repo_dir = projects_root / "demo-api"
+    remote_dir = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote_dir)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_dir)], cwd=repo_dir, check=True)
+
+    payload = json.loads(_project_push(_ctx(tmp_path), name="demo-api"))
+    remote_head = subprocess.run(
+        ["git", f"--git-dir={remote_dir}", "rev-parse", "refs/heads/main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert payload["status"] == "ok"
+    assert payload["push"]["remote"] == "origin"
+    assert payload["push"]["branch"] == "main"
+    assert payload["push"]["remote_url"] == str(remote_dir)
+    assert payload["repo"]["sha"] == remote_head
+
+
+def test_project_push_rejects_missing_origin(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    with pytest.raises(ValueError):
+        _project_push(_ctx(tmp_path), name="demo-api")

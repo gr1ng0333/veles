@@ -132,7 +132,7 @@ EXPECTED_TOOLS = [
     "monitor_snapshot",
     "time_status",
     "research_report",
-    "project_init", "project_github_create", "project_file_write", "project_commit",
+    "project_init", "project_github_create", "project_file_write", "project_commit", "project_push",
 ]
 
 

@@ -258,6 +258,46 @@ def _project_commit(ctx: ToolContext, name: str, message: str) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+
+def _project_push(ctx: ToolContext, name: str, remote: str = "origin", branch: str = "") -> str:
+    repo_dir = _require_local_project(name)
+    remote_name = str(remote or "").strip()
+    if not remote_name:
+        raise ValueError("remote must be non-empty")
+    remote_url = _git_remote_url(repo_dir, remote_name)
+    if not remote_url:
+        raise ValueError(f"project has no {remote_name} remote configured")
+
+    branch_name = str(branch or "").strip()
+    if not branch_name:
+        branch_res = _git(["rev-parse", "--abbrev-ref", "HEAD"], repo_dir, timeout=30)
+        if branch_res.returncode != 0:
+            raise RuntimeError(branch_res.stderr.strip() or branch_res.stdout.strip() or "git rev-parse failed")
+        branch_name = (branch_res.stdout or "").strip()
+    if not branch_name:
+        raise RuntimeError("could not determine branch to push")
+
+    push_res = _git(["push", remote_name, branch_name], repo_dir, timeout=180)
+    if push_res.returncode != 0:
+        raise RuntimeError(push_res.stderr.strip() or push_res.stdout.strip() or "git push failed")
+
+    payload = {
+        "status": "ok",
+        "pushed_at": _utc_now_iso(),
+        "project": {
+            "name": _normalize_project_name(name),
+            "path": str(repo_dir),
+        },
+        "push": {
+            "remote": remote_name,
+            "branch": branch_name,
+            "remote_url": remote_url,
+        },
+        "repo": _repo_info(repo_dir),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 def _project_github_create(
     ctx: ToolContext,
     name: str,
@@ -412,6 +452,18 @@ def get_tools() -> List[ToolEntry]:
             },
             ["name", "message"],
             _project_commit,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            "project_push",
+            "Push the current branch of an existing bootstrapped local project repository to a configured git remote.",
+            {
+                "name": {"type": "string", "description": "Existing local project name under the projects root"},
+                "remote": {"type": "string", "description": "Git remote to push to", "default": "origin"},
+                "branch": {"type": "string", "description": "Optional branch name to push; defaults to current HEAD branch"},
+            },
+            ["name"],
+            _project_push,
             is_code_tool=True,
         ),
     ]
