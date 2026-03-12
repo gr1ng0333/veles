@@ -19,6 +19,7 @@ from ouroboros.tools.project_bootstrap import (
 )
 from ouroboros.tools.project_server_info import _project_server_get, _project_server_remove
 from ouroboros.tools.project_branch_info import _project_branch_delete, _project_branch_get, _project_branch_list, _project_branch_rename
+from ouroboros.tools.project_remote_awareness import _project_branch_compare, _project_git_fetch
 from ouroboros.tools.project_issue_update import (
     _project_issue_assign,
     _project_issue_close,
@@ -606,6 +607,103 @@ def test_project_branch_rename_rejects_missing_source_branch(tmp_path):
 
     with pytest.raises(ValueError, match='local branch not found'):
         _project_branch_rename(_ctx(tmp_path), name="demo-api", branch="missing", new_branch="feature/login")
+
+
+def test_project_git_fetch_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_git_fetch" in names
+
+
+def test_project_branch_compare_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_branch_compare" in names
+
+
+def test_project_git_fetch_updates_remote_awareness_after_remote_advance(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    remote_dir = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote_dir)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_dir)], cwd=repo_dir, check=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote_dir, check=True)
+
+    clone_dir = tmp_path / "remote-work"
+    subprocess.run(["git", "clone", str(remote_dir), str(clone_dir)], check=True)
+    subprocess.run(["git", "config", "user.name", "Remote Bot"], cwd=clone_dir, check=True)
+    subprocess.run(["git", "config", "user.email", "remote@example.com"], cwd=clone_dir, check=True)
+    (clone_dir / "REMOTE.txt").write_text("remote change\n", encoding="utf-8")
+    subprocess.run(["git", "add", "REMOTE.txt"], cwd=clone_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "Remote advance"], cwd=clone_dir, check=True)
+    subprocess.run(["git", "push", "origin", "main"], cwd=clone_dir, check=True)
+
+    before = json.loads(_project_status(_ctx(tmp_path), name="demo-api"))
+    assert before["remote_awareness"]["available"] is True
+    assert before["remote_awareness"]["branch"] == "main"
+    assert before["remote_awareness"]["ahead_behind"]["available"] is True
+    assert before["remote_awareness"]["ahead_behind"]["ahead"] == 0
+    assert before["remote_awareness"]["ahead_behind"]["behind"] == 0
+
+    payload = json.loads(_project_git_fetch(_ctx(tmp_path), name="demo-api"))
+
+    assert payload["status"] == "ok"
+    assert payload["fetch"]["remote"] == "origin"
+    assert payload["fetch"]["remote_url"] == str(remote_dir)
+    assert payload["remote"]["before"]["ahead_behind"]["behind"] == 0
+    assert payload["remote"]["after"]["ahead_behind"]["behind"] == 1
+    assert payload["remote"]["after"]["compare"]["available"] is True
+    assert payload["remote"]["after"]["compare"]["remote"]["unique_commits"][0]["subject"] == "Remote advance"
+
+
+def test_project_branch_compare_reports_ahead_behind_and_unique_commits(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    remote_dir = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote_dir)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_dir)], cwd=repo_dir, check=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote_dir, check=True)
+
+    clone_dir = tmp_path / "remote-work"
+    subprocess.run(["git", "clone", str(remote_dir), str(clone_dir)], check=True)
+    subprocess.run(["git", "config", "user.name", "Remote Bot"], cwd=clone_dir, check=True)
+    subprocess.run(["git", "config", "user.email", "remote@example.com"], cwd=clone_dir, check=True)
+    (clone_dir / "REMOTE.txt").write_text("remote change\n", encoding="utf-8")
+    subprocess.run(["git", "add", "REMOTE.txt"], cwd=clone_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "Remote advance"], cwd=clone_dir, check=True)
+    subprocess.run(["git", "push", "origin", "main"], cwd=clone_dir, check=True)
+
+    _project_git_fetch(_ctx(tmp_path), name="demo-api")
+    _project_file_write(_ctx(tmp_path), name="demo-api", path="LOCAL.txt", content="local change\n")
+    _project_commit(_ctx(tmp_path), name="demo-api", message="Local advance")
+
+    payload = json.loads(_project_branch_compare(_ctx(tmp_path), name="demo-api"))
+
+    assert payload["status"] == "ok"
+    assert payload["github"]["origin"] == str(remote_dir)
+    assert payload["branch"]["branch"] == "main"
+    assert payload["branch"]["remote_ref"] == "origin/main"
+    assert payload["branch"]["ahead_behind"]["available"] is True
+    assert payload["branch"]["ahead_behind"]["ahead"] == 1
+    assert payload["branch"]["ahead_behind"]["behind"] == 1
+    assert payload["branch"]["compare"]["available"] is True
+    assert payload["branch"]["compare"]["local"]["subject"] == "Local advance"
+    assert payload["branch"]["compare"]["remote"]["subject"] == "Remote advance"
+    assert payload["branch"]["compare"]["local"]["unique_commits"][0]["subject"] == "Local advance"
+    assert payload["branch"]["compare"]["remote"]["unique_commits"][0]["subject"] == "Remote advance"
+
+
+def test_project_branch_compare_requires_remote_tracking_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    with pytest.raises(ValueError, match='remote tracking branch not found: origin/main; run project_git_fetch first'):
+        _project_branch_compare(_ctx(tmp_path), name="demo-api")
 
 
 def test_project_branch_rename_rejects_existing_target_branch(tmp_path):
@@ -1348,6 +1446,10 @@ def test_project_status_reports_clean_repo_and_latest_commit(tmp_path):
     assert payload["latest_commit"]["sha"] == init_payload["repo"]["sha"]
     assert payload["latest_commit"]["subject"] == "Bootstrap demo-api"
     assert payload["remotes"] == []
+    assert payload["remote_awareness"] == {
+        "available": False,
+        "reason": "origin remote not configured",
+    }
 
 
 def test_project_status_reports_untracked_and_remote_entries(tmp_path):
@@ -1378,6 +1480,10 @@ def test_project_status_reports_untracked_and_remote_entries(tmp_path):
         {"name": "origin", "url": str(remote_dir), "direction": "fetch"},
         {"name": "origin", "url": str(remote_dir), "direction": "push"},
     ]
+    assert payload["remote_awareness"]["available"] is True
+    assert payload["remote_awareness"]["branch"] == "main"
+    assert payload["remote_awareness"]["remote_ref"] == ""
+    assert payload["remote_awareness"]["ahead_behind"]["available"] is False
 
 
 def test_project_server_register_persists_validated_server_metadata(tmp_path):
