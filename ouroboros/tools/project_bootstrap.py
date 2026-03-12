@@ -1,0 +1,193 @@
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import re
+import subprocess
+from typing import Any, Dict, List
+
+from ouroboros.tools.external_repos import _ensure_external_repo_git_identity, _tool_entry
+from ouroboros.tools.registry import ToolContext, ToolEntry
+
+_DEFAULT_PROJECTS_ROOT = "/opt/repos"
+_ALLOWED_LANGUAGES = {"python", "node", "static"}
+
+
+def _utc_now_iso() -> str:
+    return __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+
+
+def _projects_root() -> pathlib.Path:
+    root = pathlib.Path(os.getenv("VELES_PROJECTS_ROOT", _DEFAULT_PROJECTS_ROOT)).expanduser()
+    return root.resolve()
+
+
+def _normalize_project_name(name: str) -> str:
+    raw = str(name or "").strip().lower()
+    if not raw:
+        raise ValueError("name must be non-empty")
+    slug = re.sub(r"[^a-z0-9._-]+", "-", raw)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-._")
+    if not slug:
+        raise ValueError("name must contain at least one latin letter or digit")
+    if slug in {".", ".."}:
+        raise ValueError("invalid project name")
+    return slug
+
+
+def _normalize_language(language: str) -> str:
+    lang = str(language or "").strip().lower()
+    if lang not in _ALLOWED_LANGUAGES:
+        raise ValueError(f"language must be one of: {', '.join(sorted(_ALLOWED_LANGUAGES))}")
+    return lang
+
+
+def _project_dir(name: str) -> pathlib.Path:
+    return (_projects_root() / _normalize_project_name(name)).resolve()
+
+
+def _write_text(path: pathlib.Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _python_template(project_name: str, description: str) -> Dict[str, str]:
+    package = project_name.replace("-", "_").replace(".", "_")
+    return {
+        "README.md": f"# {project_name}\n\n{description or 'New Python project bootstrapped by Veles.'}\n\n## Run\n\n```bash\npython -m src.{package}.main\n```\n",
+        ".gitignore": "__pycache__/\n*.pyc\n.venv/\nvenv/\n.env\n.pytest_cache/\n.dist/\nbuild/\n",
+        "requirements.txt": "",
+        f"src/{package}/__init__.py": "",
+        f"src/{package}/main.py": (
+            'def main() -> None:\n'
+            f'    print("{project_name} is alive")\n\n\n'
+            'if __name__ == "__main__":\n'
+            '    main()\n'
+        ),
+    }
+
+
+def _node_template(project_name: str, description: str) -> Dict[str, str]:
+    package_json = {
+        "name": project_name,
+        "version": "0.1.0",
+        "private": True,
+        "description": description or "New Node project bootstrapped by Veles.",
+        "main": "src/index.js",
+        "scripts": {"start": "node src/index.js"},
+    }
+    return {
+        "README.md": f"# {project_name}\n\n{description or 'New Node project bootstrapped by Veles.'}\n\n## Run\n\n```bash\nnpm start\n```\n",
+        ".gitignore": "node_modules/\n.env\ndist/\nbuild/\ncoverage/\n",
+        "package.json": json.dumps(package_json, ensure_ascii=False, indent=2) + "\n",
+        "src/index.js": f"console.log('{project_name} is alive');\n",
+    }
+
+
+def _static_template(project_name: str, description: str) -> Dict[str, str]:
+    title = project_name.replace("-", " ").title()
+    body = description or "Static site bootstrapped by Veles."
+    return {
+        "README.md": f"# {project_name}\n\n{body}\n\nOpen `index.html` in a browser or deploy it as a static site.\n",
+        ".gitignore": ".DS_Store\n.env\n",
+        "index.html": (
+            "<!doctype html>\n"
+            "<html lang='en'>\n"
+            "<head>\n"
+            "  <meta charset='utf-8'>\n"
+            "  <meta name='viewport' content='width=device-width, initial-scale=1'>\n"
+            f"  <title>{title}</title>\n"
+            "  <link rel='stylesheet' href='styles.css'>\n"
+            "</head>\n"
+            "<body>\n"
+            f"  <main><h1>{title}</h1><p>{body}</p></main>\n"
+            "</body>\n"
+            "</html>\n"
+        ),
+        "styles.css": "body { font-family: Arial, sans-serif; margin: 40px; color: #111; }\nmain { max-width: 720px; }\n",
+    }
+
+
+def _template_files(project_name: str, language: str, description: str) -> Dict[str, str]:
+    if language == "python":
+        return _python_template(project_name, description)
+    if language == "node":
+        return _node_template(project_name, description)
+    return _static_template(project_name, description)
+
+
+def _git(args: List[str], cwd: pathlib.Path, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _repo_info(repo_dir: pathlib.Path) -> Dict[str, str]:
+    branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], repo_dir).stdout.strip()
+    sha = _git(["rev-parse", "HEAD"], repo_dir).stdout.strip()
+    return {"path": str(repo_dir), "branch": branch, "sha": sha}
+
+
+def _project_init(ctx: ToolContext, name: str, language: str, description: str = "") -> str:
+    project_name = _normalize_project_name(name)
+    project_language = _normalize_language(language)
+    repo_dir = _project_dir(project_name)
+    if repo_dir.exists():
+        raise ValueError(f"project already exists: {repo_dir}")
+
+    repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    files = _template_files(project_name, project_language, str(description or "").strip())
+    for rel_path, content in files.items():
+        _write_text(repo_dir / rel_path, content)
+
+    init_res = _git(["init", "-b", "main"], repo_dir, timeout=60)
+    if init_res.returncode != 0:
+        raise RuntimeError(init_res.stderr.strip() or init_res.stdout.strip() or "git init failed")
+
+    git_identity = _ensure_external_repo_git_identity(repo_dir)
+
+    add_res = _git(["add", "."], repo_dir, timeout=60)
+    if add_res.returncode != 0:
+        raise RuntimeError(add_res.stderr.strip() or add_res.stdout.strip() or "git add failed")
+
+    commit_message = f"Bootstrap {project_name}"
+    commit_res = _git(["commit", "-m", commit_message], repo_dir, timeout=60)
+    if commit_res.returncode != 0:
+        raise RuntimeError(commit_res.stderr.strip() or commit_res.stdout.strip() or "git commit failed")
+
+    payload = {
+        "status": "ok",
+        "created_at": _utc_now_iso(),
+        "project": {
+            "name": project_name,
+            "language": project_language,
+            "description": str(description or "").strip(),
+        },
+        "repo": _repo_info(repo_dir),
+        "files_created": sorted(files.keys()),
+        "commit_message": commit_message,
+        "git_identity": git_identity,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def get_tools() -> List[ToolEntry]:
+    return [
+        _tool_entry(
+            "project_init",
+            "Create a brand-new local project repository from a minimal template and make the first git commit.",
+            {
+                "name": {"type": "string", "description": "Project name/slug; becomes directory name under the projects root"},
+                "language": {"type": "string", "description": "Project template language", "enum": ["python", "node", "static"]},
+                "description": {"type": "string", "description": "Optional short project description"},
+            },
+            ["name", "language"],
+            _project_init,
+            is_code_tool=True,
+        )
+    ]
