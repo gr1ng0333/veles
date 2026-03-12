@@ -12,6 +12,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_github_create,
     _project_init,
     _project_push,
+    _project_server_register,
     _project_status,
 )
 from ouroboros.tools.registry import ToolContext, ToolRegistry
@@ -108,6 +109,13 @@ def test_project_push_registered():
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     names = {t["function"]["name"] for t in registry.schemas()}
     assert "project_push" in names
+
+
+def test_project_server_register_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_server_register" in names
 
 
 def test_project_status_registered():
@@ -381,3 +389,89 @@ def test_project_status_reports_untracked_and_remote_entries(tmp_path):
         {"name": "origin", "url": str(remote_dir), "direction": "fetch"},
         {"name": "origin", "url": str(remote_dir), "direction": "push"},
     ]
+
+
+def test_project_server_register_persists_validated_server_metadata(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    payload = json.loads(
+        _project_server_register(
+            _ctx(tmp_path),
+            name="demo-api",
+            alias="prod",
+            host="203.0.113.10",
+            user="deploy",
+            ssh_key_path="~/.ssh/demo_prod",
+            deploy_path="/srv/demo-api",
+            port=2222,
+            label="Production",
+        )
+    )
+
+    repo_dir = pathlib.Path(payload["project"]["path"])
+    registry_path = repo_dir / ".veles" / "servers.json"
+    saved = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert payload["status"] == "ok"
+    assert payload["server"]["alias"] == "prod"
+    assert payload["server"]["host"] == "203.0.113.10"
+    assert payload["server"]["user"] == "deploy"
+    assert payload["server"]["port"] == 2222
+    assert payload["server"]["deploy_path"] == "/srv/demo-api"
+    assert payload["server"]["ssh_key_path"].endswith("/.ssh/demo_prod")
+    assert payload["registry"]["count"] == 1
+    assert payload["registry"]["aliases"] == ["prod"]
+    assert saved[0]["alias"] == "prod"
+    assert saved[0]["label"] == "Production"
+
+
+def test_project_server_register_updates_existing_alias_instead_of_duplicating(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name="demo-api",
+        alias="prod",
+        host="203.0.113.10",
+        user="deploy",
+        ssh_key_path="/home/veles/.ssh/demo_prod",
+        deploy_path="/srv/demo-api",
+    )
+
+    payload = json.loads(
+        _project_server_register(
+            _ctx(tmp_path),
+            name="demo-api",
+            alias="prod",
+            host="demo.example.com",
+            user="root",
+            ssh_key_path="/home/veles/.ssh/demo_root",
+            deploy_path="/opt/demo",
+            label="Primary",
+        )
+    )
+
+    repo_dir = pathlib.Path(payload["project"]["path"])
+    saved = json.loads((repo_dir / ".veles" / "servers.json").read_text(encoding="utf-8"))
+
+    assert payload["registry"]["count"] == 1
+    assert payload["server"]["host"] == "demo.example.com"
+    assert payload["server"]["user"] == "root"
+    assert payload["server"]["deploy_path"] == "/opt/demo"
+    assert saved == [saved[0]]
+    assert saved[0]["alias"] == "prod"
+    assert saved[0]["host"] == "demo.example.com"
+    assert saved[0]["label"] == "Primary"
+
+
+def test_project_server_register_rejects_relative_deploy_path(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    with pytest.raises(ValueError):
+        _project_server_register(
+            _ctx(tmp_path),
+            name="demo-api",
+            alias="prod",
+            host="demo.example.com",
+            user="deploy",
+            ssh_key_path="/home/veles/.ssh/demo",
+            deploy_path="srv/demo-api",
+        )
