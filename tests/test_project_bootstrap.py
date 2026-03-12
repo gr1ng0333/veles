@@ -12,6 +12,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_github_create,
     _project_init,
     _project_push,
+    _project_status,
 )
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
@@ -107,6 +108,13 @@ def test_project_push_registered():
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     names = {t["function"]["name"] for t in registry.schemas()}
     assert "project_push" in names
+
+
+def test_project_status_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_status" in names
 
 
 def test_project_file_read_reads_utf8_content_inside_local_project(tmp_path):
@@ -326,3 +334,50 @@ def test_project_push_rejects_missing_origin(tmp_path):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
     with pytest.raises(ValueError):
         _project_push(_ctx(tmp_path), name="demo-api")
+
+
+def test_project_status_reports_clean_repo_and_latest_commit(tmp_path):
+    init_payload = json.loads(_project_init(_ctx(tmp_path), name="Demo API", language="python"))
+
+    payload = json.loads(_project_status(_ctx(tmp_path), name="demo-api"))
+
+    assert payload["status"] == "ok"
+    assert payload["project"]["name"] == "demo-api"
+    assert payload["repo"]["branch"] == "main"
+    assert payload["repo"]["sha"] == init_payload["repo"]["sha"]
+    assert payload["working_tree"]["clean"] is True
+    assert payload["working_tree"]["counts"] == {"total": 0, "staged": 0, "unstaged": 0, "untracked": 0}
+    assert payload["working_tree"]["changes"] == []
+    assert payload["latest_commit"]["sha"] == init_payload["repo"]["sha"]
+    assert payload["latest_commit"]["subject"] == "Bootstrap demo-api"
+    assert payload["remotes"] == []
+
+
+def test_project_status_reports_untracked_and_remote_entries(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_file_write(
+        _ctx(tmp_path),
+        name="demo-api",
+        path="notes/todo.txt",
+        content="ship it\n",
+    )
+
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    remote_dir = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote_dir)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_dir)], cwd=repo_dir, check=True)
+
+    payload = json.loads(_project_status(_ctx(tmp_path), name="demo-api"))
+
+    assert payload["working_tree"]["clean"] is False
+    assert payload["working_tree"]["counts"]["total"] == 1
+    assert payload["working_tree"]["counts"]["untracked"] == 1
+    assert payload["working_tree"]["counts"]["staged"] == 0
+    assert payload["working_tree"]["counts"]["unstaged"] == 0
+    assert payload["working_tree"]["changes"] == [
+        {"path": "notes/todo.txt", "index": "?", "worktree": "?", "kind": "untracked"}
+    ]
+    assert payload["remotes"] == [
+        {"name": "origin", "url": str(remote_dir), "direction": "fetch"},
+        {"name": "origin", "url": str(remote_dir), "direction": "push"},
+    ]
