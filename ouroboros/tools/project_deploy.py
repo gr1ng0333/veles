@@ -26,6 +26,8 @@ _MAX_SYNC_FILE_COUNT = 10_000
 
 
 _ALLOWED_DEPLOY_RECIPE_RUNTIMES = {'auto', 'python', 'node', 'static'}
+_ALLOWED_DEPLOY_APPLY_MODES = {'install', 'update', 'start'}
+
 
 
 def _normalize_recipe_runtime(runtime: str) -> str:
@@ -33,6 +35,186 @@ def _normalize_recipe_runtime(runtime: str) -> str:
     if value not in _ALLOWED_DEPLOY_RECIPE_RUNTIMES:
         raise ValueError(f"runtime must be one of: {', '.join(sorted(_ALLOWED_DEPLOY_RECIPE_RUNTIMES))}")
     return value
+
+
+def _normalize_deploy_apply_mode(mode: str) -> str:
+    value = str(mode or 'install').strip().lower()
+    if value not in _ALLOWED_DEPLOY_APPLY_MODES:
+        raise ValueError(f"mode must be one of: {', '.join(sorted(_ALLOWED_DEPLOY_APPLY_MODES))}")
+    return value
+
+
+def _decode_tool_payload(raw: str) -> Dict[str, Any]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError('internal deploy tool returned invalid JSON') from e
+    if not isinstance(payload, dict):
+        raise RuntimeError('internal deploy tool returned non-object payload')
+    return payload
+
+
+def _step_result(key: str, tool: str, args: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        'key': key,
+        'tool': tool,
+        'args': args,
+        'status': payload.get('status') or 'unknown',
+        'payload': payload,
+    }
+
+
+def _project_deploy_apply(
+    ctx: ToolContext,
+    name: str,
+    alias: str,
+    service_name: str,
+    mode: str = 'install',
+    runtime: str = 'auto',
+    description: str = '',
+    working_directory: str = '',
+    exec_start: str = '',
+    environment_file: str = '',
+    environment: list[str] | None = None,
+    user: str = '',
+    restart: str = 'always',
+    restart_sec: int = 3,
+    wanted_by: str = 'multi-user.target',
+    sync_timeout: int = _DEFAULT_SERVER_RUN_TIMEOUT,
+    service_timeout: int = _DEFAULT_SERVER_RUN_TIMEOUT,
+    status_timeout: int = _DEFAULT_SERVER_RUN_TIMEOUT,
+    delete: bool = False,
+    enable_on_install: bool = True,
+    start_on_install: bool = False,
+    sudo: bool = True,
+) -> str:
+    project_name = _normalize_project_name(name)
+    mode_value = _normalize_deploy_apply_mode(mode)
+
+    try:
+        status_timeout_value = int(status_timeout)
+    except (TypeError, ValueError) as e:
+        raise ValueError('status_timeout must be an integer') from e
+    if status_timeout_value <= 0:
+        raise ValueError('status_timeout must be > 0')
+
+    recipe_payload = _decode_tool_payload(
+        _project_deploy_recipe(
+            ctx,
+            name=project_name,
+            alias=alias,
+            service_name=service_name,
+            runtime=runtime,
+            description=description,
+            working_directory=working_directory,
+            exec_start=exec_start,
+            environment_file=environment_file,
+            environment=environment,
+            user=user,
+            restart=restart,
+            restart_sec=restart_sec,
+            wanted_by=wanted_by,
+            sync_timeout=sync_timeout,
+            service_timeout=service_timeout,
+            delete=delete,
+        )
+    )
+
+    from ouroboros.tools.project_service import _project_service_control
+
+    sync_args = dict(recipe_payload['recipe']['steps'][0]['recommended_args'])
+    install_args = dict(recipe_payload['recipe']['steps'][2]['recommended_args'])
+    install_args.update({
+        'enable_on_install': bool(enable_on_install),
+        'start_on_install': bool(start_on_install),
+        'sudo': bool(sudo),
+    })
+
+    steps: List[Dict[str, Any]] = []
+    sync_payload = _decode_tool_payload(_project_server_sync(ctx, **sync_args))
+    steps.append(_step_result('sync', 'project_server_sync', sync_args, sync_payload))
+    if sync_payload.get('status') != 'ok':
+        return json.dumps({
+            'status': 'error',
+            'applied_at': _utc_now_iso(),
+            'project': recipe_payload['project'],
+            'server': recipe_payload['server'],
+            'mode': mode_value,
+            'failed_step': 'sync',
+            'steps': steps,
+            'recipe': recipe_payload,
+        }, ensure_ascii=False, indent=2)
+
+    if mode_value in {'install', 'update'}:
+        install_payload = _decode_tool_payload(_project_service_control(ctx, **install_args))
+        steps.append(_step_result('install_service', 'project_service_control', install_args, install_payload))
+        if install_payload.get('status') != 'ok':
+            return json.dumps({
+                'status': 'error',
+                'applied_at': _utc_now_iso(),
+                'project': recipe_payload['project'],
+                'server': recipe_payload['server'],
+                'mode': mode_value,
+                'failed_step': 'install_service',
+                'steps': steps,
+                'recipe': recipe_payload,
+            }, ensure_ascii=False, indent=2)
+
+    lifecycle_action = 'start' if mode_value == 'install' else 'restart' if mode_value == 'update' else mode_value
+    lifecycle_args = {
+        'name': project_name,
+        'alias': alias,
+        'service_name': install_args['service_name'],
+        'action': lifecycle_action,
+        'timeout': service_timeout,
+        'sudo': bool(sudo),
+    }
+    lifecycle_payload = _decode_tool_payload(_project_service_control(ctx, **lifecycle_args))
+    steps.append(_step_result(lifecycle_action, 'project_service_control', lifecycle_args, lifecycle_payload))
+    if lifecycle_payload.get('status') != 'ok':
+        return json.dumps({
+            'status': 'error',
+            'applied_at': _utc_now_iso(),
+            'project': recipe_payload['project'],
+            'server': recipe_payload['server'],
+            'mode': mode_value,
+            'failed_step': lifecycle_action,
+            'steps': steps,
+            'recipe': recipe_payload,
+        }, ensure_ascii=False, indent=2)
+
+    status_args = {
+        'name': project_name,
+        'alias': alias,
+        'service_name': install_args['service_name'],
+        'action': 'status',
+        'timeout': status_timeout_value,
+        'sudo': bool(sudo),
+    }
+    status_payload = _decode_tool_payload(_project_service_control(ctx, **status_args))
+    steps.append(_step_result('status', 'project_service_control', status_args, status_payload))
+
+    payload = {
+        'status': 'ok' if status_payload.get('status') == 'ok' else 'error',
+        'applied_at': _utc_now_iso(),
+        'project': recipe_payload['project'],
+        'server': recipe_payload['server'],
+        'mode': mode_value,
+        'recipe': recipe_payload,
+        'steps': steps,
+        'summary': {
+            'service_name': install_args['service_name'],
+            'unit_name': recipe_payload['service']['unit_name'],
+            'runtime': recipe_payload['runtime']['resolved'],
+            'sync_file_count': recipe_payload['sync_preview']['file_count'],
+            'lifecycle_action': lifecycle_action,
+            'status_ok': status_payload.get('status') == 'ok',
+        },
+        'repo': recipe_payload.get('repo') or _repo_info(_require_local_project(project_name)),
+    }
+    if status_payload.get('status') != 'ok':
+        payload['failed_step'] = 'status'
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _detect_recipe_runtime(repo_dir: pathlib.Path) -> str:
@@ -408,6 +590,36 @@ def get_tools() -> List[ToolEntry]:
             },
             ['name', 'alias', 'service_name'],
             _project_deploy_recipe,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            'project_deploy_apply',
+            'Apply a transparent typed deploy flow for a bootstrapped project on a registered server alias by running sync plus the necessary service actions, and return the full per-step result trace.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'alias': {'type': 'string', 'description': 'Registered server alias from the project-local .veles server registry'},
+                'service_name': {'type': 'string', 'description': 'Systemd service name to apply this deploy against'},
+                'mode': {'type': 'string', 'description': 'Typed deploy flow to run', 'enum': sorted(_ALLOWED_DEPLOY_APPLY_MODES), 'default': 'install'},
+                'runtime': {'type': 'string', 'description': 'Runtime to plan for: auto, python, node, or static', 'default': 'auto'},
+                'description': {'type': 'string', 'description': 'Optional systemd unit Description override'},
+                'working_directory': {'type': 'string', 'description': 'Optional absolute working directory override inside deploy_path'},
+                'exec_start': {'type': 'string', 'description': 'Optional ExecStart override; default depends on runtime'},
+                'environment_file': {'type': 'string', 'description': 'Optional absolute EnvironmentFile path'},
+                'environment': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Optional KEY=VALUE entries for the systemd unit environment', 'default': []},
+                'user': {'type': 'string', 'description': 'Optional system user for the service'},
+                'restart': {'type': 'string', 'description': 'Systemd Restart policy', 'default': 'always'},
+                'restart_sec': {'type': 'integer', 'description': 'Delay before restart in seconds', 'default': 3},
+                'wanted_by': {'type': 'string', 'description': 'WantedBy target for the install section', 'default': 'multi-user.target'},
+                'sync_timeout': {'type': 'integer', 'description': 'Timeout for project_server_sync in seconds', 'default': _DEFAULT_SERVER_RUN_TIMEOUT},
+                'service_timeout': {'type': 'integer', 'description': 'Timeout for project_service_control lifecycle actions in seconds', 'default': _DEFAULT_SERVER_RUN_TIMEOUT},
+                'status_timeout': {'type': 'integer', 'description': 'Timeout for the final project_service_control status check in seconds', 'default': _DEFAULT_SERVER_RUN_TIMEOUT},
+                'delete': {'type': 'boolean', 'description': 'Whether to wipe the remote deploy directory contents before sync', 'default': False},
+                'enable_on_install': {'type': 'boolean', 'description': 'Whether install mode should enable the unit during the install step', 'default': True},
+                'start_on_install': {'type': 'boolean', 'description': 'Whether install mode should also start the unit inside the install step before the explicit lifecycle action', 'default': False},
+                'sudo': {'type': 'boolean', 'description': 'Whether remote service actions should use sudo systemctl', 'default': True},
+            },
+            ['name', 'alias', 'service_name'],
+            _project_deploy_apply,
             is_code_tool=True,
         ),
     ]
