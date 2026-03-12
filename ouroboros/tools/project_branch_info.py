@@ -154,6 +154,54 @@ def _project_branch_get(ctx: ToolContext, name: str, branch: str = '') -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _project_branch_delete(ctx: ToolContext, name: str, branch: str, force: bool = False) -> str:
+    del ctx
+    repo_dir = _require_local_project(name)
+    project_name = str(name or '').strip()
+    target_branch = str(branch or '').strip()
+    if not target_branch:
+        raise ValueError('branch must be non-empty')
+
+    current_branch = _current_branch(repo_dir)
+    default_branch = _default_branch(repo_dir)
+    exists_res = _git(['show-ref', '--verify', '--quiet', f'refs/heads/{target_branch}'], repo_dir, timeout=30)
+    if exists_res.returncode != 0:
+        raise ValueError(f'local branch not found: {target_branch}')
+    if target_branch == current_branch:
+        raise ValueError('cannot delete the active branch')
+    if default_branch and target_branch == default_branch:
+        raise ValueError('cannot delete the default branch')
+
+    delete_flag = '-D' if bool(force) else '-d'
+    res = _git(['branch', delete_flag, target_branch], repo_dir, timeout=60)
+    if res.returncode != 0:
+        message = res.stderr.strip() or res.stdout.strip() or 'git branch delete failed'
+        if not force and ('not fully merged' in message or 'is not fully merged' in message):
+            raise ValueError('branch is not fully merged; rerun with force=true to delete anyway')
+        raise RuntimeError(message)
+
+    payload = {
+        'status': 'ok',
+        'deleted_at': _utc_now_iso(),
+        'project': {
+            'name': project_name,
+            'path': str(repo_dir),
+        },
+        'branch': {
+            'name': target_branch,
+            'deleted': True,
+            'force': bool(force),
+            'current': current_branch,
+            'default': default_branch,
+        },
+        'github': {
+            'origin': _git_remote_url(repo_dir) or '',
+        },
+        'repo': _repo_info(repo_dir),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 def get_tools() -> List[ToolEntry]:
     return [
         _tool_entry(
@@ -175,6 +223,18 @@ def get_tools() -> List[ToolEntry]:
             },
             ['name'],
             _project_branch_get,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            'project_branch_delete',
+            'Delete a local branch in an existing bootstrapped project repository with guardrails for active/default branches and optional force for unmerged branches.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'branch': {'type': 'string', 'description': 'Local branch name to delete'},
+                'force': {'type': 'boolean', 'description': 'Force deletion even if the branch is not fully merged', 'default': False},
+            },
+            ['name', 'branch'],
+            _project_branch_delete,
             is_code_tool=True,
         ),
     ]
