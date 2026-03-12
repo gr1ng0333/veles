@@ -132,7 +132,7 @@ EXPECTED_TOOLS = [
     "monitor_snapshot",
     "time_status",
     "research_report",
-    "project_init", "project_github_create", "project_branch_checkout", "project_issue_list", "project_issue_get", "project_issue_create", "project_issue_comment", "project_pr_list", "project_pr_get", "project_pr_create", "project_file_read", "project_file_write", "project_commit", "project_push", "project_status", "project_server_register", "project_server_list", "project_server_run", "project_server_sync", "project_deploy_recipe", "project_deploy_apply", "project_service_render_unit", "project_service_control",
+    "project_init", "project_github_create", "project_branch_checkout", "project_issue_list", "project_issue_get", "project_issue_create", "project_issue_comment", "project_pr_list", "project_pr_get", "project_pr_comment", "project_pr_create", "project_file_read", "project_file_write", "project_commit", "project_push", "project_status", "project_server_register", "project_server_list", "project_server_run", "project_server_sync", "project_deploy_recipe", "project_deploy_apply", "project_service_render_unit", "project_service_control",
 ]
 
 

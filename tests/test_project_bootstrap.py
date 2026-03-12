@@ -23,6 +23,7 @@ from ouroboros.tools.project_github_dev import (
     _project_issue_create,
     _project_issue_get,
     _project_issue_list,
+    _project_pr_comment,
     _project_pr_create,
     _project_pr_get,
     _project_pr_list,
@@ -538,6 +539,13 @@ def test_project_pr_create_registered():
     assert "project_pr_create" in names
 
 
+def test_project_pr_comment_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_comment" in names
+
+
 def test_project_pr_create_uses_current_branch_and_reports_url(tmp_path, monkeypatch):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
     repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
@@ -705,6 +713,28 @@ def test_project_pr_create_passes_body_via_stdin(tmp_path, monkeypatch):
     assert calls[0]['input'] == 'Detailed PR body'
 
 
+def test_project_pr_comment_passes_body_via_stdin(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="https://github.com/acme/demo-api/pull/8#issuecomment-1\n", stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_pr_comment(_ctx(tmp_path), name="demo-api", number=8, body="Looks good"))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['pull_request_comment']['number'] == 8
+    assert payload['github']['pull_request_comment']['body'] == 'Looks good'
+    assert payload['github']['pull_request_comment']['result'] == 'https://github.com/acme/demo-api/pull/8#issuecomment-1'
+    assert calls[0]['args'] == ['pr', 'comment', '8', '--body-file', '-']
+    assert calls[0]['input'] == 'Looks good'
 
 
 def test_project_commit_creates_new_git_commit_for_local_project(tmp_path):
