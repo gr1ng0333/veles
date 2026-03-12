@@ -427,6 +427,97 @@ def build_auth_outcome(auth_state: Dict[str, Any], next_action: Dict[str, Any], 
     }
 
 
+def build_verification_attempt_plan(
+    verification: Dict[str, Any],
+    outcome: Dict[str, Any],
+    verification_handoff: Dict[str, Any],
+) -> Dict[str, Any]:
+    verification = dict(verification or {})
+    outcome = dict(outcome or {})
+    verification_handoff = dict(verification_handoff or {})
+
+    kind = str(verification.get("kind") or "none")
+    selectors = dict(verification.get("selectors") or verification_handoff.get("selectors") or {})
+    missing_requirements = list(verification.get("missing_requirements") or [])
+    continuation = str(outcome.get("continuation") or "continue")
+    handoff_mode = str(verification_handoff.get("mode") or "none")
+
+    if not verification.get("detected"):
+        return {
+            "status": "not_applicable",
+            "kind": "none",
+            "strategy": "none",
+            "can_auto_attempt": False,
+            "requires_screenshot": False,
+            "requires_owner_input": False,
+            "next_step": str(outcome.get("continuation") or "continue"),
+            "reason": "no verification attempt is needed",
+            "selectors": selectors,
+            "missing_requirements": [],
+            "attempt_inputs": [],
+        }
+
+    if continuation == "await_owner" or verification.get("requires_owner_input") or handoff_mode == "owner_handoff":
+        return {
+            "status": "owner_required",
+            "kind": kind,
+            "strategy": "owner_handoff",
+            "can_auto_attempt": False,
+            "requires_screenshot": False,
+            "requires_owner_input": True,
+            "next_step": "await_owner",
+            "reason": verification.get("reason") or "verification requires owner input",
+            "selectors": selectors,
+            "missing_requirements": missing_requirements,
+            "attempt_inputs": ["owner_verification_code", *missing_requirements],
+        }
+
+    if kind == "captcha":
+        captcha_selector = str(selectors.get("captcha_selector") or "").strip()
+        if captcha_selector:
+            return {
+                "status": "ready",
+                "kind": kind,
+                "strategy": "solve_simple_captcha_from_screenshot",
+                "can_auto_attempt": True,
+                "requires_screenshot": True,
+                "requires_owner_input": False,
+                "next_step": "capture_and_solve_captcha",
+                "reason": verification.get("reason") or "simple captcha attempt can be prepared automatically",
+                "selectors": selectors,
+                "missing_requirements": [],
+                "attempt_inputs": ["captcha_image", "captcha_answer"],
+            }
+        blocked_missing = missing_requirements or ["captcha_selector"]
+        return {
+            "status": "blocked",
+            "kind": kind,
+            "strategy": "none",
+            "can_auto_attempt": False,
+            "requires_screenshot": False,
+            "requires_owner_input": False,
+            "next_step": "inspect_page",
+            "reason": "captcha boundary detected but there is not enough structure for a safe auto-attempt",
+            "selectors": selectors,
+            "missing_requirements": blocked_missing,
+            "attempt_inputs": [],
+        }
+
+    return {
+        "status": "blocked",
+        "kind": kind,
+        "strategy": "none",
+        "can_auto_attempt": False,
+        "requires_screenshot": False,
+        "requires_owner_input": False,
+        "next_step": "inspect_page",
+        "reason": verification.get("reason") or "verification boundary detected but no safe automatic attempt is defined",
+        "selectors": selectors,
+        "missing_requirements": missing_requirements,
+        "attempt_inputs": [],
+    }
+
+
 def build_verification_handoff(
     verification: Dict[str, Any],
     outcome: Dict[str, Any],
@@ -550,6 +641,7 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
     verification = build_verification_boundary(snapshot, auth_state, next_action)
     outcome = build_auth_outcome(auth_state, next_action, verification)
     verification_handoff = build_verification_handoff(verification, outcome, next_action)
+    verification_attempt = build_verification_attempt_plan(verification, outcome, verification_handoff)
 
     return {
         "site_profile": {
@@ -564,6 +656,7 @@ def summarize_auth_diagnostics(snapshot: Dict[str, Any], auth_state: Dict[str, A
         "verification": verification,
         "outcome": outcome,
         "verification_handoff": verification_handoff,
+        "verification_attempt": verification_attempt,
         "next_action": next_action,
         "current_url": snapshot.get("current_url", ""),
         "matched": snapshot.get("matched", []),
