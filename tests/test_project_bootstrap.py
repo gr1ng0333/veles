@@ -17,7 +17,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_server_run,
     _project_status,
 )
-from ouroboros.tools.project_server_info import _project_server_get
+from ouroboros.tools.project_server_info import _project_server_get, _project_server_remove
 from ouroboros.tools.project_github_dev import (
     _project_branch_checkout,
     _project_issue_comment,
@@ -140,6 +140,13 @@ def test_project_server_get_rejects_unknown_alias(tmp_path):
         _project_server_get(_ctx(tmp_path), name='demo-api', alias='prod')
 
 
+def test_project_server_remove_rejects_unknown_alias(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    with pytest.raises(ValueError, match='project server alias not found'):
+        _project_server_remove(_ctx(tmp_path), name='demo-api', alias='prod')
+
+
 def test_project_server_run_registered():
     tmp = pathlib.Path("/tmp")
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
@@ -183,6 +190,65 @@ def test_project_server_get_registered():
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     names = {t["function"]["name"] for t in registry.schemas()}
     assert "project_server_get" in names
+
+
+def test_project_server_remove_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_server_remove" in names
+
+
+def test_project_server_remove_deletes_registered_server(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+        label='Production',
+    )
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='staging',
+        host='staging.example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api-staging',
+        label='Staging',
+    )
+
+    payload = json.loads(_project_server_remove(_ctx(tmp_path), name='demo-api', alias='prod'))
+
+    assert payload['status'] == 'ok'
+    assert payload['removed_server']['alias'] == 'prod'
+    assert payload['removed_server']['label'] == 'Production'
+    assert payload['registry']['count'] == 1
+    assert payload['registry']['aliases'] == ['staging']
+
+
+def test_project_server_remove_leaves_empty_registry_file_when_last_server_removed(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    payload = json.loads(_project_server_remove(_ctx(tmp_path), name='demo-api', alias='prod'))
+
+    assert payload['status'] == 'ok'
+    assert payload['registry']['count'] == 0
+    assert payload['registry']['aliases'] == []
+    assert payload['registry']['exists'] is True
 
 
 def test_project_status_registered():
