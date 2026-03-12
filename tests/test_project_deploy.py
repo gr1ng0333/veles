@@ -697,6 +697,12 @@ def test_project_deploy_apply_install_runs_sync_setup_install_start_status(tmp_p
     assert payload['steps'][1]['payload']['setup']['skipped'] is False
     assert payload['summary']['lifecycle_action'] == 'start'
     assert payload['summary']['status_ok'] is True
+    assert payload['execution']['dry_run'] is False
+    assert payload['execution']['total_steps'] == 5
+    assert payload['execution']['executed_steps'] == 5
+    assert payload['execution']['ok_steps'] == 5
+    assert payload['execution']['error_steps'] == 0
+    assert payload['execution']['last_step_key'] == 'status'
     assert payload['deploy_record']['exists'] is True
     assert payload['deploy_record']['outcome']['status'] == 'ok'
     assert payload['deploy_record']['outcome']['deploy']['mode'] == 'install'
@@ -790,6 +796,11 @@ def test_project_deploy_apply_dry_run_returns_planned_trace_without_execution(tm
 
     assert payload['status'] == 'ok'
     assert payload['dry_run'] is True
+    assert payload['execution']['dry_run'] is True
+    assert payload['execution']['total_steps'] == 5
+    assert payload['execution']['planned_steps'] == 5
+    assert payload['execution']['executed_steps'] == 0
+    assert payload['execution']['last_step_key'] == 'status'
     assert [step['key'] for step in payload['steps']] == ['sync', 'setup', 'install_service', 'start', 'status']
     assert all(step['status'] == 'planned' for step in payload['steps'])
     assert payload['steps'][0]['args']['delete'] is True
@@ -839,6 +850,9 @@ def test_project_deploy_apply_stops_on_setup_failure(tmp_path, monkeypatch):
 
     assert payload['status'] == 'error'
     assert payload['failed_step'] == 'setup'
+    assert payload['execution']['failed_step'] == 'setup'
+    assert payload['execution']['executed_steps'] == 2
+    assert payload['execution']['error_steps'] == 1
     assert [step['key'] for step in payload['steps']] == ['sync', 'setup']
     assert payload['deploy_record']['outcome']['failed_step'] == 'setup'
     assert payload['deploy_record']['outcome']['deploy']['step_statuses']['setup'] == 'error'
@@ -878,6 +892,9 @@ def test_project_deploy_apply_stops_on_sync_failure(tmp_path, monkeypatch):
 
     assert payload['status'] == 'error'
     assert payload['failed_step'] == 'sync'
+    assert payload['execution']['failed_step'] == 'sync'
+    assert payload['execution']['executed_steps'] == 1
+    assert payload['execution']['error_steps'] == 1
     assert [step['key'] for step in payload['steps']] == ['sync']
     assert payload['deploy_record']['outcome']['failed_step'] == 'sync'
     assert payload['deploy_record']['outcome']['deploy']['step_statuses']['sync'] == 'error'
@@ -948,6 +965,7 @@ def test_project_deploy_status_includes_last_recorded_deploy_outcome(tmp_path, m
     assert payload['last_deploy']['exists'] is True
     assert payload['last_deploy']['outcome']['status'] == 'ok'
     assert payload['last_deploy']['outcome']['deploy']['mode'] == 'update'
+    assert 'execution' in payload['last_deploy']['outcome']['deploy']
     assert len(calls) == 2
 
 

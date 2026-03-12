@@ -1,18 +1,23 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.52.1-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.53.0-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.52.1 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.53.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.53.0
+- `project_deploy_apply` теперь возвращает явный `execution` summary с количеством planned/executed/ok/error/skipped шагов и `last_step_key`
+- `.veles/deploy-state.json` теперь сохраняет compact execution snapshot внутри deploy outcome, чтобы follow-up diagnostics не парсили весь step trace вручную
+- deploy/server contour стал машинно-читаемее: preview/apply/failure теперь проще использовать как operational contract поверх существующего deploy loop
 
 ### 6.52.0
 - `project_deploy_apply` теперь записывает project-local deploy outcome state в `.veles/deploy-state.json` после успешного и неуспешного apply
