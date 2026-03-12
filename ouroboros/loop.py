@@ -809,6 +809,7 @@ def _call_llm_with_retry(
     event_queue: Optional[queue.Queue],
     accumulated_usage: Dict[str, Any],
     task_type: str = "",
+    interaction_id: Optional[str] = None,
 ) -> Tuple[Optional[Dict[str, Any]], float]:
     """
     Call LLM with retry logic, usage tracking, and event emission.
@@ -825,6 +826,8 @@ def _call_llm_with_retry(
             kwargs = {"messages": messages, "model": model, "reasoning_effort": effort}
             if tools:
                 kwargs["tools"] = tools
+            if interaction_id:
+                kwargs["interaction_id"] = interaction_id
             resp_msg, usage = llm.chat(**kwargs)
             msg = resp_msg
             add_usage(accumulated_usage, usage)

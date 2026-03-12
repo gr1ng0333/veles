@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import pathlib
 import queue
+import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 PROMPT_TOKEN_GUARD_THRESHOLD = 40000
@@ -55,6 +56,7 @@ def _maybe_handle_hard_round_limit(
     accumulated_usage: Dict[str, Any],
     llm_trace: Dict[str, Any],
     task_type: str,
+    interaction_id: Optional[str] = None,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     if round_idx <= max_rounds:
         return None
@@ -74,6 +76,7 @@ def _maybe_handle_hard_round_limit(
             event_queue,
             accumulated_usage,
             task_type,
+            interaction_id=interaction_id,
         )
         if final_msg:
             return (final_msg.get("content") or finish_reason), accumulated_usage, llm_trace
@@ -205,6 +208,7 @@ def _call_llm_with_fallback(
     accumulated_usage: Dict[str, Any],
     task_type: str,
     emit_progress: Callable[[str], None],
+    interaction_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     primary_exc: Optional[Exception] = None
     try:
@@ -221,6 +225,7 @@ def _call_llm_with_fallback(
             event_queue,
             accumulated_usage,
             task_type,
+            interaction_id=interaction_id,
         )
     except Exception as e:
         if _is_codex_timeout_error(e):
@@ -260,6 +265,7 @@ def _call_llm_with_fallback(
             event_queue,
             accumulated_usage,
             task_type,
+            interaction_id=interaction_id,
         )
     except Exception as fallback_exc:
         log.error("Fallback model %s also failed: %s", fallback_model, fallback_exc)
@@ -361,6 +367,7 @@ def _run_one_shot_mode(
     active_model: str,
     active_effort: str,
     tool_schemas: List[Dict[str, Any]],
+    interaction_id: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     msg = _call_llm_with_fallback(
         llm=llm,
@@ -376,6 +383,7 @@ def _run_one_shot_mode(
         accumulated_usage=accumulated_usage,
         task_type=task_type,
         emit_progress=emit_progress,
+        interaction_id=interaction_id,
     )
     if msg is None:
         return (
@@ -531,6 +539,7 @@ def _prepare_round_or_finalize(
         accumulated_usage=state["accumulated_usage"],
         llm_trace=state["llm_trace"],
         task_type=task_type,
+        interaction_id=state.get("interaction_id"),
     )
     if hard_limit is not None:
         return hard_limit
@@ -800,6 +809,7 @@ def _run_single_round(
         accumulated_usage=state["accumulated_usage"],
         task_type=task_type,
         emit_progress=emit_progress,
+        interaction_id=state.get("interaction_id"),
     )
     if msg is None:
         return (
@@ -874,6 +884,7 @@ def run_llm_loop_impl(
         "original_task_text": _extract_original_task(messages),
         "execution_style": execution_style_for_active_mode(),
         "runtime_diagnostics": runtime_diagnostics,
+        "interaction_id": str(uuid.uuid4()),
     }
     # If caller provides a persistent executor (direct-chat), reuse it and
     # do NOT shut it down when this task ends — it survives across messages.
@@ -917,6 +928,7 @@ def run_llm_loop_impl(
                 active_model=state["active_model"],
                 active_effort=state["active_effort"],
                 tool_schemas=[],
+                interaction_id=state.get("interaction_id"),
             )
         while True:
             result = _run_single_round(
