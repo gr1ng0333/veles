@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from ouroboros.tools.project_bootstrap import _project_init, _project_server_register
-from ouroboros.tools.project_deploy import _build_sync_archive, _project_server_sync
+from ouroboros.tools.project_deploy import _build_sync_archive, _project_deploy_recipe, _project_server_sync
 from ouroboros.tools.project_service import _project_service_control, _project_service_render_unit
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
@@ -311,4 +311,93 @@ def test_project_service_control_install_requires_unit_content(tmp_path):
             alias='prod',
             service_name='demo-api',
             action='install',
+        )
+
+
+def test_project_deploy_recipe_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_deploy_recipe" in names
+
+
+def test_project_deploy_recipe_builds_runtime_aware_python_recipe(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='/tmp/id_demo',
+        deploy_path='/srv/demo-api',
+    )
+
+    payload = json.loads(
+        _project_deploy_recipe(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            environment=['PORT=9000'],
+            delete=True,
+            sync_timeout=90,
+            service_timeout=120,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['runtime'] == {'requested': 'auto', 'resolved': 'python'}
+    assert payload['server']['alias'] == 'prod'
+    assert payload['sync_preview']['delete'] is True
+    assert payload['sync_preview']['timeout_seconds'] == 90
+    assert payload['service']['timeout_seconds'] == 120
+    assert payload['service']['unit_name'] == 'demo-api.service'
+    assert 'ExecStart=/usr/bin/python3' in payload['service']['unit_content']
+    assert payload['service']['environment'] == ['PORT=9000']
+    steps = payload['recipe']['steps']
+    assert [step['key'] for step in steps] == ['sync', 'setup', 'install_service', 'enable_start']
+    assert steps[0]['tool'] == 'project_server_sync'
+    assert steps[0]['recommended_args'] == {
+        'name': 'demo-api',
+        'alias': 'prod',
+        'timeout': 90,
+        'delete': True,
+    }
+    assert steps[2]['tool'] == 'project_service_control'
+    assert steps[2]['recommended_args']['action'] == 'install'
+    assert steps[2]['recommended_args']['timeout'] == 120
+    assert steps[2]['recommended_args']['unit_content'] == payload['service']['unit_content']
+    assert any('pip install -r requirements.txt' in command for command in steps[1]['commands'])
+    assert any('systemctl enable --now demo-api.service' in command for command in steps[3]['commands'])
+
+
+def test_project_deploy_recipe_rejects_bad_timeouts(tmp_path):
+    _project_init(_ctx(tmp_path), name='Demo API', language='python')
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='/tmp/id_demo',
+        deploy_path='/srv/demo-api',
+    )
+
+    with pytest.raises(ValueError, match='sync_timeout must be > 0'):
+        _project_deploy_recipe(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            sync_timeout=0,
+        )
+
+    with pytest.raises(ValueError, match='service_timeout must be > 0'):
+        _project_deploy_recipe(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            service_timeout=0,
         )
