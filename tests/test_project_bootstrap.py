@@ -18,6 +18,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_status,
 )
 from ouroboros.tools.project_server_info import _project_server_get, _project_server_remove
+from ouroboros.tools.project_server_management import _project_server_update
 from ouroboros.tools.project_branch_info import _project_branch_delete, _project_branch_get, _project_branch_list, _project_branch_rename
 from ouroboros.tools.project_remote_awareness import _project_branch_compare, _project_git_fetch
 from ouroboros.tools.project_issue_update import (
@@ -248,6 +249,75 @@ def test_project_server_remove_deletes_registered_server(tmp_path):
     assert payload['removed_server']['label'] == 'Production'
     assert payload['registry']['count'] == 1
     assert payload['registry']['aliases'] == ['staging']
+
+
+def test_project_server_update_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_server_update" in names
+
+
+def test_project_server_update_updates_registered_server_metadata(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+        label='Production',
+    )
+
+    payload = json.loads(
+        _project_server_update(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            new_alias='primary',
+            host='api.example.com',
+            user='ubuntu',
+            port=2222,
+            deploy_path='/srv/demo-api-v2',
+            label='Primary',
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['server']['alias'] == 'primary'
+    assert payload['server']['host'] == 'api.example.com'
+    assert payload['server']['user'] == 'ubuntu'
+    assert payload['server']['port'] == 2222
+    assert payload['server']['deploy_path'] == '/srv/demo-api-v2'
+    assert payload['server']['label'] == 'Primary'
+    assert payload['registry']['aliases'] == ['primary']
+
+
+def test_project_server_update_rejects_duplicate_new_alias(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='staging',
+        host='staging.example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api-staging',
+    )
+
+    with pytest.raises(ValueError):
+        _project_server_update(_ctx(tmp_path), name='demo-api', alias='prod', new_alias='staging')
 
 
 def test_project_server_remove_leaves_empty_registry_file_when_last_server_removed(tmp_path):

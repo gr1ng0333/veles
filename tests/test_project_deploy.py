@@ -862,3 +862,164 @@ def test_project_deploy_apply_stops_on_sync_failure(tmp_path, monkeypatch):
     assert payload['failed_step'] == 'sync'
     assert [step['key'] for step in payload['steps']] == ['sync']
 
+
+
+def test_project_server_management_tools_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_server_update" in names
+    assert "project_server_validate" in names
+
+
+def test_project_server_validate_reports_ready_deploy_target(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_management import _project_server_validate
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    calls = []
+
+    def fake_run_remote_text(server, command, timeout):
+        calls.append(command)
+        if 'systemctl show' in command:
+            stdout = (
+                'LoadState=loaded\n'
+                'ActiveState=active\n'
+                'SubState=running\n'
+                'UnitFileState=enabled\n'
+                'Result=success\n'
+                'FragmentPath=/etc/systemd/system/demo-api.service\n'
+            )
+            return subprocess.CompletedProcess(['ssh', command], 0, stdout=stdout, stderr='')
+        stdout = (
+            'SSH_OK=1\n'
+            'WHOAMI=deploy\n'
+            'SYSTEMCTL=present\n'
+            'DEPLOY_EXISTS=1\n'
+            'DEPLOY_WRITABLE=1\n'
+            'PARENT_EXISTS=1\n'
+            'PARENT_WRITABLE=1\n'
+        )
+        return subprocess.CompletedProcess(['ssh', command], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_management._run_remote_text', fake_run_remote_text)
+
+    payload = json.loads(
+        _project_server_validate(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            timeout=25,
+            sudo=False,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['validation']['ok'] is True
+    assert payload['validation']['checks']['ssh'] is True
+    assert payload['validation']['checks']['deploy_path_ready'] is True
+    assert payload['validation']['checks']['service_unit_exists'] is True
+    assert payload['service']['unit_name'] == 'demo-api.service'
+    assert len(calls) == 2
+
+
+def test_project_server_validate_accepts_missing_deploy_dir_when_parent_is_writable(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_management import _project_server_validate
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fake_run_remote_text(server, command, timeout):
+        stdout = (
+            'SSH_OK=1\n'
+            'WHOAMI=deploy\n'
+            'SYSTEMCTL=present\n'
+            'DEPLOY_EXISTS=0\n'
+            'DEPLOY_WRITABLE=0\n'
+            'PARENT_EXISTS=1\n'
+            'PARENT_WRITABLE=1\n'
+        )
+        return subprocess.CompletedProcess(['ssh', command], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_management._run_remote_text', fake_run_remote_text)
+
+    payload = json.loads(_project_server_validate(_ctx(tmp_path), name='demo-api', alias='prod'))
+
+    assert payload['status'] == 'ok'
+    assert payload['validation']['checks']['deploy_path_exists'] is False
+    assert payload['validation']['checks']['deploy_parent_writable'] is True
+    assert payload['validation']['checks']['deploy_path_ready'] is True
+
+
+def test_project_server_validate_reports_not_ready_when_service_is_missing(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_management import _project_server_validate
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    calls = []
+
+    def fake_run_remote_text(server, command, timeout):
+        calls.append(command)
+        if 'systemctl show' in command:
+            stdout = (
+                'LoadState=not-found\n'
+                'ActiveState=inactive\n'
+                'SubState=dead\n'
+                'UnitFileState=\n'
+                'Result=success\n'
+                'FragmentPath=\n'
+            )
+            return subprocess.CompletedProcess(['ssh', command], 0, stdout=stdout, stderr='')
+        stdout = (
+            'SSH_OK=1\n'
+            'WHOAMI=deploy\n'
+            'SYSTEMCTL=present\n'
+            'DEPLOY_EXISTS=1\n'
+            'DEPLOY_WRITABLE=1\n'
+            'PARENT_EXISTS=1\n'
+            'PARENT_WRITABLE=1\n'
+        )
+        return subprocess.CompletedProcess(['ssh', command], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_management._run_remote_text', fake_run_remote_text)
+
+    payload = json.loads(
+        _project_server_validate(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+        )
+    )
+
+    assert payload['status'] == 'error'
+    assert payload['validation']['ok'] is False
+    assert payload['validation']['checks']['service_unit_exists'] is False
+    assert len(calls) == 2
