@@ -552,6 +552,62 @@ def _project_pr_comment(
     )
 
 
+def _project_pr_merge(
+    ctx: ToolContext,
+    name: str,
+    number: int,
+    method: str = 'merge',
+    delete_branch: bool = False,
+) -> str:
+    del ctx
+    repo_dir = _require_local_project(name)
+    project_name = str(name or '').strip()
+    try:
+        pr_number = int(number)
+    except (TypeError, ValueError) as e:
+        raise ValueError('number must be an integer') from e
+    if pr_number <= 0:
+        raise ValueError('number must be positive')
+
+    method_value = str(method or 'merge').strip().lower() or 'merge'
+    allowed_methods = {'merge': '--merge', 'squash': '--squash', 'rebase': '--rebase'}
+    if method_value not in allowed_methods:
+        raise ValueError('method must be one of: merge, squash, rebase')
+
+    repo_slug = _project_github_slug(repo_dir)
+    args = ['pr', 'merge', str(pr_number), allowed_methods[method_value]]
+    if delete_branch:
+        args.append('--delete-branch')
+
+    res = _run_gh(args, cwd=repo_dir, timeout=180)
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or res.stdout.strip() or 'gh pr merge failed')
+
+    result_text = (res.stdout or '').strip() or 'pull request merged'
+    return json.dumps(
+        {
+            'status': 'ok',
+            'merged_at': _utc_now_iso(),
+            'project': {
+                'name': project_name,
+                'path': str(repo_dir),
+            },
+            'github': {
+                'repo': repo_slug,
+                'pull_request_merge': {
+                    'number': pr_number,
+                    'method': method_value,
+                    'delete_branch': bool(delete_branch),
+                    'result': result_text,
+                },
+            },
+            'repo': _repo_info(repo_dir),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def get_tools() -> List[ToolEntry]:
     return [
         _tool_entry(
@@ -643,6 +699,19 @@ def get_tools() -> List[ToolEntry]:
             },
             ['name', 'number', 'body'],
             _project_pr_comment,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            'project_pr_merge',
+            'Merge a GitHub pull request in an existing bootstrapped local project repository, using its configured origin remote.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'number': {'type': 'integer', 'description': 'Pull request number to merge'},
+                'method': {'type': 'string', 'description': 'Merge strategy: merge, squash, or rebase', 'default': 'merge'},
+                'delete_branch': {'type': 'boolean', 'description': 'Delete the PR branch after merge', 'default': False},
+            },
+            ['name', 'number'],
+            _project_pr_merge,
             is_code_tool=True,
         ),
         _tool_entry(
