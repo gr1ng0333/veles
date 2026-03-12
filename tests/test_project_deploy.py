@@ -6,6 +6,7 @@ import pytest
 
 from ouroboros.tools.project_bootstrap import _project_init, _project_server_register
 from ouroboros.tools.project_deploy import _build_sync_archive, _project_server_sync
+from ouroboros.tools.project_service import _project_service_control
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
@@ -96,3 +97,125 @@ def test_project_server_sync_rejects_bad_timeout(tmp_path):
 
     with pytest.raises(ValueError):
         _project_server_sync(_ctx(tmp_path), name='demo-api', alias='prod', timeout=0)
+
+
+def test_project_service_control_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_service_control" in names
+
+
+def test_project_service_control_install_streams_unit_and_reloads_systemd(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    captured = {}
+
+    def fake_run_ssh_stream(args, stdin_bytes, timeout):
+        captured['args'] = args
+        captured['stdin_bytes'] = stdin_bytes
+        captured['timeout'] = timeout
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout=b'installed\n', stderr=b'')
+
+    monkeypatch.setattr('ouroboros.tools.project_service._run_ssh_stream', fake_run_ssh_stream)
+
+    unit = "[Unit]\nDescription=Demo API\n[Service]\nExecStart=/usr/bin/python3 /srv/demo-api/app.py\n"
+    payload = json.loads(
+        _project_service_control(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            action='install',
+            unit_content=unit,
+            start_on_install=True,
+            timeout=90,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['service']['action'] == 'install'
+    assert payload['service']['install']['enable_on_install'] is True
+    assert payload['service']['install']['start_on_install'] is True
+    assert payload['result']['stdout'] == 'installed\n'
+    assert captured['timeout'] == 90
+    assert captured['stdin_bytes'] == unit.encode('utf-8')
+    command = captured['args'][-1]
+    assert 'sudo tee /etc/systemd/system/demo-api.service >/dev/null' in command
+    assert 'sudo systemctl daemon-reload' in command
+    assert 'sudo systemctl enable demo-api' in command
+    assert 'sudo systemctl start demo-api' in command
+
+
+def test_project_service_control_status_runs_systemctl_over_ssh(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    captured = {}
+
+    def fake_run_ssh_text(args, timeout):
+        captured['args'] = args
+        captured['timeout'] = timeout
+        return subprocess.CompletedProcess(['ssh', *args], 3, stdout='inactive\n', stderr='failed\n')
+
+    monkeypatch.setattr('ouroboros.tools.project_service._run_ssh_text', fake_run_ssh_text)
+
+    payload = json.loads(
+        _project_service_control(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api.service',
+            action='status',
+            max_output_chars=10,
+            sudo=False,
+        )
+    )
+
+    assert payload['status'] == 'error'
+    assert payload['service']['action'] == 'status'
+    assert payload['service']['sudo'] is False
+    assert payload['result']['exit_code'] == 3
+    assert payload['result']['output'] == 'inactive\nf'
+    assert payload['result']['truncated'] is True
+    assert captured['timeout'] == 60
+    assert captured['args'][-1] == 'systemctl status demo-api.service'
+
+
+def test_project_service_control_install_requires_unit_content(tmp_path):
+    _project_init(_ctx(tmp_path), name='Demo API', language='python')
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    with pytest.raises(ValueError):
+        _project_service_control(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            action='install',
+        )
