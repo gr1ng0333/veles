@@ -5,17 +5,9 @@ import pathlib
 import re
 from typing import List
 
-from .project_bootstrap import (
-    _git,
-    _git_remote_url,
-    _normalize_project_name,
-    _repo_info,
-    _require_local_project,
-    _run_gh,
-    _tool_entry,
-    _utc_now_iso,
-)
-from .registry import ToolContext, ToolEntry
+from ouroboros.tools.external_repos import _tool_entry
+from ouroboros.tools.project_bootstrap import _git, _git_remote_url, _repo_info, _require_local_project, _run_gh, _utc_now_iso
+from ouroboros.tools.registry import ToolContext, ToolEntry
 
 
 def _project_github_slug(repo_dir: pathlib.Path) -> str:
@@ -35,7 +27,7 @@ def _project_github_slug(repo_dir: pathlib.Path) -> str:
 
 
 def _remote_branch_exists(repo_dir: pathlib.Path, branch: str) -> bool:
-    res = _git(["ls-remote", "--heads", "origin", branch], repo_dir, timeout=60)
+    res = _git(['ls-remote', '--heads', 'origin', branch], repo_dir, timeout=60)
     return res.returncode == 0 and bool((res.stdout or '').strip())
 
 
@@ -49,14 +41,14 @@ def _project_pr_create(
 ) -> str:
     del ctx
     repo_dir = _require_local_project(name)
-    project_name = _normalize_project_name(name)
+    project_name = str(name or '').strip()
     if not str(title or '').strip():
         raise ValueError('title must be non-empty')
 
     repo_slug = _project_github_slug(repo_dir)
     head_branch = str(head or '').strip()
     if not head_branch:
-        branch_res = _git(["rev-parse", "--abbrev-ref", "HEAD"], repo_dir, timeout=30)
+        branch_res = _git(['rev-parse', '--abbrev-ref', 'HEAD'], repo_dir, timeout=30)
         if branch_res.returncode != 0:
             raise RuntimeError(branch_res.stderr.strip() or branch_res.stdout.strip() or 'git rev-parse failed')
         head_branch = (branch_res.stdout or '').strip()
@@ -110,16 +102,16 @@ def _project_pr_create(
 def get_tools() -> List[ToolEntry]:
     return [
         _tool_entry(
-            "project_pr_create",
-            "Create a GitHub pull request directly from an existing bootstrapped local project repository, using its configured origin remote and current or specified pushed branch.",
+            'project_pr_create',
+            'Create a GitHub pull request directly from an existing bootstrapped local project repository, using its configured origin remote and current or specified pushed branch.',
             {
-                "name": {"type": "string", "description": "Existing local project name under the projects root"},
-                "title": {"type": "string", "description": "Pull request title"},
-                "body": {"type": "string", "description": "Optional pull request body/description"},
-                "base": {"type": "string", "description": "Base branch to merge into", "default": "main"},
-                "head": {"type": "string", "description": "Optional head branch to open the PR from; defaults to current HEAD branch"},
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'title': {'type': 'string', 'description': 'Pull request title'},
+                'body': {'type': 'string', 'description': 'Optional pull request body/description'},
+                'base': {'type': 'string', 'description': 'Base branch to merge into', 'default': 'main'},
+                'head': {'type': 'string', 'description': 'Optional head branch to open the PR from; defaults to current HEAD branch'},
             },
-            ["name", "title"],
+            ['name', 'title'],
             _project_pr_create,
             is_code_tool=True,
         ),
