@@ -7,6 +7,7 @@ import pytest
 from ouroboros.tools.project_bootstrap import (
     _normalize_project_name,
     _project_commit,
+    _project_file_read,
     _project_file_write,
     _project_github_create,
     _project_init,
@@ -87,6 +88,13 @@ def test_project_file_write_registered():
     assert "project_file_write" in names
 
 
+def test_project_file_read_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_file_read" in names
+
+
 def test_project_commit_registered():
     tmp = pathlib.Path("/tmp")
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
@@ -99,6 +107,85 @@ def test_project_push_registered():
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     names = {t["function"]["name"] for t in registry.schemas()}
     assert "project_push" in names
+
+
+def test_project_file_read_reads_utf8_content_inside_local_project(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_file_write(
+        _ctx(tmp_path),
+        name="demo-api",
+        path="src/demo_api/config.json",
+        content='{"port": 8080}\n',
+    )
+
+    payload = json.loads(
+        _project_file_read(
+            _ctx(tmp_path),
+            name="demo-api",
+            path="src/demo_api/config.json",
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["file"]["path"] == "src/demo_api/config.json"
+    assert payload["file"]["truncated"] is False
+    assert payload["content"] == '{"port": 8080}\n'
+
+
+def test_project_file_read_truncates_when_max_chars_is_small(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_file_write(
+        _ctx(tmp_path),
+        name="demo-api",
+        path="README.md",
+        content="abcdefghij",
+    )
+
+    payload = json.loads(
+        _project_file_read(
+            _ctx(tmp_path),
+            name="demo-api",
+            path="README.md",
+            max_chars=5,
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["file"]["truncated"] is True
+    assert payload["file"]["max_chars"] == 5
+    assert payload["content"] == "abcde"
+
+
+def test_project_file_read_truncates_with_marker_for_normal_limits(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_file_write(
+        _ctx(tmp_path),
+        name="demo-api",
+        path="README.md",
+        content="abcdefghijklmnopqrstuvwxyz",
+    )
+
+    payload = json.loads(
+        _project_file_read(
+            _ctx(tmp_path),
+            name="demo-api",
+            path="README.md",
+            max_chars=20,
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["file"]["truncated"] is True
+    assert len(payload["content"]) == 20
+    assert "...(truncated)..." in payload["content"]
+    assert payload["content"].startswith("a")
+    assert payload["content"].endswith("yz")
+
+
+def test_project_file_read_rejects_missing_project_file(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    with pytest.raises(ValueError):
+        _project_file_read(_ctx(tmp_path), name="demo-api", path="missing.txt")
 
 
 def test_project_file_write_updates_file_inside_local_project(tmp_path):

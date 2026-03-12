@@ -9,12 +9,14 @@ from typing import Any, Dict, List
 
 from ouroboros.utils import safe_relpath
 
+
 from ouroboros.tools.external_repos import _ensure_external_repo_git_identity, _tool_entry
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 _DEFAULT_PROJECTS_ROOT = "/opt/repos"
 _ALLOWED_LANGUAGES = {"python", "node", "static"}
 _MAX_WRITE_CHARS = 500_000
+_DEFAULT_READ_PREVIEW_CHARS = 20_000
 
 
 def _utc_now_iso() -> str:
@@ -53,6 +55,18 @@ def _project_dir(name: str) -> pathlib.Path:
 def _write_text(path: pathlib.Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _clip_project_read_content(content: str, max_chars: int) -> str:
+    marker = "...(truncated)..."
+    if max_chars <= 0 or len(content) <= max_chars:
+        return content
+    if max_chars <= len(marker) + 2:
+        return content[:max_chars]
+    available = max_chars - len(marker)
+    head = max(1, available // 2)
+    tail = max(1, available - head)
+    return content[:head] + marker + content[-tail:]
 
 
 def _python_template(project_name: str, description: str) -> Dict[str, str]:
@@ -183,6 +197,46 @@ def _run_gh(args: List[str], cwd: pathlib.Path, timeout: int = 120) -> subproces
         )
     except FileNotFoundError as e:
         raise RuntimeError("gh CLI not found on VPS") from e
+
+
+def _project_file_read(ctx: ToolContext, name: str, path: str, max_chars: int = _DEFAULT_READ_PREVIEW_CHARS) -> str:
+    repo_dir = _require_local_project(name)
+    rel = safe_relpath(path)
+    target = (repo_dir / rel).resolve()
+    try:
+        target.relative_to(repo_dir.resolve())
+    except ValueError as e:
+        raise ValueError(f"path escapes project repository: {path}") from e
+    if not target.exists() or not target.is_file():
+        raise ValueError(f"project file does not exist: {rel}")
+
+    try:
+        requested_max = int(max_chars)
+    except (TypeError, ValueError) as e:
+        raise ValueError('max_chars must be an integer') from e
+    if requested_max <= 0:
+        raise ValueError('max_chars must be > 0')
+
+    content = target.read_text(encoding='utf-8')
+    preview = _clip_project_read_content(content, requested_max)
+    payload = {
+        'status': 'ok',
+        'read_at': _utc_now_iso(),
+        'project': {
+            'name': _normalize_project_name(name),
+            'path': str(repo_dir),
+        },
+        'file': {
+            'path': rel,
+            'bytes': target.stat().st_size,
+            'chars': len(content),
+            'truncated': preview != content,
+            'max_chars': requested_max,
+        },
+        'content': preview,
+        'repo': _repo_info(repo_dir),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _project_file_write(ctx: ToolContext, name: str, path: str, content: str) -> str:
@@ -429,6 +483,18 @@ def get_tools() -> List[ToolEntry]:
             },
             ["name"],
             _project_github_create,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            "project_file_read",
+            "Read a UTF-8 text file from an existing bootstrapped local project repository.",
+            {
+                "name": {"type": "string", "description": "Existing local project name under the projects root"},
+                "path": {"type": "string", "description": "Relative file path inside the project repository"},
+                "max_chars": {"type": "integer", "description": "Optional maximum number of characters to return before clipping", "default": _DEFAULT_READ_PREVIEW_CHARS},
+            },
+            ["name", "path"],
+            _project_file_read,
             is_code_tool=True,
         ),
         _tool_entry(
