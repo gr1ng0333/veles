@@ -520,6 +520,53 @@ def test_project_deploy_apply_update_restarts_after_setup_and_install(tmp_path, 
     assert payload['summary']['lifecycle_action'] == 'restart'
 
 
+def test_project_deploy_apply_dry_run_returns_planned_trace_without_execution(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='/tmp/id_demo',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fail_sync(ctx, **kwargs):
+        raise AssertionError('sync must not run during dry_run')
+
+    def fail_run(ctx, **kwargs):
+        raise AssertionError('setup must not run during dry_run')
+
+    def fail_service(ctx, **kwargs):
+        raise AssertionError('service control must not run during dry_run')
+
+    monkeypatch.setattr('ouroboros.tools.project_deploy._project_server_sync', fail_sync)
+    monkeypatch.setattr('ouroboros.tools.project_bootstrap._project_server_run', fail_run)
+    monkeypatch.setattr('ouroboros.tools.project_service._project_service_control', fail_service)
+
+    payload = json.loads(
+        _project_deploy_apply(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            mode='install',
+            delete=True,
+            dry_run=True,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['dry_run'] is True
+    assert [step['key'] for step in payload['steps']] == ['sync', 'setup', 'install_service', 'start', 'status']
+    assert all(step['status'] == 'planned' for step in payload['steps'])
+    assert payload['steps'][0]['args']['delete'] is True
+    assert payload['steps'][1]['payload']['setup']['count'] == 3
+    assert payload['summary']['lifecycle_action'] == 'start'
+    assert payload['summary']['status_ok'] is None
+
+
 
 def test_project_deploy_apply_stops_on_setup_failure(tmp_path, monkeypatch):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")

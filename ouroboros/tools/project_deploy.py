@@ -135,6 +135,141 @@ def _project_setup_run(
     return payload
 
 
+
+
+def _project_deploy_summary(recipe_payload: Dict[str, Any], service_name: str, lifecycle_action: str, status_ok: bool | None) -> Dict[str, Any]:
+    return {
+        'service_name': service_name,
+        'unit_name': recipe_payload['service']['unit_name'],
+        'runtime': recipe_payload['runtime']['resolved'],
+        'sync_file_count': recipe_payload['sync_preview']['file_count'],
+        'lifecycle_action': lifecycle_action,
+        'status_ok': status_ok,
+    }
+
+
+def _project_deploy_base_payload(
+    recipe_payload: Dict[str, Any],
+    *,
+    project_name: str,
+    mode_value: str,
+    steps: List[Dict[str, Any]],
+    service_name: str,
+    lifecycle_action: str,
+    status: str,
+    dry_run: bool = False,
+    failed_step: str = '',
+    status_ok: bool | None = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        'status': status,
+        'applied_at': _utc_now_iso(),
+        'project': recipe_payload['project'],
+        'server': recipe_payload['server'],
+        'mode': mode_value,
+        'recipe': recipe_payload,
+        'steps': steps,
+        'summary': _project_deploy_summary(recipe_payload, service_name, lifecycle_action, status_ok),
+        'repo': recipe_payload.get('repo') or _repo_info(_require_local_project(project_name)),
+    }
+    if dry_run:
+        payload['dry_run'] = True
+    if failed_step:
+        payload['failed_step'] = failed_step
+    return payload
+
+
+def _project_deploy_planned_steps(
+    *,
+    sync_args: Dict[str, Any],
+    setup_commands: List[str],
+    sync_timeout: int,
+    mode_value: str,
+    install_args: Dict[str, Any],
+    lifecycle_action: str,
+    lifecycle_args: Dict[str, Any],
+    status_args: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    steps: List[Dict[str, Any]] = [
+        {
+            'key': 'sync',
+            'tool': 'project_server_sync',
+            'args': sync_args,
+            'status': 'planned',
+            'payload': {'status': 'planned'},
+        },
+        {
+            'key': 'setup',
+            'tool': 'project_server_run',
+            'args': {
+                'commands': setup_commands,
+                'combined_command': ' && '.join(setup_commands),
+                'timeout': sync_timeout,
+            },
+            'status': 'planned',
+            'payload': {
+                'status': 'planned',
+                'setup': {
+                    'commands': setup_commands,
+                    'count': len(setup_commands),
+                    'skipped': not bool(setup_commands),
+                },
+            },
+        },
+    ]
+    if mode_value in {'install', 'update'}:
+        steps.append({
+            'key': 'install_service',
+            'tool': 'project_service_control',
+            'args': install_args,
+            'status': 'planned',
+            'payload': {'status': 'planned'},
+        })
+    steps.extend([
+        {
+            'key': lifecycle_action,
+            'tool': 'project_service_control',
+            'args': lifecycle_args,
+            'status': 'planned',
+            'payload': {'status': 'planned'},
+        },
+        {
+            'key': 'status',
+            'tool': 'project_service_control',
+            'args': status_args,
+            'status': 'planned',
+            'payload': {'status': 'planned'},
+        },
+    ])
+    return steps
+
+
+def _project_deploy_fail(
+    recipe_payload: Dict[str, Any],
+    *,
+    project_name: str,
+    mode_value: str,
+    steps: List[Dict[str, Any]],
+    service_name: str,
+    lifecycle_action: str,
+    failed_step: str,
+) -> str:
+    return json.dumps(
+        _project_deploy_base_payload(
+            recipe_payload,
+            project_name=project_name,
+            mode_value=mode_value,
+            steps=steps,
+            service_name=service_name,
+            lifecycle_action=lifecycle_action,
+            status='error',
+            failed_step=failed_step,
+            status_ok=False,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
+
 def _project_deploy_apply(
     ctx: ToolContext,
     name: str,
@@ -158,6 +293,7 @@ def _project_deploy_apply(
     enable_on_install: bool = True,
     start_on_install: bool = False,
     sudo: bool = True,
+    dry_run: bool = False,
 ) -> str:
     project_name = _normalize_project_name(name)
     mode_value = _normalize_deploy_apply_mode(mode)
@@ -191,8 +327,6 @@ def _project_deploy_apply(
         )
     )
 
-    from ouroboros.tools.project_service import _project_service_control
-
     sync_args = dict(recipe_payload['recipe']['steps'][0]['recommended_args'])
     setup_commands = list(recipe_payload['recipe']['steps'][1].get('commands') or [])
     install_args = dict(recipe_payload['recipe']['steps'][2]['recommended_args'])
@@ -201,56 +335,6 @@ def _project_deploy_apply(
         'start_on_install': bool(start_on_install),
         'sudo': bool(sudo),
     })
-
-    steps: List[Dict[str, Any]] = []
-    sync_payload = _decode_tool_payload(_project_server_sync(ctx, **sync_args))
-    steps.append(_step_result('sync', 'project_server_sync', sync_args, sync_payload))
-    if sync_payload.get('status') != 'ok':
-        return json.dumps({
-            'status': 'error',
-            'applied_at': _utc_now_iso(),
-            'project': recipe_payload['project'],
-            'server': recipe_payload['server'],
-            'mode': mode_value,
-            'failed_step': 'sync',
-            'steps': steps,
-            'recipe': recipe_payload,
-        }, ensure_ascii=False, indent=2)
-
-    setup_payload = _project_setup_run(
-        ctx,
-        name=project_name,
-        alias=alias,
-        commands=setup_commands,
-        timeout=sync_timeout,
-    )
-    steps.append(_setup_result('setup', setup_commands, setup_payload))
-    if setup_payload.get('status') != 'ok':
-        return json.dumps({
-            'status': 'error',
-            'applied_at': _utc_now_iso(),
-            'project': recipe_payload['project'],
-            'server': recipe_payload['server'],
-            'mode': mode_value,
-            'failed_step': 'setup',
-            'steps': steps,
-            'recipe': recipe_payload,
-        }, ensure_ascii=False, indent=2)
-
-    if mode_value in {'install', 'update'}:
-        install_payload = _decode_tool_payload(_project_service_control(ctx, **install_args))
-        steps.append(_step_result('install_service', 'project_service_control', install_args, install_payload))
-        if install_payload.get('status') != 'ok':
-            return json.dumps({
-                'status': 'error',
-                'applied_at': _utc_now_iso(),
-                'project': recipe_payload['project'],
-                'server': recipe_payload['server'],
-                'mode': mode_value,
-                'failed_step': 'install_service',
-                'steps': steps,
-                'recipe': recipe_payload,
-            }, ensure_ascii=False, indent=2)
 
     lifecycle_action = 'start' if mode_value == 'install' else 'restart' if mode_value == 'update' else mode_value
     lifecycle_args = {
@@ -261,20 +345,6 @@ def _project_deploy_apply(
         'timeout': service_timeout,
         'sudo': bool(sudo),
     }
-    lifecycle_payload = _decode_tool_payload(_project_service_control(ctx, **lifecycle_args))
-    steps.append(_step_result(lifecycle_action, 'project_service_control', lifecycle_args, lifecycle_payload))
-    if lifecycle_payload.get('status') != 'ok':
-        return json.dumps({
-            'status': 'error',
-            'applied_at': _utc_now_iso(),
-            'project': recipe_payload['project'],
-            'server': recipe_payload['server'],
-            'mode': mode_value,
-            'failed_step': lifecycle_action,
-            'steps': steps,
-            'recipe': recipe_payload,
-        }, ensure_ascii=False, indent=2)
-
     status_args = {
         'name': project_name,
         'alias': alias,
@@ -283,30 +353,114 @@ def _project_deploy_apply(
         'timeout': status_timeout_value,
         'sudo': bool(sudo),
     }
+
+    if dry_run:
+        preview_steps = _project_deploy_planned_steps(
+            sync_args=sync_args,
+            setup_commands=setup_commands,
+            sync_timeout=sync_timeout,
+            mode_value=mode_value,
+            install_args=install_args,
+            lifecycle_action=lifecycle_action,
+            lifecycle_args=lifecycle_args,
+            status_args=status_args,
+        )
+        return json.dumps(
+            _project_deploy_base_payload(
+                recipe_payload,
+                project_name=project_name,
+                mode_value=mode_value,
+                steps=preview_steps,
+                service_name=install_args['service_name'],
+                lifecycle_action=lifecycle_action,
+                status='ok',
+                dry_run=True,
+                status_ok=None,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    from ouroboros.tools.project_service import _project_service_control
+
+    steps: List[Dict[str, Any]] = []
+    sync_payload = _decode_tool_payload(_project_server_sync(ctx, **sync_args))
+    steps.append(_step_result('sync', 'project_server_sync', sync_args, sync_payload))
+    if sync_payload.get('status') != 'ok':
+        return _project_deploy_fail(
+            recipe_payload,
+            project_name=project_name,
+            mode_value=mode_value,
+            steps=steps,
+            service_name=install_args['service_name'],
+            lifecycle_action=lifecycle_action,
+            failed_step='sync',
+        )
+
+    setup_payload = _project_setup_run(
+        ctx,
+        name=project_name,
+        alias=alias,
+        commands=setup_commands,
+        timeout=sync_timeout,
+    )
+    steps.append(_setup_result('setup', setup_commands, setup_payload))
+    if setup_payload.get('status') != 'ok':
+        return _project_deploy_fail(
+            recipe_payload,
+            project_name=project_name,
+            mode_value=mode_value,
+            steps=steps,
+            service_name=install_args['service_name'],
+            lifecycle_action=lifecycle_action,
+            failed_step='setup',
+        )
+
+    if mode_value in {'install', 'update'}:
+        install_payload = _decode_tool_payload(_project_service_control(ctx, **install_args))
+        steps.append(_step_result('install_service', 'project_service_control', install_args, install_payload))
+        if install_payload.get('status') != 'ok':
+            return _project_deploy_fail(
+                recipe_payload,
+                project_name=project_name,
+                mode_value=mode_value,
+                steps=steps,
+                service_name=install_args['service_name'],
+                lifecycle_action=lifecycle_action,
+                failed_step='install_service',
+            )
+
+    lifecycle_payload = _decode_tool_payload(_project_service_control(ctx, **lifecycle_args))
+    steps.append(_step_result(lifecycle_action, 'project_service_control', lifecycle_args, lifecycle_payload))
+    if lifecycle_payload.get('status') != 'ok':
+        return _project_deploy_fail(
+            recipe_payload,
+            project_name=project_name,
+            mode_value=mode_value,
+            steps=steps,
+            service_name=install_args['service_name'],
+            lifecycle_action=lifecycle_action,
+            failed_step=lifecycle_action,
+        )
+
     status_payload = _decode_tool_payload(_project_service_control(ctx, **status_args))
     steps.append(_step_result('status', 'project_service_control', status_args, status_payload))
 
-    payload = {
-        'status': 'ok' if status_payload.get('status') == 'ok' else 'error',
-        'applied_at': _utc_now_iso(),
-        'project': recipe_payload['project'],
-        'server': recipe_payload['server'],
-        'mode': mode_value,
-        'recipe': recipe_payload,
-        'steps': steps,
-        'summary': {
-            'service_name': install_args['service_name'],
-            'unit_name': recipe_payload['service']['unit_name'],
-            'runtime': recipe_payload['runtime']['resolved'],
-            'sync_file_count': recipe_payload['sync_preview']['file_count'],
-            'lifecycle_action': lifecycle_action,
-            'status_ok': status_payload.get('status') == 'ok',
-        },
-        'repo': recipe_payload.get('repo') or _repo_info(_require_local_project(project_name)),
-    }
-    if status_payload.get('status') != 'ok':
-        payload['failed_step'] = 'status'
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json.dumps(
+        _project_deploy_base_payload(
+            recipe_payload,
+            project_name=project_name,
+            mode_value=mode_value,
+            steps=steps,
+            service_name=install_args['service_name'],
+            lifecycle_action=lifecycle_action,
+            status='ok' if status_payload.get('status') == 'ok' else 'error',
+            failed_step='status' if status_payload.get('status') != 'ok' else '',
+            status_ok=status_payload.get('status') == 'ok',
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _detect_recipe_runtime(repo_dir: pathlib.Path) -> str:
@@ -709,6 +863,7 @@ def get_tools() -> List[ToolEntry]:
                 'enable_on_install': {'type': 'boolean', 'description': 'Whether install mode should enable the unit during the install step', 'default': True},
                 'start_on_install': {'type': 'boolean', 'description': 'Whether install mode should also start the unit inside the install step before the explicit lifecycle action', 'default': False},
                 'sudo': {'type': 'boolean', 'description': 'Whether remote service actions should use sudo systemctl', 'default': True},
+                'dry_run': {'type': 'boolean', 'description': 'If true, return the planned deploy trace without executing SSH sync, setup, or systemd actions', 'default': False},
             },
             ['name', 'alias', 'service_name'],
             _project_deploy_apply,
