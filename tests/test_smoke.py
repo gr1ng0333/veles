@@ -132,7 +132,7 @@ EXPECTED_TOOLS = [
     "monitor_snapshot",
     "time_status",
     "research_report",
-    "project_init", "project_github_create", "project_file_read", "project_file_write", "project_commit", "project_push", "project_status", "project_server_register", "project_server_list", "project_server_run", "project_server_sync", "project_service_control",
+    "project_init", "project_github_create", "project_file_read", "project_file_write", "project_commit", "project_push", "project_status", "project_server_register", "project_server_list", "project_server_run", "project_server_sync", "project_service_render_unit", "project_service_control",
 ]
 
 
