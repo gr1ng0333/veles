@@ -149,6 +149,223 @@ def test_project_service_render_unit_rejects_bad_environment_entry(tmp_path):
         )
 
 
+
+
+def test_project_server_observability_tools_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_server_health" in names
+    assert "project_service_status" in names
+    assert "project_service_logs" in names
+    assert "project_deploy_status" in names
+
+
+def test_project_server_health_reads_remote_health_snapshot(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_observability import _project_server_health
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    captured = {}
+
+    def fake_run_ssh_text(args, timeout):
+        captured['args'] = args
+        captured['timeout'] = timeout
+        stdout = (
+            'HOSTNAME=api-1\n'
+            'KERNEL=Linux 6.8\n'
+            'WHOAMI=deploy\n'
+            'PWD=/home/deploy\n'
+            'SYSTEMCTL=present\n'
+            'DEPLOY_EXISTS=1\n'
+            'DEPLOY_WRITABLE=0\n'
+        )
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_observability._run_ssh_text', fake_run_ssh_text)
+
+    payload = json.loads(_project_server_health(_ctx(tmp_path), name='demo-api', alias='prod', timeout=45))
+
+    assert payload['status'] == 'ok'
+    assert payload['health']['reachable'] is True
+    assert payload['health']['hostname'] == 'api-1'
+    assert payload['health']['systemctl_available'] is True
+    assert payload['health']['deploy_path_exists'] is True
+    assert payload['health']['deploy_path_writable'] is False
+    assert payload['command']['timeout_seconds'] == 45
+    assert captured['timeout'] == 45
+    assert 'deploy@example.com' in captured['args']
+
+
+def test_project_service_status_reads_structured_systemd_snapshot(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_observability import _project_service_status
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    captured = {}
+
+    def fake_run_ssh_text(args, timeout):
+        captured['args'] = args
+        captured['timeout'] = timeout
+        stdout = (
+            'LoadState=loaded\n'
+            'ActiveState=active\n'
+            'SubState=running\n'
+            'UnitFileState=enabled\n'
+            'FragmentPath=/etc/systemd/system/demo-api.service\n'
+            'ExecMainPID=1234\n'
+            'ExecMainStatus=0\n'
+            'Result=success\n'
+            'enabled\n'
+        )
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_observability._run_ssh_text', fake_run_ssh_text)
+
+    payload = json.loads(
+        _project_service_status(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            timeout=30,
+            sudo=False,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['service']['unit_name'] == 'demo-api.service'
+    assert payload['service']['running'] is True
+    assert payload['service']['exists'] is True
+    assert payload['service']['enabled_state'] == 'enabled'
+    assert payload['service']['exec_main_pid'] == '1234'
+    assert captured['timeout'] == 30
+    assert captured['args'][-1].startswith('systemctl show demo-api.service --no-page')
+
+
+def test_project_service_logs_reads_journalctl_output(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_observability import _project_service_logs
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    captured = {}
+
+    def fake_run_ssh_text(args, timeout):
+        captured['args'] = args
+        captured['timeout'] = timeout
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout='L1\nL2\nL3\n', stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_observability._run_ssh_text', fake_run_ssh_text)
+
+    payload = json.loads(
+        _project_service_logs(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api.service',
+            lines=50,
+            timeout=20,
+            max_output_chars=5,
+            sudo=False,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['logs']['lines_requested'] == 50
+    assert payload['logs']['content'] == 'L1\nL2'
+    assert payload['result']['truncated'] is True
+    assert captured['timeout'] == 20
+    assert captured['args'][-1] == 'journalctl -u demo-api.service -n 50 --no-pager --output=short-iso'
+
+
+def test_project_deploy_status_combines_deploy_probe_and_service_snapshot(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_observability import _project_deploy_status
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    calls = []
+
+    def fake_run_ssh_text(args, timeout):
+        calls.append(args[-1])
+        if 'systemctl show' in args[-1]:
+            stdout = (
+                'LoadState=loaded\n'
+                'ActiveState=failed\n'
+                'SubState=failed\n'
+                'UnitFileState=enabled\n'
+                'FragmentPath=/etc/systemd/system/demo-api.service\n'
+                'ExecMainPID=0\n'
+                'ExecMainStatus=1\n'
+                'Result=exit-code\n'
+                'enabled\n'
+            )
+            return subprocess.CompletedProcess(['ssh', *args], 0, stdout=stdout, stderr='')
+        stdout = (
+            'DEPLOY_EXISTS=1\n'
+            'DEPLOY_REALPATH=/srv/demo-api\n'
+            'DEPLOY_TOP_LEVEL_COUNT=7\n'
+            'DEPLOY_WRITABLE=1\n'
+            'DEPLOY_GIT=0\n'
+        )
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_observability._run_ssh_text', fake_run_ssh_text)
+
+    payload = json.loads(
+        _project_deploy_status(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            timeout=15,
+            sudo=False,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['deploy']['exists'] is True
+    assert payload['deploy']['writable'] is True
+    assert payload['deploy']['top_level_entry_count'] == 7
+    assert payload['deploy']['looks_like_git_checkout'] is False
+    assert payload['service']['active_state'] == 'failed'
+    assert payload['service']['result_state'] == 'exit-code'
+    assert len(calls) == 2
 def test_project_service_control_registered():
     tmp = pathlib.Path("/tmp")
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
