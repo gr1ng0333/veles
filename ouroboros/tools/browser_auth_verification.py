@@ -5,6 +5,29 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 
+def compute_auth_flow_success(
+    auth_state: Dict[str, Any],
+    outcome: Dict[str, Any],
+    verification_continuation: Dict[str, Any],
+    owner_handoff_completion: Dict[str, Any],
+) -> bool:
+    state = str(auth_state.get("state") or "unknown")
+    if state == "logged_in":
+        return True
+
+    continuation_can_resume = bool(verification_continuation.get("can_resume_auth"))
+    completion_can_resume = bool(owner_handoff_completion.get("can_resume_auth"))
+    completion_status = str(owner_handoff_completion.get("status") or "")
+
+    if completion_status == "completed" and completion_can_resume:
+        return True
+
+    if continuation_can_resume and state not in {"captcha", "mfa", "error"}:
+        return True
+
+    return bool(outcome.get("success"))
+
+
 def build_verification_attempt_plan(
     verification: Dict[str, Any],
     outcome: Dict[str, Any],

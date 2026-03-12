@@ -9,6 +9,7 @@ from .browser_auth_verification import (
     build_owner_handoff_completion,
     build_owner_handoff_resume,
     build_verification_attempt_plan,
+    compute_auth_flow_success,
     build_verification_attempt_result,
     build_verification_continuation,
     build_verification_handoff,
@@ -512,6 +513,12 @@ def summarize_auth_diagnostics(
         owner_handoff_resume,
         verification_continuation,
     )
+    auth_flow_success = compute_auth_flow_success(
+        auth_state,
+        outcome,
+        verification_continuation,
+        owner_handoff_completion,
+    )
 
     return {
         "site_profile": {
@@ -532,6 +539,7 @@ def summarize_auth_diagnostics(
         "owner_handoff": owner_handoff,
         "owner_handoff_resume": owner_handoff_resume,
         "owner_handoff_completion": owner_handoff_completion,
+        "auth_flow_success": auth_flow_success,
         "next_action": next_action,
         "current_url": snapshot.get("current_url", ""),
         "matched": snapshot.get("matched", []),
