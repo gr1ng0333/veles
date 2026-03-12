@@ -14,6 +14,9 @@
 
 ## Changelog
 
+### 6.53.3
+- prevent single tool future timeout/executor failure from crashing the whole task loop; degrade to structured tool error and keep the loop alive
+
 ### 6.53.2
 - расширены тесты deploy/server контура на негативные precondition-сценарии: неготовый deploy parent, missing systemd unit и transitional service state
 - добавлены проверки на повреждённый `.veles/deploy-state.json` и backward-compatible нормализацию старого deploy-state без `execution`
