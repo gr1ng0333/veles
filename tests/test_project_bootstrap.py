@@ -18,7 +18,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_status,
 )
 from ouroboros.tools.project_server_info import _project_server_get, _project_server_remove
-from ouroboros.tools.project_branch_info import _project_branch_delete, _project_branch_get, _project_branch_list
+from ouroboros.tools.project_branch_info import _project_branch_delete, _project_branch_get, _project_branch_list, _project_branch_rename
 from ouroboros.tools.project_github_dev import (
     _project_branch_checkout,
     _project_issue_comment,
@@ -541,6 +541,80 @@ def test_project_branch_get_rejects_missing_local_branch(tmp_path):
 
     with pytest.raises(ValueError, match='local branch not found'):
         _project_branch_get(_ctx(tmp_path), name="demo-api", branch="missing")
+
+
+def test_project_branch_rename_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_branch_rename" in names
+
+
+def test_project_branch_rename_renames_local_branch_and_updates_current_when_active(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+
+    payload = json.loads(_project_branch_rename(_ctx(tmp_path), name="demo-api", branch="feature/auth", new_branch="feature/login"))
+
+    assert payload['status'] == 'ok'
+    assert payload['branch']['old_name'] == 'feature/auth'
+    assert payload['branch']['name'] == 'feature/login'
+    assert payload['branch']['renamed'] is True
+    assert payload['branch']['current_before'] == 'feature/auth'
+    assert payload['branch']['current_after'] == 'feature/login'
+    refs_old = subprocess.run(["git", "branch", "--list", "feature/auth"], cwd=repo_dir, check=True, capture_output=True, text=True)
+    refs_new = subprocess.run(["git", "branch", "--list", "feature/login"], cwd=repo_dir, check=True, capture_output=True, text=True)
+    current = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=True, capture_output=True, text=True)
+    assert refs_old.stdout.strip() == ''
+    assert 'feature/login' in refs_new.stdout
+    assert current.stdout.strip() == 'feature/login'
+
+
+def test_project_branch_rename_updates_default_branch_metadata_when_origin_head_matches(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], cwd=repo_dir, check=True)
+
+    payload = json.loads(_project_branch_rename(_ctx(tmp_path), name="demo-api", branch="main", new_branch="stable"))
+
+    assert payload['status'] == 'ok'
+    assert payload['branch']['default_before'] == 'main'
+    assert payload['branch']['default_after'] == 'stable'
+    assert payload['branch']['current_after'] == 'stable'
+
+
+def test_project_branch_rename_rejects_missing_source_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    with pytest.raises(ValueError, match='local branch not found'):
+        _project_branch_rename(_ctx(tmp_path), name="demo-api", branch="missing", new_branch="feature/login")
+
+
+def test_project_branch_rename_rejects_existing_target_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True)
+
+    with pytest.raises(ValueError, match='local branch already exists'):
+        _project_branch_rename(_ctx(tmp_path), name="demo-api", branch="feature/auth", new_branch="main")
+
+
+def test_project_branch_rename_rejects_same_name(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    with pytest.raises(ValueError, match='new_branch must differ from branch'):
+        _project_branch_rename(_ctx(tmp_path), name="demo-api", branch="main", new_branch="main")
+
+
+def test_project_branch_rename_rejects_invalid_target_name(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    with pytest.raises(ValueError, match='must not contain whitespace'):
+        _project_branch_rename(_ctx(tmp_path), name="demo-api", branch="main", new_branch="bad branch")
 
 
 def test_project_branch_delete_registered():
