@@ -64,6 +64,77 @@ def _step_result(key: str, tool: str, args: Dict[str, Any], payload: Dict[str, A
     }
 
 
+def _setup_result(key: str, commands: List[str], payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        'key': key,
+        'tool': 'project_server_run',
+        'args': {
+            'commands': commands,
+            'combined_command': payload.get('command', {}).get('raw') or ' && '.join(commands),
+        },
+        'status': payload.get('status') or 'unknown',
+        'payload': payload,
+    }
+
+
+
+def _project_setup_run(
+    ctx: ToolContext,
+    name: str,
+    alias: str,
+    commands: List[str],
+    timeout: int,
+) -> Dict[str, Any]:
+    normalized_commands = [str(item or '').strip() for item in commands if str(item or '').strip()]
+    if not normalized_commands:
+        return {
+            'status': 'ok',
+            'executed_at': _utc_now_iso(),
+            'project': {
+                'name': _normalize_project_name(name),
+                'path': str(_require_local_project(name)),
+            },
+            'server': _find_project_server(_require_local_project(name), alias),
+            'command': {
+                'raw': '',
+                'transport': 'ssh',
+                'timeout_seconds': int(timeout),
+            },
+            'setup': {
+                'commands': [],
+                'count': 0,
+                'skipped': True,
+            },
+            'result': {
+                'ok': True,
+                'exit_code': 0,
+                'stdout': '',
+                'stderr': '',
+                'output': '',
+                'truncated': False,
+                'max_output_chars': None,
+            },
+            'repo': _repo_info(_require_local_project(name)),
+        }
+
+    from ouroboros.tools.project_bootstrap import _project_server_run
+
+    raw = _project_server_run(
+        ctx,
+        name=name,
+        alias=alias,
+        command=' && '.join(normalized_commands),
+        timeout=timeout,
+    )
+    payload = _decode_tool_payload(raw)
+    payload['setup'] = {
+        'commands': normalized_commands,
+        'count': len(normalized_commands),
+        'skipped': False,
+    }
+    return payload
+
+
 def _project_deploy_apply(
     ctx: ToolContext,
     name: str,
@@ -123,6 +194,7 @@ def _project_deploy_apply(
     from ouroboros.tools.project_service import _project_service_control
 
     sync_args = dict(recipe_payload['recipe']['steps'][0]['recommended_args'])
+    setup_commands = list(recipe_payload['recipe']['steps'][1].get('commands') or [])
     install_args = dict(recipe_payload['recipe']['steps'][2]['recommended_args'])
     install_args.update({
         'enable_on_install': bool(enable_on_install),
@@ -141,6 +213,26 @@ def _project_deploy_apply(
             'server': recipe_payload['server'],
             'mode': mode_value,
             'failed_step': 'sync',
+            'steps': steps,
+            'recipe': recipe_payload,
+        }, ensure_ascii=False, indent=2)
+
+    setup_payload = _project_setup_run(
+        ctx,
+        name=project_name,
+        alias=alias,
+        commands=setup_commands,
+        timeout=sync_timeout,
+    )
+    steps.append(_setup_result('setup', setup_commands, setup_payload))
+    if setup_payload.get('status') != 'ok':
+        return json.dumps({
+            'status': 'error',
+            'applied_at': _utc_now_iso(),
+            'project': recipe_payload['project'],
+            'server': recipe_payload['server'],
+            'mode': mode_value,
+            'failed_step': 'setup',
             'steps': steps,
             'recipe': recipe_payload,
         }, ensure_ascii=False, indent=2)
