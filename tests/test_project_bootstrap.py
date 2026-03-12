@@ -18,6 +18,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_status,
 )
 from ouroboros.tools.project_server_info import _project_server_get, _project_server_remove
+from ouroboros.tools.project_branch_info import _project_branch_get, _project_branch_list
 from ouroboros.tools.project_github_dev import (
     _project_branch_checkout,
     _project_issue_comment,
@@ -473,6 +474,73 @@ def test_project_branch_checkout_refuses_switch_with_dirty_working_tree(tmp_path
             branch="feature/auth",
             create=False,
         )
+
+
+def test_project_branch_list_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_branch_list" in names
+
+
+def test_project_branch_get_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_branch_get" in names
+
+
+def test_project_branch_list_reads_local_branches_with_origin_context(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], cwd=repo_dir, check=True)
+
+    payload = json.loads(_project_branch_list(_ctx(tmp_path), name="demo-api"))
+
+    assert payload['status'] == 'ok'
+    assert payload['branches']['current'] == 'main'
+    assert payload['branches']['default'] == 'main'
+    assert payload['branches']['count'] == 2
+    names = {item['name']: item for item in payload['branches']['items']}
+    assert set(names.keys()) == {'main', 'feature/auth'}
+    assert names['main']['current'] is True
+    assert names['main']['default'] is True
+    assert names['main']['remote_ref'] == 'origin/main'
+    assert names['main']['ahead_behind']['available'] is True
+    assert names['main']['ahead_behind']['ahead'] == 0
+    assert names['main']['ahead_behind']['behind'] == 0
+    assert names['feature/auth']['current'] is False
+    assert names['feature/auth']['remote_ref'] == ''
+    assert names['feature/auth']['ahead_behind']['available'] is False
+
+
+def test_project_branch_get_defaults_to_current_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], cwd=repo_dir, check=True)
+
+    payload = json.loads(_project_branch_get(_ctx(tmp_path), name="demo-api"))
+
+    assert payload['status'] == 'ok'
+    assert payload['branch']['name'] == 'main'
+    assert payload['branch']['current'] is True
+    assert payload['branch']['default'] is True
+    assert payload['branch']['remote_ref'] == 'origin/main'
+    assert payload['branch']['ahead_behind']['available'] is True
+    assert payload['github']['origin'] == 'https://github.com/acme/demo-api.git'
+
+
+def test_project_branch_get_rejects_missing_local_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    with pytest.raises(ValueError, match='local branch not found'):
+        _project_branch_get(_ctx(tmp_path), name="demo-api", branch="missing")
 
 
 def test_project_issue_list_registered():
