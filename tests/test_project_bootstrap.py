@@ -1,9 +1,14 @@
 import json
 import pathlib
+import subprocess
 
 import pytest
 
-from ouroboros.tools.project_bootstrap import _normalize_project_name, _project_init
+from ouroboros.tools.project_bootstrap import (
+    _normalize_project_name,
+    _project_github_create,
+    _project_init,
+)
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
@@ -63,3 +68,54 @@ def test_project_init_refuses_existing_project(tmp_path):
     _project_init(_ctx(tmp_path), name="demo-static", language="static")
     with pytest.raises(ValueError):
         _project_init(_ctx(tmp_path), name="demo-static", language="static")
+
+
+def test_project_github_create_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_github_create" in names
+
+
+def test_project_github_create_attaches_origin_and_reports_slug(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    def fake_run_gh(args, cwd, timeout=120):
+        assert args[:2] == ["repo", "create"]
+        assert "--source" in args
+        assert "--remote" in args
+        subprocess.run(["git", "remote", "add", "origin", "git@github.com:veles/demo-api.git"], cwd=cwd, check=True)
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="created\n", stderr="")
+
+    monkeypatch.setattr("ouroboros.tools.project_bootstrap._run_gh", fake_run_gh)
+
+    payload = json.loads(
+        _project_github_create(
+            _ctx(tmp_path),
+            name="demo-api",
+            owner="veles",
+            private=False,
+            description="Demo repo",
+        )
+    )
+    repo_path = pathlib.Path(payload["project"]["path"])
+    assert payload["status"] == "ok"
+    assert payload["github"]["slug"] == "veles/demo-api"
+    assert payload["github"]["private"] is False
+    assert payload["github"]["remote"] == "git@github.com:veles/demo-api.git"
+    remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=repo_path, check=True, capture_output=True, text=True)
+    assert remote.stdout.strip() == "git@github.com:veles/demo-api.git"
+
+
+def test_project_github_create_refuses_when_origin_already_exists(tmp_path):
+    _project_init(_ctx(tmp_path), name="demo-static", language="static")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-static"
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:veles/demo-static.git"], cwd=repo_dir, check=True)
+
+    with pytest.raises(ValueError):
+        _project_github_create(_ctx(tmp_path), name="demo-static")
+
+
+def test_project_github_create_requires_existing_local_project(tmp_path):
+    with pytest.raises(ValueError):
+        _project_github_create(_ctx(tmp_path), name="missing-project")

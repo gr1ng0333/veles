@@ -133,6 +133,117 @@ def _repo_info(repo_dir: pathlib.Path) -> Dict[str, str]:
     return {"path": str(repo_dir), "branch": branch, "sha": sha}
 
 
+def _require_local_project(name: str) -> pathlib.Path:
+    repo_dir = _project_dir(name)
+    if not repo_dir.exists():
+        raise ValueError(f"project does not exist: {repo_dir}")
+    if not (repo_dir / ".git").exists():
+        raise ValueError(f"project is not a git repository: {repo_dir}")
+    return repo_dir
+
+
+def _git_remote_url(repo_dir: pathlib.Path, remote: str = "origin") -> str:
+    res = _git(["remote", "get-url", remote], repo_dir, timeout=30)
+    if res.returncode != 0:
+        return ""
+    return (res.stdout or "").strip()
+
+
+def _normalize_github_repo_name(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        raise ValueError("github repo name must be non-empty")
+    if "/" in raw or raw in {".", ".."}:
+        raise ValueError("github repo name must not contain path separators")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", raw):
+        raise ValueError("github repo name may contain only letters, digits, dot, underscore, and dash")
+    return raw
+
+
+def _normalize_github_owner(owner: str) -> str:
+    raw = str(owner or "").strip()
+    if not raw:
+        return ""
+    if "/" in raw or not re.fullmatch(r"[A-Za-z0-9-]+", raw):
+        raise ValueError("github owner may contain only letters, digits, and dash")
+    return raw
+
+
+def _run_gh(args: List[str], cwd: pathlib.Path, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["gh", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("gh CLI not found on VPS") from e
+
+
+def _project_github_create(
+    ctx: ToolContext,
+    name: str,
+    github_name: str = "",
+    owner: str = "",
+    private: bool = True,
+    description: str = "",
+) -> str:
+    repo_dir = _require_local_project(name)
+    remote_url = _git_remote_url(repo_dir)
+    if remote_url:
+        raise ValueError(f"project already has origin remote: {remote_url}")
+
+    project_name = _normalize_project_name(name)
+    repo_name = _normalize_github_repo_name(github_name or project_name)
+    owner_name = _normalize_github_owner(owner)
+    repo_slug = f"{owner_name}/{repo_name}" if owner_name else repo_name
+    visibility_flag = "--private" if bool(private) else "--public"
+
+    args = [
+        "repo",
+        "create",
+        repo_slug,
+        "--source",
+        str(repo_dir),
+        "--remote",
+        "origin",
+        "--push",
+        visibility_flag,
+    ]
+    desc = str(description or "").strip()
+    if desc:
+        args.extend(["--description", desc])
+
+    create_res = _run_gh(args, cwd=repo_dir, timeout=180)
+    if create_res.returncode != 0:
+        raise RuntimeError(create_res.stderr.strip() or create_res.stdout.strip() or "gh repo create failed")
+
+    remote_url = _git_remote_url(repo_dir)
+    if not remote_url:
+        raise RuntimeError("origin remote missing after gh repo create")
+
+    payload = {
+        "status": "ok",
+        "created_at": _utc_now_iso(),
+        "project": {
+            "name": project_name,
+            "path": str(repo_dir),
+        },
+        "github": {
+            "owner": owner_name or None,
+            "name": repo_name,
+            "slug": repo_slug,
+            "private": bool(private),
+            "description": desc,
+            "remote": remote_url,
+        },
+        "repo": _repo_info(repo_dir),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 def _project_init(ctx: ToolContext, name: str, language: str, description: str = "") -> str:
     project_name = _normalize_project_name(name)
     project_language = _normalize_language(language)
@@ -189,5 +300,19 @@ def get_tools() -> List[ToolEntry]:
             ["name", "language"],
             _project_init,
             is_code_tool=True,
-        )
+        ),
+        _tool_entry(
+            "project_github_create",
+            "Create a GitHub repository for an existing bootstrapped local project, attach origin, and push the current branch.",
+            {
+                "name": {"type": "string", "description": "Existing local project name under the projects root"},
+                "github_name": {"type": "string", "description": "Optional GitHub repository name; defaults to the local project slug"},
+                "owner": {"type": "string", "description": "Optional GitHub owner/org; empty means current gh account default"},
+                "private": {"type": "boolean", "description": "Whether to create the GitHub repository as private", "default": True},
+                "description": {"type": "string", "description": "Optional GitHub repository description"},
+            },
+            ["name"],
+            _project_github_create,
+            is_code_tool=True,
+        ),
     ]
