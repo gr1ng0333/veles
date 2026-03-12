@@ -258,9 +258,25 @@ def call_copilot(
                 f"Copilot request failed after {MAX_RETRIES + 1} attempts: {last_error}"
             )
 
-    # Extract message from standard Chat Completions response
+    # Extract message from standard Chat Completions response.
+    # Claude Sonnet splits content and each tool_call into separate choices.
+    # Merge them into a single assistant message so callers see all
+    # tool_calls together (parallel calls) plus any textual content.
     choices = response_data.get("choices", [{}])
-    msg = (choices[0] if choices else {}).get("message", {})
+    msg: Dict[str, Any] = {}
+    merged_tool_calls: List[Dict[str, Any]] = []
+    for ch in choices:
+        part = ch.get("message", {})
+        if part.get("tool_calls"):
+            merged_tool_calls.extend(part["tool_calls"])
+            msg.setdefault("role", part.get("role", "assistant"))
+        if part.get("content"):
+            msg.setdefault("role", part.get("role", "assistant"))
+            msg.setdefault("content", part["content"])
+    if merged_tool_calls:
+        msg["tool_calls"] = merged_tool_calls
+    if not msg:
+        msg = (choices[0] if choices else {}).get("message", {})
     if not msg.get("role"):
         msg["role"] = "assistant"
 
