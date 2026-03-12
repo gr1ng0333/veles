@@ -863,6 +863,8 @@ def _project_init(ctx: ToolContext, name: str, language: str, description: str =
 
 
 def get_tools() -> List[ToolEntry]:
+    from ouroboros.tools.project_github_dev import get_tools as get_project_github_dev_tools
+
     return [
         _tool_entry(
             "project_init",
@@ -989,4 +991,4 @@ def get_tools() -> List[ToolEntry]:
             _project_server_register,
             is_code_tool=True,
         ),
-    ]
+    ] + get_project_github_dev_tools()
