@@ -1,18 +1,23 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.50.0-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.51.0-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.50.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.51.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.51.0
+- добавлены `project_server_update` и `project_server_validate` для lifecycle/validation слоя deploy-server контура
+- теперь можно обновлять metadata target-host в project-local registry и валидировать SSH/deploy-path/service preconditions перед deploy
+- deploy/server contour стал ближе к надёжному operational loop: появился честный update+validate шаг перед dry-run и outcome state
 
 ### 6.50.0
 - добавлены `project_server_health`, `project_service_status`, `project_service_logs` и `project_deploy_status` для read-side deploy/server контура
