@@ -4,6 +4,7 @@ from ouroboros.tools.browser_auth_flow import (
     build_auth_outcome,
     build_auth_page_snapshot,
     build_next_action_plan,
+    build_verification_attempt_plan,
     build_verification_boundary,
     build_verification_handoff,
     infer_auth_state,
@@ -530,3 +531,119 @@ def test_build_auth_outcome_blocks_owner_handoff_without_mfa_selector():
     assert outcome["requires_owner_input"] is False
     assert handoff["mode"] == "blocked"
     assert handoff["required_inputs"] == ["mfa_selector"]
+
+
+def test_build_verification_attempt_plan_marks_captcha_as_ready_for_simple_auto_attempt():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box", "submit_selector": "button[type=submit]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+
+    attempt = build_verification_attempt_plan(verification, outcome, handoff)
+
+    assert attempt["status"] == "ready"
+    assert attempt["kind"] == "captcha"
+    assert attempt["strategy"] == "solve_simple_captcha_from_screenshot"
+    assert attempt["can_auto_attempt"] is True
+    assert attempt["requires_screenshot"] is True
+    assert attempt["requires_owner_input"] is False
+    assert attempt["selectors"]["captcha_selector"] == ".captcha-box"
+
+
+def test_build_verification_attempt_plan_marks_mfa_as_owner_required():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/verify",
+        page_signals={"title": "Verify", "body_text": "Enter the verification code"},
+        matched=["mfa_selector"],
+        profile=normalize_site_profile({"mfa_selector": "input[name=otp]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+
+    attempt = build_verification_attempt_plan(verification, outcome, handoff)
+
+    assert attempt["status"] == "owner_required"
+    assert attempt["kind"] == "mfa"
+    assert attempt["strategy"] == "owner_handoff"
+    assert attempt["can_auto_attempt"] is False
+    assert attempt["requires_owner_input"] is True
+    assert "owner_verification_code" in attempt["attempt_inputs"]
+
+
+def test_build_verification_attempt_plan_returns_not_applicable_when_no_boundary_exists():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/app",
+        page_signals={"title": "Dashboard", "body_text": "Welcome back"},
+        matched=["success_selector"],
+        profile=normalize_site_profile({"success_selector": ".dashboard"}),
+        protected_url_alive=True,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+
+    attempt = build_verification_attempt_plan(verification, outcome, handoff)
+
+    assert attempt["status"] == "not_applicable"
+    assert attempt["kind"] == "none"
+    assert attempt["strategy"] == "none"
+    assert attempt["can_auto_attempt"] is False
+
+
+def test_build_verification_attempt_plan_blocks_captcha_without_selector_structure():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=[],
+        profile=normalize_site_profile({}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+
+    attempt = build_verification_attempt_plan(verification, outcome, handoff)
+
+    assert attempt["status"] == "blocked"
+    assert attempt["kind"] == "captcha"
+    assert attempt["strategy"] == "none"
+    assert attempt["can_auto_attempt"] is False
+    assert "captcha_selector" in attempt["missing_requirements"]
+
+
+def test_summarize_auth_diagnostics_exposes_verification_attempt_plan():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(snapshot, state, next_action)
+
+    assert diagnostics["verification_attempt"]["status"] == "ready"
+    assert diagnostics["verification_attempt"]["strategy"] == "solve_simple_captcha_from_screenshot"
