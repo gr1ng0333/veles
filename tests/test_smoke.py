@@ -2,7 +2,7 @@
 
 Tests core invariants:
 - All modules import cleanly
-- Tool registry discovers all 33 tools
+- Tool registry discovers all tools
 - Utility functions work correctly
 - Memory operations don't crash
 - Context builder produces valid structure
@@ -132,7 +132,7 @@ EXPECTED_TOOLS = [
     "monitor_snapshot",
     "time_status",
     "research_report",
-    "project_init", "project_github_create",
+    "project_init", "project_github_create", "project_file_write",
 ]
 
 

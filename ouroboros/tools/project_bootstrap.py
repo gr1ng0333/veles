@@ -7,11 +7,14 @@ import re
 import subprocess
 from typing import Any, Dict, List
 
+from ouroboros.utils import safe_relpath
+
 from ouroboros.tools.external_repos import _ensure_external_repo_git_identity, _tool_entry
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 _DEFAULT_PROJECTS_ROOT = "/opt/repos"
 _ALLOWED_LANGUAGES = {"python", "node", "static"}
+_MAX_WRITE_CHARS = 500_000
 
 
 def _utc_now_iso() -> str:
@@ -182,6 +185,34 @@ def _run_gh(args: List[str], cwd: pathlib.Path, timeout: int = 120) -> subproces
         raise RuntimeError("gh CLI not found on VPS") from e
 
 
+def _project_file_write(ctx: ToolContext, name: str, path: str, content: str) -> str:
+    repo_dir = _require_local_project(name)
+    rel = safe_relpath(path)
+    target = (repo_dir / rel).resolve()
+    try:
+        target.relative_to(repo_dir.resolve())
+    except ValueError as e:
+        raise ValueError(f"path escapes project repository: {path}") from e
+    if len(content) > _MAX_WRITE_CHARS:
+        raise ValueError(f"content too large (> {_MAX_WRITE_CHARS} chars)")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    payload = {
+        "status": "ok",
+        "written_at": _utc_now_iso(),
+        "project": {
+            "name": _normalize_project_name(name),
+            "path": str(repo_dir),
+        },
+        "file": {
+            "path": rel,
+            "bytes_written": len(content.encode("utf-8")),
+        },
+        "repo": _repo_info(repo_dir),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 def _project_github_create(
     ctx: ToolContext,
     name: str,
@@ -313,6 +344,18 @@ def get_tools() -> List[ToolEntry]:
             },
             ["name"],
             _project_github_create,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            "project_file_write",
+            "Write a UTF-8 text file inside an existing bootstrapped local project repository.",
+            {
+                "name": {"type": "string", "description": "Existing local project name under the projects root"},
+                "path": {"type": "string", "description": "Relative file path inside the project repository"},
+                "content": {"type": "string", "description": "Full UTF-8 file content to write"},
+            },
+            ["name", "path", "content"],
+            _project_file_write,
             is_code_tool=True,
         ),
     ]
