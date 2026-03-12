@@ -7,6 +7,7 @@ from ouroboros.tools.browser_auth_flow import (
     build_verification_attempt_plan,
     build_verification_attempt_result,
     build_verification_boundary,
+    build_verification_continuation,
     build_verification_handoff,
     infer_auth_state,
     normalize_site_profile,
@@ -761,3 +762,154 @@ def test_summarize_auth_diagnostics_exposes_verification_attempt_result():
     assert diagnostics["verification_attempt_result"]["status"] == "succeeded"
     assert diagnostics["verification_attempt_result"]["success"] is True
     assert diagnostics["verification_attempt_result"]["text"] == "AB12"
+
+
+def test_build_verification_continuation_returns_continue_without_boundary():
+    continuation = build_verification_continuation({}, {}, {}, {})
+
+    assert continuation["status"] == "continue_login"
+    assert continuation["can_resume_auth"] is True
+    assert continuation["should_retry_verification"] is False
+
+
+
+def test_build_verification_continuation_returns_continue_after_successful_attempt():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+    attempt = build_verification_attempt_plan(verification, outcome, handoff)
+    attempt_result = build_verification_attempt_result(
+        verification,
+        attempt,
+        {
+            "success": True,
+            "text": "AB12",
+            "confidence": 0.91,
+            "method": "browser_solve_captcha",
+            "attempts": 1,
+            "error": None,
+            "reason": "captcha auto-attempt succeeded",
+        },
+    )
+
+    continuation = build_verification_continuation(verification, outcome, attempt, attempt_result)
+
+    assert continuation["status"] == "continue_login"
+    assert continuation["can_resume_auth"] is True
+    assert continuation["source"] == "verification_attempt_result"
+
+
+
+def test_build_verification_continuation_retries_after_light_failed_attempt():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+    attempt = build_verification_attempt_plan(verification, outcome, handoff)
+    attempt_result = build_verification_attempt_result(
+        verification,
+        attempt,
+        {
+            "success": False,
+            "text": "",
+            "confidence": 0.12,
+            "method": "browser_solve_captcha",
+            "attempts": 1,
+            "error": "OCR confidence too low",
+            "reason": "captcha auto-attempt failed",
+        },
+    )
+
+    continuation = build_verification_continuation(verification, outcome, attempt, attempt_result)
+
+    assert continuation["status"] == "retry_verification"
+    assert continuation["should_retry_verification"] is True
+    assert continuation["requires_owner_input"] is False
+
+
+
+def test_build_verification_continuation_escalates_after_heavier_failed_attempt():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+    verification = build_verification_boundary(snapshot, state, next_action)
+    outcome = build_auth_outcome(state, next_action, verification)
+    handoff = build_verification_handoff(verification, outcome, next_action)
+    attempt = build_verification_attempt_plan(verification, outcome, handoff)
+    attempt_result = build_verification_attempt_result(
+        verification,
+        attempt,
+        {
+            "success": False,
+            "text": "",
+            "confidence": 0.88,
+            "method": "browser_solve_captcha",
+            "attempts": 2,
+            "error": "verification still failed after retry",
+            "reason": "captcha auto-attempt failed twice",
+        },
+    )
+
+    continuation = build_verification_continuation(verification, outcome, attempt, attempt_result)
+
+    assert continuation["status"] == "await_owner"
+    assert continuation["should_retry_verification"] is False
+    assert continuation["requires_owner_input"] is True
+
+
+
+def test_summarize_auth_diagnostics_exposes_verification_continuation():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(
+        snapshot,
+        state,
+        next_action,
+        raw_verification_attempt_result={
+            "success": False,
+            "text": "",
+            "confidence": 0.12,
+            "method": "browser_solve_captcha",
+            "attempts": 1,
+            "error": "OCR confidence too low",
+            "reason": "captcha auto-attempt failed",
+        },
+    )
+
+    assert diagnostics["verification_continuation"]["status"] == "retry_verification"
+    assert diagnostics["verification_continuation"]["should_retry_verification"] is True

@@ -592,6 +592,103 @@ def build_verification_attempt_result(
     }
 
 
+def build_verification_continuation(
+    verification: Dict[str, Any],
+    outcome: Dict[str, Any],
+    verification_attempt: Dict[str, Any],
+    verification_attempt_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    verification = dict(verification or {})
+    outcome = dict(outcome or {})
+    verification_attempt = dict(verification_attempt or {})
+    verification_attempt_result = dict(verification_attempt_result or {})
+
+    if not verification.get("detected"):
+        return {
+            "status": "continue_login",
+            "action": "continue_login",
+            "can_resume_auth": True,
+            "requires_owner_input": False,
+            "should_retry_verification": False,
+            "reason": "no verification boundary is active",
+            "source": "none",
+        }
+
+    continuation = str(outcome.get("continuation") or "stop")
+    attempt_status = str(verification_attempt_result.get("status") or "not_attempted")
+    attempt_success = bool(verification_attempt_result.get("success"))
+    handoff_required = bool(verification.get("requires_owner_input")) or continuation == "await_owner"
+
+    if handoff_required:
+        return {
+            "status": "await_owner",
+            "action": "await_owner",
+            "can_resume_auth": False,
+            "requires_owner_input": True,
+            "should_retry_verification": False,
+            "reason": verification_attempt_result.get("reason") or verification.get("reason") or "verification requires owner input",
+            "source": "verification_boundary",
+        }
+
+    if attempt_success:
+        return {
+            "status": "continue_login",
+            "action": "continue_login",
+            "can_resume_auth": True,
+            "requires_owner_input": False,
+            "should_retry_verification": False,
+            "reason": verification_attempt_result.get("reason") or "verification attempt succeeded",
+            "source": "verification_attempt_result",
+        }
+
+    if attempt_status == "failed":
+        attempts = int(verification_attempt_result.get("attempts") or 0)
+        confidence = verification_attempt_result.get("confidence")
+        should_retry = attempts <= 1 and (confidence is None or float(confidence) < 0.5)
+        return {
+            "status": "retry_verification" if should_retry else "await_owner",
+            "action": "retry_verification" if should_retry else "await_owner",
+            "can_resume_auth": False,
+            "requires_owner_input": not should_retry,
+            "should_retry_verification": should_retry,
+            "reason": verification_attempt_result.get("error") or verification_attempt_result.get("reason") or "verification attempt failed",
+            "source": "verification_attempt_result",
+        }
+
+    if attempt_status == "planned_but_not_executed":
+        return {
+            "status": "retry_verification",
+            "action": "retry_verification",
+            "can_resume_auth": False,
+            "requires_owner_input": False,
+            "should_retry_verification": True,
+            "reason": verification_attempt_result.get("reason") or verification_attempt.get("reason") or "verification attempt was planned but not executed",
+            "source": "verification_attempt_plan",
+        }
+
+    if continuation == "auto_attempt_verification":
+        return {
+            "status": "retry_verification",
+            "action": "retry_verification",
+            "can_resume_auth": False,
+            "requires_owner_input": False,
+            "should_retry_verification": True,
+            "reason": verification_attempt_result.get("reason") or verification.get("reason") or "verification should be attempted before auth can continue",
+            "source": "auth_outcome",
+        }
+
+    return {
+        "status": "stop",
+        "action": "stop",
+        "can_resume_auth": False,
+        "requires_owner_input": False,
+        "should_retry_verification": False,
+        "reason": verification_attempt_result.get("reason") or verification.get("reason") or "no safe continuation is available",
+        "source": "auth_outcome",
+    }
+
+
+
 def build_verification_handoff(
     verification: Dict[str, Any],
     outcome: Dict[str, Any],
@@ -722,6 +819,12 @@ def summarize_auth_diagnostics(
     verification_handoff = build_verification_handoff(verification, outcome, next_action)
     verification_attempt = build_verification_attempt_plan(verification, outcome, verification_handoff)
     verification_attempt_result = build_verification_attempt_result(verification, verification_attempt, raw_verification_attempt_result)
+    verification_continuation = build_verification_continuation(
+        verification,
+        outcome,
+        verification_attempt,
+        verification_attempt_result,
+    )
 
     return {
         "site_profile": {
@@ -738,6 +841,7 @@ def summarize_auth_diagnostics(
         "verification_handoff": verification_handoff,
         "verification_attempt": verification_attempt,
         "verification_attempt_result": verification_attempt_result,
+        "verification_continuation": verification_continuation,
         "next_action": next_action,
         "current_url": snapshot.get("current_url", ""),
         "matched": snapshot.get("matched", []),
@@ -862,7 +966,12 @@ def build_post_submit_auth_result(
     )
     auth_state = infer_auth_state(snapshot)
     next_action = build_next_action_plan(snapshot, auth_state)
-    diagnostics = summarize_auth_diagnostics(snapshot, auth_state, next_action)
+    diagnostics = summarize_auth_diagnostics(
+        snapshot,
+        auth_state,
+        next_action,
+        raw_verification_attempt_result=raw_verification_attempt_result,
+    )
     return {
         "diagnostics": diagnostics,
         "verification": diagnostics.get("verification"),
@@ -870,6 +979,7 @@ def build_post_submit_auth_result(
         "verification_handoff": diagnostics.get("verification_handoff"),
         "verification_attempt": diagnostics.get("verification_attempt"),
         "verification_attempt_result": diagnostics.get("verification_attempt_result"),
+        "verification_continuation": diagnostics.get("verification_continuation"),
         "post_submit_state": auth_state,
         "post_submit_signals": post_signals,
         "protected_url_alive": protected_url_alive,
