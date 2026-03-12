@@ -17,6 +17,131 @@ _DEFAULT_PROJECTS_ROOT = "/opt/repos"
 _ALLOWED_LANGUAGES = {"python", "node", "static"}
 _MAX_WRITE_CHARS = 500_000
 _DEFAULT_READ_PREVIEW_CHARS = 20_000
+_SERVER_REGISTRY_DIR = ".veles"
+_SERVER_REGISTRY_FILE = "servers.json"
+
+
+def _project_veles_dir(repo_dir: pathlib.Path) -> pathlib.Path:
+    return repo_dir / _SERVER_REGISTRY_DIR
+
+
+def _project_server_registry_path(repo_dir: pathlib.Path) -> pathlib.Path:
+    return _project_veles_dir(repo_dir) / _SERVER_REGISTRY_FILE
+
+
+def _load_project_server_registry(repo_dir: pathlib.Path) -> List[Dict[str, Any]]:
+    path = _project_server_registry_path(repo_dir)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"project server registry is invalid JSON: {path}") from e
+    if not isinstance(data, list):
+        raise ValueError("project server registry must be a JSON list")
+    normalized: List[Dict[str, Any]] = []
+    for idx, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"project server registry entry #{idx} must be an object")
+        normalized.append(item)
+    return normalized
+
+
+def _save_project_server_registry(repo_dir: pathlib.Path, servers: List[Dict[str, Any]]) -> None:
+    registry_path = _project_server_registry_path(repo_dir)
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text(json.dumps(servers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _normalize_server_alias(alias: str) -> str:
+    raw = str(alias or "").strip().lower()
+    if not raw:
+        raise ValueError("server alias must be non-empty")
+    if raw in {'.', '..'}:
+        raise ValueError("invalid server alias")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", raw):
+        raise ValueError("server alias may contain only lowercase letters, digits, dot, underscore, and dash")
+    return raw
+
+
+def _normalize_server_host(host: str) -> str:
+    raw = str(host or "").strip()
+    if not raw:
+        raise ValueError("host must be non-empty")
+    if any(ch.isspace() for ch in raw):
+        raise ValueError("host must not contain whitespace")
+    if raw in {'.', '..'} or '/' in raw or '@' in raw:
+        raise ValueError("host must be a plain hostname or IP, without path/user prefix")
+    return raw
+
+
+def _normalize_server_user(user: str) -> str:
+    raw = str(user or "").strip()
+    if not raw:
+        raise ValueError("user must be non-empty")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9._-]*", raw):
+        raise ValueError("user contains unsupported characters")
+    return raw
+
+
+def _normalize_server_port(port: Any) -> int:
+    try:
+        value = int(port)
+    except (TypeError, ValueError) as e:
+        raise ValueError("port must be an integer") from e
+    if value < 1 or value > 65535:
+        raise ValueError("port must be between 1 and 65535")
+    return value
+
+
+def _normalize_server_auth(auth: str) -> str:
+    raw = str(auth or "ssh_key_path").strip().lower()
+    if raw != 'ssh_key_path':
+        raise ValueError("auth must currently be 'ssh_key_path'")
+    return raw
+
+
+def _normalize_server_ssh_key_path(ssh_key_path: str) -> str:
+    raw = str(ssh_key_path or '').strip()
+    if not raw:
+        raise ValueError("ssh_key_path must be non-empty")
+    expanded = pathlib.Path(raw).expanduser()
+    if not expanded.is_absolute():
+        raise ValueError("ssh_key_path must be absolute or use ~/...")
+    return str(expanded)
+
+
+def _normalize_server_deploy_path(deploy_path: str) -> str:
+    raw = str(deploy_path or '').strip()
+    if not raw:
+        raise ValueError("deploy_path must be non-empty")
+    if not raw.startswith('/'):
+        raise ValueError("deploy_path must be absolute")
+    normalized = re.sub(r'/+', '/', raw)
+    if normalized in {'/', '/.', '/..'}:
+        raise ValueError("deploy_path must not point to filesystem root")
+    return normalized.rstrip('/') or '/'
+
+
+def _normalize_server_label(label: str) -> str:
+    return str(label or '').strip()
+
+
+def _public_server_view(server: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        'alias': server['alias'],
+        'label': server.get('label') or '',
+        'host': server['host'],
+        'port': server['port'],
+        'user': server['user'],
+        'auth': server['auth'],
+        'ssh_key_path': server['ssh_key_path'],
+        'deploy_path': server['deploy_path'],
+        'created_at': server['created_at'],
+        'updated_at': server.get('updated_at') or server['created_at'],
+    }
+
+
 
 
 def _utc_now_iso() -> str:
@@ -155,6 +280,77 @@ def _git_lines(repo_dir: pathlib.Path, args: List[str], timeout: int = 30) -> Li
     if res.returncode != 0:
         raise RuntimeError(res.stderr.strip() or res.stdout.strip() or f"git {' '.join(args)} failed")
     return [line for line in (res.stdout or "").splitlines() if line.strip()]
+
+
+def _project_server_register(
+    ctx: ToolContext,
+    name: str,
+    alias: str,
+    host: str,
+    user: str,
+    ssh_key_path: str,
+    deploy_path: str,
+    port: int = 22,
+    label: str = "",
+    auth: str = "ssh_key_path",
+) -> str:
+    repo_dir = _require_local_project(name)
+    project_name = _normalize_project_name(name)
+    alias_name = _normalize_server_alias(alias)
+    host_name = _normalize_server_host(host)
+    user_name = _normalize_server_user(user)
+    port_number = _normalize_server_port(port)
+    auth_kind = _normalize_server_auth(auth)
+    key_path = _normalize_server_ssh_key_path(ssh_key_path)
+    target_path = _normalize_server_deploy_path(deploy_path)
+    server_label = _normalize_server_label(label)
+
+    servers = _load_project_server_registry(repo_dir)
+    now = _utc_now_iso()
+    existing = None
+    for item in servers:
+        if item.get('alias') == alias_name:
+            existing = item
+            break
+
+    if existing is None:
+        existing = {
+            'alias': alias_name,
+            'created_at': now,
+        }
+        servers.append(existing)
+
+    existing.update({
+        'label': server_label,
+        'host': host_name,
+        'port': port_number,
+        'user': user_name,
+        'auth': auth_kind,
+        'ssh_key_path': key_path,
+        'deploy_path': target_path,
+        'updated_at': now,
+    })
+
+    servers.sort(key=lambda item: item.get('alias', ''))
+    _save_project_server_registry(repo_dir, servers)
+
+    payload = {
+        'status': 'ok',
+        'registered_at': now,
+        'project': {
+            'name': project_name,
+            'path': str(repo_dir),
+        },
+        'server': _public_server_view(existing),
+        'registry': {
+            'path': str(_project_server_registry_path(repo_dir)),
+            'count': len(servers),
+            'aliases': [item.get('alias') for item in servers],
+        },
+        'repo': _repo_info(repo_dir),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
 
 
 def _project_status(ctx: ToolContext, name: str) -> str:
@@ -620,6 +816,24 @@ def get_tools() -> List[ToolEntry]:
             },
             ["name"],
             _project_status,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            "project_server_register",
+            "Register or update a deploy server target for an existing bootstrapped local project repository, storing validated SSH target metadata in the project-local .veles server registry.",
+            {
+                "name": {"type": "string", "description": "Existing local project name under the projects root"},
+                "alias": {"type": "string", "description": "Stable short name for this server target inside the project"},
+                "host": {"type": "string", "description": "Plain hostname or IP address of the target server"},
+                "user": {"type": "string", "description": "SSH username for the target server"},
+                "ssh_key_path": {"type": "string", "description": "Absolute path (or ~/...) to the SSH private key on the VPS"},
+                "deploy_path": {"type": "string", "description": "Absolute remote path where the project should live on that server"},
+                "port": {"type": "integer", "description": "SSH port", "default": 22},
+                "label": {"type": "string", "description": "Optional human-readable label for the server target"},
+                "auth": {"type": "string", "description": "Authentication contract for now must be ssh_key_path", "default": "ssh_key_path", "enum": ["ssh_key_path"]},
+            },
+            ["name", "alias", "host", "user", "ssh_key_path", "deploy_path"],
+            _project_server_register,
             is_code_tool=True,
         ),
     ]
