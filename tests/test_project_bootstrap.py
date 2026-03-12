@@ -18,7 +18,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_status,
 )
 from ouroboros.tools.project_server_info import _project_server_get, _project_server_remove
-from ouroboros.tools.project_branch_info import _project_branch_get, _project_branch_list
+from ouroboros.tools.project_branch_info import _project_branch_delete, _project_branch_get, _project_branch_list
 from ouroboros.tools.project_github_dev import (
     _project_branch_checkout,
     _project_issue_comment,
@@ -541,6 +541,82 @@ def test_project_branch_get_rejects_missing_local_branch(tmp_path):
 
     with pytest.raises(ValueError, match='local branch not found'):
         _project_branch_get(_ctx(tmp_path), name="demo-api", branch="missing")
+
+
+def test_project_branch_delete_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_branch_delete" in names
+
+
+def test_project_branch_delete_removes_merged_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+    (repo_dir / "feature.txt").write_text("done\n", encoding="utf-8")
+    subprocess.run(["git", "add", "feature.txt"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "Add feature"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "merge", "--no-ff", "feature/auth", "-m", "Merge feature"], cwd=repo_dir, check=True)
+
+    payload = json.loads(_project_branch_delete(_ctx(tmp_path), name="demo-api", branch="feature/auth"))
+
+    assert payload['status'] == 'ok'
+    assert payload['branch']['name'] == 'feature/auth'
+    assert payload['branch']['deleted'] is True
+    assert payload['branch']['force'] is False
+    refs = subprocess.run(["git", "branch", "--list", "feature/auth"], cwd=repo_dir, check=True, capture_output=True, text=True)
+    assert refs.stdout.strip() == ''
+
+
+def test_project_branch_delete_refuses_active_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    with pytest.raises(ValueError, match='cannot delete the active branch'):
+        _project_branch_delete(_ctx(tmp_path), name="demo-api", branch="main")
+
+
+def test_project_branch_delete_refuses_default_branch_even_if_not_active(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], cwd=repo_dir, check=True)
+
+    with pytest.raises(ValueError, match='cannot delete the default branch'):
+        _project_branch_delete(_ctx(tmp_path), name="demo-api", branch="main")
+
+
+def test_project_branch_delete_refuses_unmerged_branch_without_force(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+    (repo_dir / "feature.txt").write_text("done\n", encoding="utf-8")
+    subprocess.run(["git", "add", "feature.txt"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "Add feature"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True)
+
+    with pytest.raises(ValueError, match='branch is not fully merged'):
+        _project_branch_delete(_ctx(tmp_path), name="demo-api", branch="feature/auth")
+
+
+def test_project_branch_delete_force_removes_unmerged_branch(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "checkout", "-b", "feature/auth"], cwd=repo_dir, check=True)
+    (repo_dir / "feature.txt").write_text("done\n", encoding="utf-8")
+    subprocess.run(["git", "add", "feature.txt"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "Add feature"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo_dir, check=True)
+
+    payload = json.loads(_project_branch_delete(_ctx(tmp_path), name="demo-api", branch="feature/auth", force=True))
+
+    assert payload['status'] == 'ok'
+    assert payload['branch']['force'] is True
+    refs = subprocess.run(["git", "branch", "--list", "feature/auth"], cwd=repo_dir, check=True, capture_output=True, text=True)
+    assert refs.stdout.strip() == ''
 
 
 def test_project_issue_list_registered():
