@@ -215,6 +215,98 @@ def _project_pr_create(
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _project_issue_list(
+    ctx: ToolContext,
+    name: str,
+    state: str = 'open',
+    limit: int = 20,
+) -> str:
+    del ctx
+    repo_dir = _require_local_project(name)
+    project_name = str(name or '').strip()
+    repo_slug = _project_github_slug(repo_dir)
+    state_value = str(state or 'open').strip().lower() or 'open'
+    if state_value not in {'open', 'closed', 'all'}:
+        raise ValueError('state must be one of: open, closed, all')
+    try:
+        limit_value = max(1, min(int(limit), 100))
+    except (TypeError, ValueError) as e:
+        raise ValueError('limit must be an integer') from e
+
+    payload = _run_project_gh_json(
+        repo_dir,
+        [
+            'issue', 'list',
+            '--state', state_value,
+            '--limit', str(limit_value),
+            '--json', 'number,title,state,url,author,labels',
+        ],
+        timeout=60,
+    )
+    return json.dumps(
+        {
+            'status': 'ok',
+            'read_at': _utc_now_iso(),
+            'project': {
+                'name': project_name,
+                'path': str(repo_dir),
+            },
+            'github': {
+                'repo': repo_slug,
+                'issues': payload or [],
+                'state': state_value,
+                'limit': limit_value,
+            },
+            'repo': _repo_info(repo_dir),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _project_issue_get(
+    ctx: ToolContext,
+    name: str,
+    number: int,
+) -> str:
+    del ctx
+    repo_dir = _require_local_project(name)
+    project_name = str(name or '').strip()
+    try:
+        issue_number = int(number)
+    except (TypeError, ValueError) as e:
+        raise ValueError('number must be an integer') from e
+    if issue_number <= 0:
+        raise ValueError('number must be positive')
+
+    repo_slug = _project_github_slug(repo_dir)
+    payload = _run_project_gh_json(
+        repo_dir,
+        [
+            'issue', 'view', str(issue_number),
+            '--json', 'number,title,body,state,url,author,labels,comments',
+        ],
+        timeout=60,
+    )
+    return json.dumps(
+        {
+            'status': 'ok',
+            'read_at': _utc_now_iso(),
+            'project': {
+                'name': project_name,
+                'path': str(repo_dir),
+            },
+            'github': {
+                'repo': repo_slug,
+                'issue': payload,
+            },
+            'repo': _repo_info(repo_dir),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def _project_pr_list(
     ctx: ToolContext,
     name: str,
@@ -321,6 +413,27 @@ def get_tools() -> List[ToolEntry]:
             ['name', 'branch'],
             _project_branch_checkout,
             is_code_tool=True,
+        ),
+        _tool_entry(
+            'project_issue_list',
+            'List GitHub issues for an existing bootstrapped local project repository, using its configured origin remote as the source of truth.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'state': {'type': 'string', 'description': 'Issue state filter: open, closed, or all', 'default': 'open'},
+                'limit': {'type': 'integer', 'description': 'Maximum number of issues to return', 'default': 20},
+            },
+            ['name'],
+            _project_issue_list,
+        ),
+        _tool_entry(
+            'project_issue_get',
+            'Read one GitHub issue for an existing bootstrapped local project repository, including body and comments metadata.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'number': {'type': 'integer', 'description': 'Issue number to read'},
+            },
+            ['name', 'number'],
+            _project_issue_get,
         ),
         _tool_entry(
             'project_pr_list',

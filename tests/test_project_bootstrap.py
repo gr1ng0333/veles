@@ -19,6 +19,8 @@ from ouroboros.tools.project_bootstrap import (
 )
 from ouroboros.tools.project_github_dev import (
     _project_branch_checkout,
+    _project_issue_get,
+    _project_issue_list,
     _project_pr_create,
     _project_pr_get,
     _project_pr_list,
@@ -362,6 +364,91 @@ def test_project_branch_checkout_refuses_switch_with_dirty_working_tree(tmp_path
             branch="feature/auth",
             create=False,
         )
+
+
+def test_project_issue_list_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_issue_list" in names
+
+
+def test_project_issue_get_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_issue_get" in names
+
+
+def test_project_issue_list_reads_github_issues(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    def fake_run_gh(args, cwd, timeout=120, input_data=None):
+        assert cwd == repo_dir
+        assert args == [
+            "issue", "list",
+            "--state", "open",
+            "--limit", "5",
+            "--json", "number,title,state,url,author,labels",
+        ]
+        payload = [
+            {
+                "number": 12,
+                "title": "Broken login",
+                "state": "OPEN",
+                "url": "https://github.com/acme/demo-api/issues/12",
+                "author": {"login": "alice"},
+                "labels": [{"name": "bug"}],
+            }
+        ]
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_issue_list(_ctx(tmp_path), name="demo-api", limit=5))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['state'] == 'open'
+    assert payload['github']['limit'] == 5
+    assert payload['github']['issues'][0]['number'] == 12
+    assert payload['github']['issues'][0]['title'] == 'Broken login'
+
+
+def test_project_issue_get_reads_one_github_issue(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    def fake_run_gh(args, cwd, timeout=120, input_data=None):
+        assert cwd == repo_dir
+        assert args == [
+            "issue", "view", "7",
+            "--json", "number,title,body,state,url,author,labels,comments",
+        ]
+        payload = {
+            "number": 7,
+            "title": "Need healthcheck",
+            "body": "Please add /health",
+            "state": "OPEN",
+            "url": "https://github.com/acme/demo-api/issues/7",
+            "author": {"login": "bob"},
+            "labels": [{"name": "enhancement"}],
+            "comments": [{"author": {"login": "alice"}, "body": "working on it"}],
+        }
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_issue_get(_ctx(tmp_path), name="demo-api", number=7))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['issue']['number'] == 7
+    assert payload['github']['issue']['body'] == 'Please add /health'
+    assert payload['github']['issue']['comments'][0]['body'] == 'working on it'
 
 
 def test_project_pr_list_registered():
