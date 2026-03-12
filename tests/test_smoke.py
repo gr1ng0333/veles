@@ -132,6 +132,7 @@ EXPECTED_TOOLS = [
     "monitor_snapshot",
     "time_status",
     "research_report",
+    "project_init",
 ]
 
 
