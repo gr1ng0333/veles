@@ -19,6 +19,7 @@ from ouroboros.tools.project_bootstrap import (
 )
 from ouroboros.tools.project_server_info import _project_server_get, _project_server_remove
 from ouroboros.tools.project_branch_info import _project_branch_delete, _project_branch_get, _project_branch_list, _project_branch_rename
+from ouroboros.tools.project_issue_update import _project_issue_close, _project_issue_reopen, _project_issue_update
 from ouroboros.tools.project_github_dev import (
     _project_branch_checkout,
     _project_issue_comment,
@@ -1468,3 +1469,103 @@ def test_project_server_run_rejects_unknown_alias(tmp_path):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
     with pytest.raises(ValueError):
         _project_server_run(_ctx(tmp_path), name='demo-api', alias='missing', command='pwd')
+
+
+def test_project_issue_update_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_issue_update" in names
+
+
+def test_project_issue_close_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_issue_close" in names
+
+
+def test_project_issue_reopen_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_issue_reopen" in names
+
+
+def test_project_issue_update_passes_title_and_body_via_stdin(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout=120, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="issue updated\n", stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_issue_update._run_gh', fake_run_gh)
+
+    payload = json.loads(
+        _project_issue_update(
+            _ctx(tmp_path),
+            name="demo-api",
+            number=9,
+            title="Need /ready",
+            body="Please rename /health to /ready",
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['issue_update']['number'] == 9
+    assert payload['github']['issue_update']['title'] == 'Need /ready'
+    assert payload['github']['issue_update']['body_provided'] is True
+    assert payload['github']['issue_update']['result'] == 'issue updated'
+    assert calls[0]['args'] == ['issue', 'edit', '9', '--title=Need /ready', '--body-file', '-']
+    assert calls[0]['input'] == 'Please rename /health to /ready'
+
+
+def test_project_issue_close_calls_gh_close(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout=120, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="issue closed\n", stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_issue_update._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_issue_close(_ctx(tmp_path), name="demo-api", number=11))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['issue_close']['number'] == 11
+    assert payload['github']['issue_close']['result'] == 'issue closed'
+    assert calls[0]['args'] == ['issue', 'close', '11']
+    assert calls[0]['input'] is None
+
+
+def test_project_issue_reopen_calls_gh_reopen(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout=120, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="issue reopened\n", stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_issue_update._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_issue_reopen(_ctx(tmp_path), name="demo-api", number=11))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['issue_reopen']['number'] == 11
+    assert payload['github']['issue_reopen']['result'] == 'issue reopened'
+    assert calls[0]['args'] == ['issue', 'reopen', '11']
+    assert calls[0]['input'] is None
