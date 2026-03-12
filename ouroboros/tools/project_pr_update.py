@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import List
 
-from ouroboros.tools.project_bootstrap import _repo_info, _require_local_project, _run_gh, _tool_entry, _utc_now_iso
+from ouroboros.tools.project_bootstrap import _DEFAULT_READ_PREVIEW_CHARS, _clip_project_read_content, _repo_info, _require_local_project, _run_gh, _tool_entry, _utc_now_iso
 from ouroboros.tools.project_github_dev import _project_github_slug
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
@@ -186,6 +186,100 @@ def _project_pr_review_submit(ctx: ToolContext, name: str, number: int, event: s
     )
 
 
+def _project_pr_changed_files(ctx: ToolContext, name: str, number: int) -> str:
+    del ctx
+    repo_dir = _require_local_project(name)
+    project_name = str(name or '').strip()
+    pr_number = _pr_number(number)
+    repo_slug = _project_github_slug(repo_dir)
+
+    res = _run_gh(
+        ['pr', 'view', str(pr_number), '--json', 'files'],
+        cwd=repo_dir,
+        timeout=60,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or res.stdout.strip() or 'gh pr view --json files failed')
+
+    out = (res.stdout or '').strip()
+    try:
+        payload = json.loads(out) if out else {}
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f'failed to parse gh JSON output: {out[:300]}') from e
+    files = payload.get('files') or []
+
+    return json.dumps(
+        {
+            'status': 'ok',
+            'read_at': _utc_now_iso(),
+            'project': {
+                'name': project_name,
+                'path': str(repo_dir),
+            },
+            'github': {
+                'repo': repo_slug,
+                'pull_request_files': {
+                    'number': pr_number,
+                    'count': len(files),
+                    'items': files,
+                },
+            },
+            'repo': _repo_info(repo_dir),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _project_pr_diff(ctx: ToolContext, name: str, number: int, max_chars: int = _DEFAULT_READ_PREVIEW_CHARS) -> str:
+    del ctx
+    repo_dir = _require_local_project(name)
+    project_name = str(name or '').strip()
+    pr_number = _pr_number(number)
+    repo_slug = _project_github_slug(repo_dir)
+    try:
+        max_chars_value = int(max_chars)
+    except (TypeError, ValueError) as e:
+        raise ValueError('max_chars must be an integer') from e
+    if max_chars_value <= 0:
+        raise ValueError('max_chars must be > 0')
+
+    res = _run_gh(
+        ['pr', 'diff', str(pr_number), '--patch'],
+        cwd=repo_dir,
+        timeout=120,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or res.stdout.strip() or 'gh pr diff failed')
+
+    diff_text = res.stdout or ''
+    clipped = _clip_project_read_content(diff_text, max_chars_value)
+
+    return json.dumps(
+        {
+            'status': 'ok',
+            'read_at': _utc_now_iso(),
+            'project': {
+                'name': project_name,
+                'path': str(repo_dir),
+            },
+            'github': {
+                'repo': repo_slug,
+                'pull_request_diff': {
+                    'number': pr_number,
+                    'max_chars': max_chars_value,
+                    'truncated': clipped != diff_text,
+                    'content': clipped,
+                },
+            },
+            'repo': _repo_info(repo_dir),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+
 def get_tools() -> List[ToolEntry]:
     return [
         _tool_entry(
@@ -209,6 +303,27 @@ def get_tools() -> List[ToolEntry]:
             ['name', 'number'],
             _project_pr_reopen,
             is_code_tool=True,
+        ),
+        _tool_entry(
+            'project_pr_changed_files',
+            'List changed files for a GitHub pull request in an existing bootstrapped local project repository via its configured origin remote.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'number': {'type': 'integer', 'description': 'Pull request number to inspect'},
+            },
+            ['name', 'number'],
+            _project_pr_changed_files,
+        ),
+        _tool_entry(
+            'project_pr_diff',
+            'Read the patch/diff for a GitHub pull request in an existing bootstrapped local project repository, with bounded output size.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'number': {'type': 'integer', 'description': 'Pull request number to inspect'},
+                'max_chars': {'type': 'integer', 'description': 'Maximum number of diff characters to return before clipping', 'default': _DEFAULT_READ_PREVIEW_CHARS},
+            },
+            ['name', 'number'],
+            _project_pr_diff,
         ),
         _tool_entry(
             'project_pr_review_list',

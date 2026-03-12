@@ -30,7 +30,9 @@ from ouroboros.tools.project_issue_update import (
     _project_issue_update,
 )
 from ouroboros.tools.project_pr_update import (
+    _project_pr_changed_files,
     _project_pr_close,
+    _project_pr_diff,
     _project_pr_reopen,
     _project_pr_review_list,
     _project_pr_review_submit,
@@ -1004,6 +1006,20 @@ def test_project_pr_reopen_registered():
     assert "project_pr_reopen" in names
 
 
+def test_project_pr_changed_files_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_changed_files" in names
+
+
+def test_project_pr_diff_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_diff" in names
+
+
 def test_project_pr_review_list_registered():
     tmp = pathlib.Path("/tmp")
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
@@ -1286,6 +1302,73 @@ def test_project_pr_reopen_calls_gh(tmp_path, monkeypatch):
     assert payload['github']['pull_request_reopen']['number'] == 8
     assert payload['github']['pull_request_reopen']['result'] == 'Reopened pull request #8'
     assert calls[0]['args'] == ['pr', 'reopen', '8']
+
+
+def test_project_pr_changed_files_reads_files(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(
+            ["gh", *args],
+            0,
+            stdout=json.dumps({
+                'files': [
+                    {'path': 'src/app.py', 'additions': 12, 'deletions': 3},
+                    {'path': 'README.md', 'additions': 2, 'deletions': 0},
+                ]
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr('ouroboros.tools.project_pr_update._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_pr_changed_files(_ctx(tmp_path), name="demo-api", number=8))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['pull_request_files']['number'] == 8
+    assert payload['github']['pull_request_files']['count'] == 2
+    assert payload['github']['pull_request_files']['items'][0]['path'] == 'src/app.py'
+    assert calls[0]['args'] == ['pr', 'view', '8', '--json', 'files']
+
+
+def test_project_pr_diff_reads_patch_and_clips(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+    diff_text = "diff --git a/src/app.py b/src/app.py\n" + ("+line\n" * 20)
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout=diff_text, stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_pr_update._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_pr_diff(_ctx(tmp_path), name="demo-api", number=8, max_chars=40))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['pull_request_diff']['number'] == 8
+    assert payload['github']['pull_request_diff']['max_chars'] == 40
+    assert payload['github']['pull_request_diff']['truncated'] is True
+    assert len(payload['github']['pull_request_diff']['content']) == 40
+    assert calls[0]['args'] == ['pr', 'diff', '8', '--patch']
+
+
+def test_project_pr_diff_rejects_non_positive_max_chars(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    with pytest.raises(ValueError, match='max_chars must be > 0'):
+        _project_pr_diff(_ctx(tmp_path), name="demo-api", number=8, max_chars=0)
 
 
 def test_project_pr_review_list_reads_reviews(tmp_path, monkeypatch):
