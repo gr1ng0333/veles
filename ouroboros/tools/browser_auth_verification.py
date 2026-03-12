@@ -423,6 +423,84 @@ def build_owner_handoff(
 
 
 
+def build_owner_handoff_completion(
+    verification: Dict[str, Any],
+    owner_handoff: Dict[str, Any],
+    owner_handoff_resume: Dict[str, Any],
+    verification_continuation: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    verification = dict(verification or {})
+    owner_handoff = dict(owner_handoff or {})
+    owner_handoff_resume = dict(owner_handoff_resume or {})
+    verification_continuation = dict(verification_continuation or {})
+
+    kind = str(owner_handoff.get("kind") or verification.get("kind") or "none")
+    selectors = dict(owner_handoff.get("selectors") or verification.get("selectors") or {})
+    resume_status = str(owner_handoff_resume.get("status") or "not_needed")
+    continuation_status = str(verification_continuation.get("status") or "continue_login")
+    continuation_reason = str(verification_continuation.get("reason") or "")
+    resume_reason = str(owner_handoff_resume.get("reason") or "")
+
+    if not owner_handoff.get("required"):
+        return {
+            "status": "not_applicable",
+            "completed": False,
+            "can_resume_auth": bool(verification_continuation.get("can_resume_auth", True)),
+            "kind": "none",
+            "completion_reason": "owner handoff was not required",
+            "next_action": str(owner_handoff_resume.get("resume_action") or verification_continuation.get("action") or "continue_login"),
+            "source": "owner_handoff",
+            "selectors": selectors,
+        }
+
+    if resume_status == "resume_ready" or continuation_status == "continue_login":
+        return {
+            "status": "completed",
+            "completed": True,
+            "can_resume_auth": True,
+            "kind": kind,
+            "completion_reason": resume_reason or continuation_reason or "owner handoff appears completed and auth can resume",
+            "next_action": str(owner_handoff_resume.get("resume_action") or verification_continuation.get("action") or "continue_login"),
+            "source": "owner_handoff_resume",
+            "selectors": selectors,
+        }
+
+    if resume_status == "awaiting_owner":
+        return {
+            "status": "still_waiting",
+            "completed": False,
+            "can_resume_auth": False,
+            "kind": kind,
+            "completion_reason": resume_reason or owner_handoff.get("reason") or "owner handoff is still waiting for manual completion",
+            "next_action": str(owner_handoff_resume.get("resume_action") or verification_continuation.get("action") or "await_owner"),
+            "source": "owner_handoff_resume",
+            "selectors": selectors,
+        }
+
+    if resume_status in {"still_blocked", "retry_auto_before_owner"}:
+        return {
+            "status": "blocked",
+            "completed": False,
+            "can_resume_auth": False,
+            "kind": kind,
+            "completion_reason": resume_reason or continuation_reason or "owner handoff has not cleared the verification boundary yet",
+            "next_action": str(owner_handoff_resume.get("resume_action") or verification_continuation.get("action") or "stop"),
+            "source": "owner_handoff_resume",
+            "selectors": selectors,
+        }
+
+    return {
+        "status": "blocked",
+        "completed": False,
+        "can_resume_auth": False,
+        "kind": kind,
+        "completion_reason": resume_reason or continuation_reason or owner_handoff.get("reason") or "owner handoff completion could not be confirmed",
+        "next_action": str(owner_handoff_resume.get("resume_action") or verification_continuation.get("action") or "stop"),
+        "source": "owner_handoff_resume",
+        "selectors": selectors,
+    }
+
+
 def build_owner_handoff_resume(
     verification: Dict[str, Any],
     verification_attempt: Dict[str, Any],
