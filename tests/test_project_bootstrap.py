@@ -13,6 +13,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_init,
     _project_push,
     _project_server_register,
+    _project_server_list,
     _project_server_run,
     _project_status,
 )
@@ -124,6 +125,13 @@ def test_project_server_run_registered():
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     names = {t["function"]["name"] for t in registry.schemas()}
     assert "project_server_run" in names
+
+
+def test_project_server_list_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_server_list" in names
 
 
 def test_project_status_registered():
@@ -483,6 +491,67 @@ def test_project_server_register_rejects_relative_deploy_path(tmp_path):
             ssh_key_path="/home/veles/.ssh/demo",
             deploy_path="srv/demo-api",
         )
+
+
+
+def test_project_server_list_reports_empty_registry_when_missing(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    payload = json.loads(_project_server_list(_ctx(tmp_path), name='demo-api'))
+
+    assert payload['status'] == 'ok'
+    assert payload['registry']['count'] == 0
+    assert payload['registry']['aliases'] == []
+    assert payload['registry']['exists'] is False
+    assert payload['servers'] == []
+
+
+
+def test_project_server_list_returns_public_sorted_server_views(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='prod.example.com',
+        user='deploy',
+        ssh_key_path='/home/veles/.ssh/prod',
+        deploy_path='/srv/demo-api',
+        label='Production',
+    )
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='staging',
+        host='staging.example.com',
+        user='ubuntu',
+        ssh_key_path='/home/veles/.ssh/staging',
+        deploy_path='/srv/demo-api-staging',
+        port=2222,
+    )
+
+    payload = json.loads(_project_server_list(_ctx(tmp_path), name='demo-api'))
+
+    assert payload['status'] == 'ok'
+    assert payload['registry']['count'] == 2
+    assert payload['registry']['aliases'] == ['prod', 'staging']
+    assert payload['registry']['exists'] is True
+    assert [item['alias'] for item in payload['servers']] == ['prod', 'staging']
+    assert payload['servers'][0] == {
+        'alias': 'prod',
+        'label': 'Production',
+        'host': 'prod.example.com',
+        'port': 22,
+        'user': 'deploy',
+        'auth': 'ssh_key_path',
+        'ssh_key_path': '/home/veles/.ssh/prod',
+        'deploy_path': '/srv/demo-api',
+        'created_at': payload['servers'][0]['created_at'],
+        'updated_at': payload['servers'][0]['updated_at'],
+    }
+    assert payload['servers'][1]['alias'] == 'staging'
+    assert payload['servers'][1]['port'] == 2222
+    assert payload['servers'][1]['label'] == ''
 
 
 def test_project_server_run_executes_command_via_registered_alias(tmp_path, monkeypatch):

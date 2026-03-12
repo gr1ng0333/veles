@@ -457,6 +457,30 @@ def _project_server_register(
 
 
 
+def _project_server_list(ctx: ToolContext, name: str) -> str:
+    repo_dir = _require_local_project(name)
+    project_name = _normalize_project_name(name)
+    servers = _load_project_server_registry(repo_dir)
+
+    payload = {
+        'status': 'ok',
+        'listed_at': _utc_now_iso(),
+        'project': {
+            'name': project_name,
+            'path': str(repo_dir),
+        },
+        'registry': {
+            'path': str(_project_server_registry_path(repo_dir)),
+            'count': len(servers),
+            'aliases': [item.get('alias') for item in servers],
+            'exists': _project_server_registry_path(repo_dir).exists(),
+        },
+        'servers': [_public_server_view(item) for item in servers],
+        'repo': _repo_info(repo_dir),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 def _project_status(ctx: ToolContext, name: str) -> str:
     repo_dir = _require_local_project(name)
     project_name = _normalize_project_name(name)
@@ -920,6 +944,16 @@ def get_tools() -> List[ToolEntry]:
             },
             ["name"],
             _project_status,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            "project_server_list",
+            "List registered deploy server targets for an existing bootstrapped local project repository from the project-local .veles server registry.",
+            {
+                "name": {"type": "string", "description": "Existing local project name under the projects root"},
+            },
+            ["name"],
+            _project_server_list,
             is_code_tool=True,
         ),
         _tool_entry(
