@@ -17,7 +17,12 @@ from ouroboros.tools.project_bootstrap import (
     _project_server_run,
     _project_status,
 )
-from ouroboros.tools.project_github_dev import _project_branch_checkout, _project_pr_create
+from ouroboros.tools.project_github_dev import (
+    _project_branch_checkout,
+    _project_pr_create,
+    _project_pr_get,
+    _project_pr_list,
+)
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
@@ -359,6 +364,20 @@ def test_project_branch_checkout_refuses_switch_with_dirty_working_tree(tmp_path
         )
 
 
+def test_project_pr_list_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_list" in names
+
+
+def test_project_pr_get_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_pr_get" in names
+
+
 def test_project_pr_create_registered():
     tmp = pathlib.Path("/tmp")
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
@@ -408,6 +427,89 @@ def test_project_pr_create_requires_pushed_head_branch(tmp_path):
 
     with pytest.raises(ValueError, match='head branch is not pushed to origin'):
         _project_pr_create(_ctx(tmp_path), name="demo-api", title="Add auth")
+
+
+def test_project_pr_list_reads_remote_prs(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(
+            ["gh", *args],
+            0,
+            stdout=json.dumps([
+                {
+                    "number": 7,
+                    "title": "Add auth",
+                    "state": "OPEN",
+                    "headRefName": "feature/auth",
+                    "baseRefName": "main",
+                    "url": "https://github.com/acme/demo-api/pull/7",
+                    "isDraft": False,
+                    "author": {"login": "veles"},
+                }
+            ]),
+            stderr="",
+        )
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_pr_list(_ctx(tmp_path), name="demo-api", state="open", limit=5))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['state'] == 'open'
+    assert payload['github']['limit'] == 5
+    assert payload['github']['pull_requests'][0]['number'] == 7
+    assert calls[0]['args'][:2] == ['pr', 'list']
+    assert '--state' in calls[0]['args']
+    assert '--limit' in calls[0]['args']
+    assert '--json' in calls[0]['args']
+
+
+def test_project_pr_get_reads_one_remote_pr(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(
+            ["gh", *args],
+            0,
+            stdout=json.dumps({
+                "number": 8,
+                "title": "Add auth",
+                "body": "Detailed body",
+                "state": "OPEN",
+                "headRefName": "feature/auth",
+                "baseRefName": "main",
+                "url": "https://github.com/acme/demo-api/pull/8",
+                "isDraft": False,
+                "author": {"login": "veles"},
+                "commits": [{"oid": "abc"}],
+                "comments": [{"id": "note-1"}],
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_pr_get(_ctx(tmp_path), name="demo-api", number=8))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['pull_request']['number'] == 8
+    assert payload['github']['pull_request']['body'] == 'Detailed body'
+    assert payload['github']['pull_request']['commits'][0]['oid'] == 'abc'
+    assert calls[0]['args'][:3] == ['pr', 'view', '8']
+    assert '--json' in calls[0]['args']
 
 
 def test_project_pr_create_passes_body_via_stdin(tmp_path, monkeypatch):
