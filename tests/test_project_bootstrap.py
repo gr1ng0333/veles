@@ -6,6 +6,7 @@ import pytest
 
 from ouroboros.tools.project_bootstrap import (
     _normalize_project_name,
+    _project_file_write,
     _project_github_create,
     _project_init,
 )
@@ -75,6 +76,40 @@ def test_project_github_create_registered():
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     names = {t["function"]["name"] for t in registry.schemas()}
     assert "project_github_create" in names
+
+
+def test_project_file_write_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_file_write" in names
+
+
+def test_project_file_write_updates_file_inside_local_project(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    payload = json.loads(
+        _project_file_write(
+            _ctx(tmp_path),
+            name="demo-api",
+            path="src/demo_api/config.json",
+            content='{"port": 8080}\n',
+        )
+    )
+    repo_path = pathlib.Path(payload["project"]["path"])
+    assert payload["status"] == "ok"
+    assert payload["file"]["path"] == "src/demo_api/config.json"
+    assert (repo_path / "src" / "demo_api" / "config.json").read_text(encoding="utf-8") == '{"port": 8080}\n'
+
+
+def test_project_file_write_rejects_missing_project(tmp_path):
+    with pytest.raises(ValueError):
+        _project_file_write(_ctx(tmp_path), name="missing", path="README.md", content="hello")
+
+
+def test_project_file_write_rejects_path_escape(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    with pytest.raises(ValueError):
+        _project_file_write(_ctx(tmp_path), name="demo-api", path="../escape.txt", content="nope")
 
 
 def test_project_github_create_attaches_origin_and_reports_slug(tmp_path, monkeypatch):
