@@ -343,6 +343,48 @@ def test_project_pr_create_requires_pushed_head_branch(tmp_path):
         _project_pr_create(_ctx(tmp_path), name="demo-api", title="Add auth")
 
 
+def test_project_pr_create_passes_body_via_stdin(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "checkout", "-b", "feature/body"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="https://github.com/acme/demo-api/pull/8\n", stderr="")
+
+    from ouroboros.tools.project_github_dev import _git as real_git
+
+    def fake_git(args, cwd, timeout=20):
+        if args[:3] == ["ls-remote", "--heads", "origin"]:
+            return subprocess.CompletedProcess(["git", *args], 0, stdout="abc\trefs/heads/feature/body\n", stderr="")
+        return real_git(args, cwd, timeout)
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._git', fake_git)
+
+    payload = json.loads(
+        _project_pr_create(
+            _ctx(tmp_path),
+            name="demo-api",
+            title="Add auth",
+            body="Detailed PR body",
+            base="main",
+            head="feature/body",
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['pull_request']['body_provided'] is True
+    assert payload['github']['pull_request']['url'] == 'https://github.com/acme/demo-api/pull/8'
+    assert '--body-file=-' in calls[0]['args']
+    assert calls[0]['input'] == 'Detailed PR body'
+
+
+
+
 def test_project_commit_creates_new_git_commit_for_local_project(tmp_path):
     init_payload = json.loads(_project_init(_ctx(tmp_path), name="Demo API", language="python"))
     before_sha = init_payload["repo"]["sha"]
