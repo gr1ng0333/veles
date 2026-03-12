@@ -6,7 +6,7 @@ import pytest
 
 from ouroboros.tools.project_bootstrap import _project_init, _project_server_register
 from ouroboros.tools.project_deploy import _build_sync_archive, _project_server_sync
-from ouroboros.tools.project_service import _project_service_control
+from ouroboros.tools.project_service import _project_service_control, _project_service_render_unit
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
@@ -97,6 +97,56 @@ def test_project_server_sync_rejects_bad_timeout(tmp_path):
 
     with pytest.raises(ValueError):
         _project_server_sync(_ctx(tmp_path), name='demo-api', alias='prod', timeout=0)
+
+
+def test_project_service_render_unit_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_service_render_unit" in names
+
+
+def test_project_service_render_unit_auto_detects_python_defaults(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    payload = json.loads(
+        _project_service_render_unit(
+            _ctx(tmp_path),
+            name='demo-api',
+            service_name='demo-api',
+            deploy_path='/srv/demo-api',
+            environment=['PORT=8080'],
+            environment_file='/etc/demo-api.env',
+            user='deploy',
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['service']['name'] == 'demo-api'
+    assert payload['service']['unit_name'] == 'demo-api.service'
+    assert payload['service']['runtime'] == 'python'
+    assert payload['service']['working_directory'] == '/srv/demo-api'
+    assert payload['service']['exec_start'] == '/usr/bin/python3 -m src.demo_api.main'
+    assert payload['service']['unit_path'] == '/etc/systemd/system/demo-api.service'
+    unit = payload['service']['unit_content']
+    assert 'WorkingDirectory=/srv/demo-api' in unit
+    assert 'EnvironmentFile=/etc/demo-api.env' in unit
+    assert 'Environment=PORT=8080' in unit
+    assert 'User=deploy' in unit
+    assert 'ExecStart=/usr/bin/python3 -m src.demo_api.main' in unit
+
+
+def test_project_service_render_unit_rejects_bad_environment_entry(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    with pytest.raises(ValueError):
+        _project_service_render_unit(
+            _ctx(tmp_path),
+            name='demo-api',
+            service_name='demo-api',
+            deploy_path='/srv/demo-api',
+            environment=['BROKEN_ENV'],
+        )
 
 
 def test_project_service_control_registered():
