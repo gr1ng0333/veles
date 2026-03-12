@@ -20,6 +20,110 @@ _DEFAULT_READ_PREVIEW_CHARS = 20_000
 _SERVER_REGISTRY_DIR = ".veles"
 _SERVER_REGISTRY_FILE = "servers.json"
 
+_DEFAULT_SERVER_RUN_TIMEOUT = 60
+_MAX_SERVER_RUN_OUTPUT_CHARS = 20_000
+
+
+def _find_project_server(repo_dir: pathlib.Path, alias: str) -> Dict[str, Any]:
+    alias_name = _normalize_server_alias(alias)
+    for item in _load_project_server_registry(repo_dir):
+        if item.get('alias') == alias_name:
+            return item
+    raise ValueError(f"project server alias not found: {alias_name}")
+
+
+def _clip_server_run_output(content: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ''
+    return _clip_project_read_content(content, max_chars)
+
+
+def _run_ssh(args: List[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["ssh", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("ssh client not found on VPS") from e
+
+
+def _project_server_run(
+    ctx: ToolContext,
+    name: str,
+    alias: str,
+    command: str,
+    timeout: int = _DEFAULT_SERVER_RUN_TIMEOUT,
+    max_output_chars: int = _MAX_SERVER_RUN_OUTPUT_CHARS,
+) -> str:
+    repo_dir = _require_local_project(name)
+    project_name = _normalize_project_name(name)
+    server = _find_project_server(repo_dir, alias)
+
+    raw_command = str(command or '').strip()
+    if not raw_command:
+        raise ValueError('command must be non-empty')
+
+    try:
+        timeout_value = int(timeout)
+    except (TypeError, ValueError) as e:
+        raise ValueError('timeout must be an integer') from e
+    if timeout_value <= 0:
+        raise ValueError('timeout must be > 0')
+
+    try:
+        max_chars = int(max_output_chars)
+    except (TypeError, ValueError) as e:
+        raise ValueError('max_output_chars must be an integer') from e
+    if max_chars <= 0:
+        raise ValueError('max_output_chars must be > 0')
+
+    ssh_args = [
+        '-i', server['ssh_key_path'],
+        '-p', str(server['port']),
+        '-o', 'BatchMode=yes',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', 'IdentitiesOnly=yes',
+        f"{server['user']}@{server['host']}",
+        '--',
+        raw_command,
+    ]
+    res = _run_ssh(ssh_args, timeout=timeout_value)
+    stdout = res.stdout or ''
+    stderr = res.stderr or ''
+    combined = stdout + stderr
+    clipped = _clip_server_run_output(combined, max_chars)
+
+    payload = {
+        'status': 'ok' if res.returncode == 0 else 'error',
+        'executed_at': _utc_now_iso(),
+        'project': {
+            'name': project_name,
+            'path': str(repo_dir),
+        },
+        'server': _public_server_view(server),
+        'command': {
+            'raw': raw_command,
+            'transport': 'ssh',
+            'timeout_seconds': timeout_value,
+        },
+        'result': {
+            'ok': res.returncode == 0,
+            'exit_code': res.returncode,
+            'stdout': _clip_server_run_output(stdout, max_chars),
+            'stderr': _clip_server_run_output(stderr, max_chars),
+            'output': clipped,
+            'truncated': clipped != combined,
+            'max_output_chars': max_chars,
+        },
+        'repo': _repo_info(repo_dir),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+
 
 def _project_veles_dir(repo_dir: pathlib.Path) -> pathlib.Path:
     return repo_dir / _SERVER_REGISTRY_DIR
@@ -816,6 +920,20 @@ def get_tools() -> List[ToolEntry]:
             },
             ["name"],
             _project_status,
+            is_code_tool=True,
+        ),
+        _tool_entry(
+            "project_server_run",
+            "Run a command over SSH on a previously registered project server target, using the project-local server registry alias instead of raw host arguments.",
+            {
+                "name": {"type": "string", "description": "Existing local project name under the projects root"},
+                "alias": {"type": "string", "description": "Registered server alias from the project-local .veles server registry"},
+                "command": {"type": "string", "description": "Shell command to execute remotely over SSH"},
+                "timeout": {"type": "integer", "description": "SSH command timeout in seconds", "default": _DEFAULT_SERVER_RUN_TIMEOUT},
+                "max_output_chars": {"type": "integer", "description": "Maximum combined stdout/stderr characters to return before clipping", "default": _MAX_SERVER_RUN_OUTPUT_CHARS},
+            },
+            ["name", "alias", "command"],
+            _project_server_run,
             is_code_tool=True,
         ),
         _tool_entry(

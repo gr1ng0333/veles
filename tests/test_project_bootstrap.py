@@ -13,6 +13,7 @@ from ouroboros.tools.project_bootstrap import (
     _project_init,
     _project_push,
     _project_server_register,
+    _project_server_run,
     _project_status,
 )
 from ouroboros.tools.registry import ToolContext, ToolRegistry
@@ -116,6 +117,13 @@ def test_project_server_register_registered():
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     names = {t["function"]["name"] for t in registry.schemas()}
     assert "project_server_register" in names
+
+
+def test_project_server_run_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_server_run" in names
 
 
 def test_project_status_registered():
@@ -475,3 +483,100 @@ def test_project_server_register_rejects_relative_deploy_path(tmp_path):
             ssh_key_path="/home/veles/.ssh/demo",
             deploy_path="srv/demo-api",
         )
+
+
+def test_project_server_run_executes_command_via_registered_alias(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name="demo-api",
+        alias="prod",
+        host="demo.example.com",
+        user="deploy",
+        ssh_key_path="/home/veles/.ssh/demo",
+        deploy_path="/srv/demo-api",
+        port=2222,
+    )
+
+    seen = {}
+
+    def fake_run_ssh(args, timeout):
+        seen['args'] = args
+        seen['timeout'] = timeout
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout='ok\n', stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_bootstrap._run_ssh', fake_run_ssh)
+
+    payload = json.loads(
+        _project_server_run(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            command='uname -a',
+            timeout=45,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['server']['alias'] == 'prod'
+    assert payload['command']['raw'] == 'uname -a'
+    assert payload['command']['timeout_seconds'] == 45
+    assert payload['result']['ok'] is True
+    assert payload['result']['exit_code'] == 0
+    assert payload['result']['stdout'] == 'ok\n'
+    assert payload['result']['stderr'] == ''
+    assert payload['result']['output'] == 'ok\n'
+    assert payload['result']['truncated'] is False
+    assert seen['timeout'] == 45
+    assert seen['args'][:10] == [
+        '-i', '/home/veles/.ssh/demo',
+        '-p', '2222',
+        '-o', 'BatchMode=yes',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', 'IdentitiesOnly=yes',
+    ]
+    assert seen['args'][10:] == ['deploy@demo.example.com', '--', 'uname -a']
+
+
+def test_project_server_run_reports_nonzero_exit_and_clips_output(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name="demo-api",
+        alias="prod",
+        host="demo.example.com",
+        user="deploy",
+        ssh_key_path="/home/veles/.ssh/demo",
+        deploy_path="/srv/demo-api",
+    )
+
+    def fake_run_ssh(args, timeout):
+        return subprocess.CompletedProcess(['ssh', *args], 17, stdout='abcdef', stderr='ghijkl')
+
+    monkeypatch.setattr('ouroboros.tools.project_bootstrap._run_ssh', fake_run_ssh)
+
+    payload = json.loads(
+        _project_server_run(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            command='failing-command',
+            max_output_chars=8,
+        )
+    )
+
+    assert payload['status'] == 'error'
+    assert payload['result']['ok'] is False
+    assert payload['result']['exit_code'] == 17
+    assert payload['result']['stdout'] == 'abcdef'
+    assert payload['result']['stderr'] == 'ghijkl'
+    assert payload['result']['output'] == 'abcdefgh'
+    assert payload['result']['truncated'] is True
+    assert payload['result']['max_output_chars'] == 8
+    assert len(payload['result']['output']) <= len('abcdefghijkl')
+
+
+def test_project_server_run_rejects_unknown_alias(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    with pytest.raises(ValueError):
+        _project_server_run(_ctx(tmp_path), name='demo-api', alias='missing', command='pwd')
