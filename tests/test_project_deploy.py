@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from ouroboros.tools.project_bootstrap import _project_init, _project_server_register
-from ouroboros.tools.project_deploy_state import _project_deploy_state_path
+from ouroboros.tools.project_deploy_state import _project_deploy_state_path, _read_project_deploy_state
 from ouroboros.tools.project_deploy import _build_sync_archive, _project_deploy_apply, _project_deploy_recipe, _project_server_sync
 from ouroboros.tools.project_service import _project_service_control, _project_service_render_unit
 from ouroboros.tools.registry import ToolContext, ToolRegistry
@@ -373,6 +373,103 @@ def test_project_deploy_status_combines_deploy_probe_and_service_snapshot(tmp_pa
     assert 'service is failed' in payload['diagnostics']['summary']
     assert any('last recorded deploy' not in item for item in payload['diagnostics']['issues'])
     assert payload['diagnostics']['service']['severity'] == 'critical'
+def test_project_service_status_reports_missing_unit_diagnostics(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_observability import _project_service_status
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fake_run_ssh_text(args, timeout):
+        stdout = (
+            'LoadState=not-found\n'
+            'ActiveState=inactive\n'
+            'SubState=dead\n'
+            'UnitFileState=\n'
+            'FragmentPath=\n'
+            'ExecMainPID=0\n'
+            'ExecMainStatus=0\n'
+            'Result=success\n'
+        )
+        return subprocess.CompletedProcess(['ssh', *args], 1, stdout=stdout, stderr='not found\n')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_observability._run_ssh_text', fake_run_ssh_text)
+
+    payload = json.loads(
+        _project_service_status(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            timeout=30,
+            sudo=False,
+        )
+    )
+
+    assert payload['status'] == 'error'
+    assert payload['service']['exists'] is False
+    assert payload['diagnostics']['severity'] == 'critical'
+    assert payload['diagnostics']['summary'] == 'systemd unit not found'
+    assert any('project_service_control(action=install)' in item for item in payload['diagnostics']['recommended_checks'])
+
+
+
+def test_project_service_status_reports_transitional_diagnostics(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_observability import _project_service_status
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fake_run_ssh_text(args, timeout):
+        stdout = (
+            'LoadState=loaded\n'
+            'ActiveState=activating\n'
+            'SubState=start-pre\n'
+            'UnitFileState=enabled\n'
+            'FragmentPath=/etc/systemd/system/demo-api.service\n'
+            'ExecMainPID=0\n'
+            'ExecMainStatus=0\n'
+            'Result=success\n'
+            'enabled\n'
+        )
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_observability._run_ssh_text', fake_run_ssh_text)
+
+    payload = json.loads(
+        _project_service_status(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            timeout=30,
+            sudo=False,
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['service']['exists'] is True
+    assert payload['service']['running'] is False
+    assert payload['diagnostics']['severity'] == 'warning'
+    assert payload['diagnostics']['summary'] == 'service is in transitional state: activating/start-pre'
+    assert any('re-check project_service_status' in item for item in payload['diagnostics']['recommended_checks'])
+
+
 def test_project_service_control_registered():
     tmp = pathlib.Path("/tmp")
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
@@ -970,6 +1067,29 @@ def test_project_deploy_status_includes_last_recorded_deploy_outcome(tmp_path, m
 
 
 
+def test_read_project_deploy_state_backfills_missing_execution_fields(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / 'projects' / 'demo-api'
+    state_path = _project_deploy_state_path(repo_dir)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        'kind': 'project_deploy_outcome',
+        'status': 'ok',
+        'deploy': {
+            'mode': 'update',
+            'lifecycle_action': 'restart',
+        },
+    }), encoding='utf-8')
+
+    payload = _read_project_deploy_state(repo_dir)
+
+    assert payload is not None
+    assert payload['deploy']['mode'] == 'update'
+    assert payload['deploy']['execution']['dry_run'] is None
+    assert payload['deploy']['execution']['total_steps'] is None
+    assert payload['deploy']['execution']['last_step_key'] == ''
+
+
 def test_project_server_management_tools_registered():
     tmp = pathlib.Path("/tmp")
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
@@ -1037,6 +1157,43 @@ def test_project_server_validate_reports_ready_deploy_target(tmp_path, monkeypat
     assert payload['validation']['checks']['service_unit_exists'] is True
     assert payload['service']['unit_name'] == 'demo-api.service'
     assert len(calls) == 2
+
+
+def test_project_server_validate_reports_not_ready_when_parent_is_not_writable(tmp_path, monkeypatch):
+    from ouroboros.tools.project_server_management import _project_server_validate
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fake_run_remote_text(server, command, timeout):
+        stdout = (
+            'SSH_OK=1\n'
+            'WHOAMI=deploy\n'
+            'SYSTEMCTL=present\n'
+            'DEPLOY_EXISTS=0\n'
+            'DEPLOY_WRITABLE=0\n'
+            'PARENT_EXISTS=1\n'
+            'PARENT_WRITABLE=0\n'
+        )
+        return subprocess.CompletedProcess(['ssh', command], 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.project_server_management._run_remote_text', fake_run_remote_text)
+
+    payload = json.loads(_project_server_validate(_ctx(tmp_path), name='demo-api', alias='prod'))
+
+    assert payload['status'] == 'error'
+    assert payload['validation']['ok'] is False
+    assert payload['validation']['checks']['deploy_path_exists'] is False
+    assert payload['validation']['checks']['deploy_parent_writable'] is False
+    assert payload['validation']['checks']['deploy_path_ready'] is False
 
 
 def test_project_server_validate_accepts_missing_deploy_dir_when_parent_is_writable(tmp_path, monkeypatch):
@@ -1331,6 +1488,17 @@ def test_project_deploy_operational_loop_scenario_smoke(tmp_path, monkeypatch):
     assert logs_payload['logs']['content'] == 'line1\nline2\n'
     assert any('systemctl show' in command for command in status_calls)
     assert any('journalctl' in command for command in status_calls)
+
+
+def test_read_project_deploy_state_rejects_invalid_json(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / 'projects' / 'demo-api'
+    state_path = _project_deploy_state_path(repo_dir)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text('{invalid json\n', encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='invalid JSON'):
+        _read_project_deploy_state(repo_dir)
 
 
 def test_project_deploy_status_surfaces_missing_deploy_record_and_path_problem(tmp_path, monkeypatch):
