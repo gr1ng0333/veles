@@ -13,7 +13,7 @@ import pathlib
 import queue
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import logging
@@ -367,7 +367,7 @@ def _execute_with_timeout(
             )
         try:
             return future.result(timeout=timeout_sec)
-        except TimeoutError:
+        except FuturesTimeoutError:
             stateful_executor.reset()
             reset_msg = "Browser state has been reset. "
             return _make_timeout_result(
@@ -406,7 +406,7 @@ def _execute_with_timeout(
                 )
             try:
                 return future.result(timeout=timeout_sec)
-            except TimeoutError:
+            except FuturesTimeoutError:
                 return _make_timeout_result(
                     fn_name, tool_call_id, is_code_tool, tc, drive_logs,
                     timeout_sec, task_id, reset_msg=""
