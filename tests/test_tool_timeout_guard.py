@@ -54,6 +54,35 @@ def test_execute_with_timeout_returns_structured_error_when_future_result_crashe
     assert "during result" in result["result"]
 
 
+
+
+def test_execute_with_timeout_converts_concurrent_future_timeout(monkeypatch, tmp_path):
+    class DummyFuture:
+        def result(self, timeout=None):
+            raise FuturesTimeoutError("worker timed out")
+
+    class DummyExecutor:
+        def submit(self, fn, *args, **kwargs):
+            return DummyFuture()
+
+        def shutdown(self, wait=False, cancel_futures=True):
+            return None
+
+    monkeypatch.setattr("ouroboros.loop.ThreadPoolExecutor", lambda max_workers=1: DummyExecutor())
+
+    result = _execute_with_timeout(
+        DummyTools(),
+        _tool_call(),
+        pathlib.Path(tmp_path),
+        timeout_sec=3,
+        task_id="task-timeout",
+        stateful_executor=None,
+    )
+
+    assert result["is_error"] is True
+    assert "TOOL_TIMEOUT (repo_read)" in result["result"]
+    assert "exceeded 3s limit" in result["result"]
+
 def test_execute_with_timeout_resets_stateful_executor_on_unexpected_result_error(tmp_path):
     class DummyFuture:
         def result(self, timeout=None):
