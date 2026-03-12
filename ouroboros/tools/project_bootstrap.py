@@ -590,7 +590,12 @@ def _normalize_github_owner(owner: str) -> str:
     return raw
 
 
-def _run_gh(args: List[str], cwd: pathlib.Path, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+def _run_gh(
+    args: List[str],
+    cwd: pathlib.Path,
+    timeout: int = 120,
+    input_data: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["gh", *args],
@@ -598,6 +603,7 @@ def _run_gh(args: List[str], cwd: pathlib.Path, timeout: int = 120) -> subproces
             capture_output=True,
             text=True,
             timeout=timeout,
+            input=input_data,
         )
     except FileNotFoundError as e:
         raise RuntimeError("gh CLI not found on VPS") from e
