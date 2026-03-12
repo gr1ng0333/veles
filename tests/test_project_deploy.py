@@ -410,7 +410,7 @@ def test_project_deploy_apply_registered():
     assert "project_deploy_apply" in names
 
 
-def test_project_deploy_apply_install_runs_sync_install_start_status(tmp_path, monkeypatch):
+def test_project_deploy_apply_install_runs_sync_setup_install_start_status(tmp_path, monkeypatch):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
     _project_server_register(
         _ctx(tmp_path),
@@ -428,11 +428,16 @@ def test_project_deploy_apply_install_runs_sync_install_start_status(tmp_path, m
         calls.append(('sync', kwargs))
         return json.dumps({'status': 'ok', 'result': {'ok': True}})
 
+    def fake_run(ctx, **kwargs):
+        calls.append(('setup', kwargs))
+        return json.dumps({'status': 'ok', 'command': {'raw': kwargs['command']}, 'result': {'ok': True}})
+
     def fake_service(ctx, **kwargs):
         calls.append((kwargs['action'], kwargs))
         return json.dumps({'status': 'ok', 'service': {'action': kwargs['action']}, 'result': {'ok': True}})
 
     monkeypatch.setattr('ouroboros.tools.project_deploy._project_server_sync', fake_sync)
+    monkeypatch.setattr('ouroboros.tools.project_bootstrap._project_server_run', fake_run)
     monkeypatch.setattr('ouroboros.tools.project_service._project_service_control', fake_service)
 
     payload = json.loads(
@@ -451,21 +456,26 @@ def test_project_deploy_apply_install_runs_sync_install_start_status(tmp_path, m
 
     assert payload['status'] == 'ok'
     assert payload['mode'] == 'install'
-    assert [step['key'] for step in payload['steps']] == ['sync', 'install_service', 'start', 'status']
-    assert [name for name, _ in calls] == ['sync', 'install', 'start', 'status']
+    assert [step['key'] for step in payload['steps']] == ['sync', 'setup', 'install_service', 'start', 'status']
+    assert [name for name, _ in calls] == ['sync', 'setup', 'install', 'start', 'status']
     assert calls[0][1]['delete'] is True
     assert calls[0][1]['timeout'] == 90
-    assert calls[1][1]['enable_on_install'] is True
-    assert calls[1][1]['start_on_install'] is False
-    assert calls[2][1]['action'] == 'start'
-    assert calls[2][1]['timeout'] == 120
-    assert calls[3][1]['action'] == 'status'
-    assert calls[3][1]['timeout'] == 30
+    assert calls[1][1]['timeout'] == 90
+    assert 'pip install -r requirements.txt' in calls[1][1]['command']
+    assert 'python3 -m venv /srv/demo-api/.venv' in calls[1][1]['command']
+    assert calls[2][1]['enable_on_install'] is True
+    assert calls[2][1]['start_on_install'] is False
+    assert calls[3][1]['action'] == 'start'
+    assert calls[3][1]['timeout'] == 120
+    assert calls[4][1]['action'] == 'status'
+    assert calls[4][1]['timeout'] == 30
+    assert payload['steps'][1]['payload']['setup']['count'] == 3
+    assert payload['steps'][1]['payload']['setup']['skipped'] is False
     assert payload['summary']['lifecycle_action'] == 'start'
     assert payload['summary']['status_ok'] is True
 
 
-def test_project_deploy_apply_update_restarts_after_install(tmp_path, monkeypatch):
+def test_project_deploy_apply_update_restarts_after_setup_and_install(tmp_path, monkeypatch):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
     _project_server_register(
         _ctx(tmp_path),
@@ -482,6 +492,10 @@ def test_project_deploy_apply_update_restarts_after_install(tmp_path, monkeypatc
     monkeypatch.setattr(
         'ouroboros.tools.project_deploy._project_server_sync',
         lambda ctx, **kwargs: (calls.append(('sync', kwargs)) or json.dumps({'status': 'ok'}))
+    )
+    monkeypatch.setattr(
+        'ouroboros.tools.project_bootstrap._project_server_run',
+        lambda ctx, **kwargs: (calls.append(('setup', kwargs)) or json.dumps({'status': 'ok', 'command': {'raw': kwargs['command']}}))
     )
 
     def fake_service(ctx, **kwargs):
@@ -501,9 +515,51 @@ def test_project_deploy_apply_update_restarts_after_install(tmp_path, monkeypatc
     )
 
     assert payload['status'] == 'ok'
-    assert [step['key'] for step in payload['steps']] == ['sync', 'install_service', 'restart', 'status']
-    assert [name for name, _ in calls] == ['sync', 'install', 'restart', 'status']
+    assert [step['key'] for step in payload['steps']] == ['sync', 'setup', 'install_service', 'restart', 'status']
+    assert [name for name, _ in calls] == ['sync', 'setup', 'install', 'restart', 'status']
     assert payload['summary']['lifecycle_action'] == 'restart'
+
+
+
+def test_project_deploy_apply_stops_on_setup_failure(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='/tmp/id_demo',
+        deploy_path='/srv/demo-api',
+    )
+
+    monkeypatch.setattr(
+        'ouroboros.tools.project_deploy._project_server_sync',
+        lambda ctx, **kwargs: json.dumps({'status': 'ok', 'result': {'ok': True}})
+    )
+    monkeypatch.setattr(
+        'ouroboros.tools.project_bootstrap._project_server_run',
+        lambda ctx, **kwargs: json.dumps({'status': 'error', 'command': {'raw': kwargs['command']}, 'result': {'ok': False, 'exit_code': 1}})
+    )
+
+    def fail_if_called(ctx, **kwargs):
+        raise AssertionError('service control must not run after setup failure')
+
+    monkeypatch.setattr('ouroboros.tools.project_service._project_service_control', fail_if_called)
+
+    payload = json.loads(
+        _project_deploy_apply(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            mode='install',
+        )
+    )
+
+    assert payload['status'] == 'error'
+    assert payload['failed_step'] == 'setup'
+    assert [step['key'] for step in payload['steps']] == ['sync', 'setup']
 
 
 def test_project_deploy_apply_stops_on_sync_failure(tmp_path, monkeypatch):
