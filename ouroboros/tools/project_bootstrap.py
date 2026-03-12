@@ -9,7 +9,6 @@ from typing import Any, Dict, List
 
 from ouroboros.utils import safe_relpath
 
-
 from ouroboros.tools.external_repos import _ensure_external_repo_git_identity, _tool_entry
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
@@ -22,7 +21,6 @@ _SERVER_REGISTRY_FILE = "servers.json"
 
 _DEFAULT_SERVER_RUN_TIMEOUT = 60
 _MAX_SERVER_RUN_OUTPUT_CHARS = 20_000
-
 
 def _find_project_server(repo_dir: pathlib.Path, alias: str) -> Dict[str, Any]:
     alias_name = _normalize_server_alias(alias)
@@ -213,7 +211,6 @@ def _normalize_server_ssh_key_path(ssh_key_path: str) -> str:
     if not expanded.is_absolute():
         raise ValueError("ssh_key_path must be absolute or use ~/...")
     return str(expanded)
-
 
 def _normalize_server_deploy_path(deploy_path: str) -> str:
     raw = str(deploy_path or '').strip()
@@ -483,6 +480,7 @@ def _project_server_list(ctx: ToolContext, name: str) -> str:
 
 def _project_status(ctx: ToolContext, name: str) -> str:
     repo_dir = _require_local_project(name)
+    from ouroboros.tools.project_remote_awareness import remote_awareness_snapshot as _remote_awareness_snapshot
     project_name = _normalize_project_name(name)
 
     status_lines = _git_lines(repo_dir, ["status", "--porcelain", "--untracked-files=all"])
@@ -550,6 +548,7 @@ def _project_status(ctx: ToolContext, name: str) -> str:
         },
         "latest_commit": latest_commit,
         "remotes": remotes,
+        "remote_awareness": _remote_awareness_snapshot(repo_dir),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
