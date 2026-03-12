@@ -438,6 +438,8 @@ def test_summarize_auth_diagnostics_exposes_inactive_handoff_when_no_verificatio
     assert diagnostics["verification_handoff"]["active"] is False
     assert diagnostics["verification_handoff"]["mode"] == "none"
     assert diagnostics["verification_handoff"]["continuation"] == "continue"
+    assert diagnostics["owner_handoff"]["required"] is False
+    assert diagnostics["owner_handoff"]["kind"] == "none"
 
 
 def test_infer_auth_state_does_not_treat_cookie_only_on_login_url_as_logged_in():
@@ -651,6 +653,27 @@ def test_summarize_auth_diagnostics_exposes_verification_attempt_plan():
     assert diagnostics["verification_attempt"]["strategy"] == "solve_simple_captcha_from_screenshot"
 
 
+def test_summarize_auth_diagnostics_exposes_structured_owner_handoff_for_mfa():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/verify",
+        page_signals={"title": "Verify", "body_text": "Enter the verification code"},
+        matched=["mfa_selector"],
+        profile=normalize_site_profile({"mfa_selector": "input[name=otp]", "submit_selector": "button[type=submit]"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(snapshot, state, next_action)
+
+    assert diagnostics["owner_handoff"]["required"] is True
+    assert diagnostics["owner_handoff"]["kind"] == "mfa"
+    assert diagnostics["owner_handoff"]["blocking"] is True
+    assert "owner_verification_code" in diagnostics["owner_handoff"]["required_inputs"]
+    assert "MFA" in diagnostics["owner_handoff"]["instruction"]
+
+
 def test_build_verification_attempt_result_reports_not_attempted_without_boundary():
     result = build_verification_attempt_result({}, {"strategy": "none"}, None)
 
@@ -845,6 +868,38 @@ def test_build_verification_continuation_retries_after_light_failed_attempt():
     assert continuation["should_retry_verification"] is True
     assert continuation["requires_owner_input"] is False
 
+
+
+def test_summarize_auth_diagnostics_exposes_owner_handoff_after_failed_verification_escalation():
+    snapshot = build_auth_page_snapshot(
+        current_url="https://example.com/login",
+        page_signals={"title": "Login", "body_text": "Please verify you are human"},
+        matched=["captcha_selector"],
+        profile=normalize_site_profile({"captcha_selector": ".captcha-box"}),
+        protected_url_alive=False,
+        submitted_from_login_url=True,
+    )
+    state = infer_auth_state(snapshot)
+    next_action = build_next_action_plan(snapshot, state)
+
+    diagnostics = summarize_auth_diagnostics(
+        snapshot,
+        state,
+        next_action,
+        raw_verification_attempt_result={
+            "success": False,
+            "confidence": 0.92,
+            "attempts": 2,
+            "error": "captcha remained unsolved",
+            "reason": "captcha auto-attempt failed",
+            "method": "browser_solve_captcha",
+        },
+    )
+
+    assert diagnostics["verification_continuation"]["status"] == "await_owner"
+    assert diagnostics["owner_handoff"]["required"] is True
+    assert diagnostics["owner_handoff"]["kind"] == "captcha"
+    assert diagnostics["owner_handoff"]["reason"] == "captcha remained unsolved"
 
 
 def test_build_verification_continuation_escalates_after_heavier_failed_attempt():
