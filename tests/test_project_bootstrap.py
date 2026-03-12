@@ -1970,3 +1970,169 @@ def test_project_issue_assign_rejects_whitespace_in_assignee(tmp_path):
 
     with pytest.raises(ValueError, match='assignees entries must not contain whitespace'):
         _project_issue_assign(_ctx(tmp_path), name="demo-api", number=1, assignees=["alice smith"])
+
+
+def test_project_github_dev_loop_scenario_smoke(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    remote_dir = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote_dir)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_dir)], cwd=repo_dir, check=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote_dir, check=True)
+
+    gh_calls = []
+    state = {
+        'issues': [
+            {
+                'number': 1,
+                'title': 'Existing issue',
+                'state': 'OPEN',
+                'url': 'https://github.com/acme/demo-api/issues/1',
+            }
+        ],
+        'issue_comments': [],
+        'pull_requests': [],
+        'reviews': [
+            {
+                'id': 'review-1',
+                'author': {'login': 'review-bot'},
+                'state': 'COMMENTED',
+                'body': 'Looks good',
+            }
+        ],
+        'pr_comments': [],
+    }
+
+    def fake_run_gh(args, cwd, timeout=120, input_data=None):
+        gh_calls.append({'args': list(args), 'cwd': cwd, 'timeout': timeout, 'input': input_data})
+        if args[:2] == ['issue', 'create']:
+            issue = {
+                'number': 2,
+                'title': next((a.split('=', 1)[1] for a in args if a.startswith('--title=')), ''),
+                'state': 'OPEN',
+                'url': 'https://github.com/acme/demo-api/issues/2',
+            }
+            state['issues'].append(issue)
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout=issue['url'] + '\n', stderr='')
+        if args[:2] == ['issue', 'comment']:
+            state['issue_comments'].append({'number': int(args[2]), 'body': input_data or ''})
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout='issue commented\n', stderr='')
+        if args[:2] == ['issue', 'list']:
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout=json.dumps(state['issues']), stderr='')
+        if args[:2] == ['pr', 'create']:
+            pr = {
+                'number': 7,
+                'title': next((a.split('=', 1)[1] for a in args if a.startswith('--title=')), ''),
+                'state': 'OPEN',
+                'headRefName': next((a.split('=', 1)[1] for a in args if a.startswith('--head=')), ''),
+                'baseRefName': next((a.split('=', 1)[1] for a in args if a.startswith('--base=')), ''),
+                'url': 'https://github.com/acme/demo-api/pull/7',
+                'isDraft': False,
+                'author': {'login': 'veles'},
+            }
+            state['pull_requests'] = [pr]
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout=pr['url'] + '\n', stderr='')
+        if args[:2] == ['pr', 'list']:
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout=json.dumps(state['pull_requests']), stderr='')
+        if args[:3] == ['pr', 'view', '7']:
+            if '--json' in args and 'reviews' in args:
+                return subprocess.CompletedProcess(['gh', *args], 0, stdout=json.dumps({'reviews': state['reviews']}), stderr='')
+            pr = state['pull_requests'][0]
+            payload = {
+                'number': pr['number'],
+                'title': pr['title'],
+                'body': 'Implements issue #2',
+                'state': pr['state'],
+                'url': pr['url'],
+                'headRefName': pr['headRefName'],
+                'baseRefName': pr['baseRefName'],
+                'comments': state['pr_comments'],
+                'commits': [
+                    {
+                        'oid': subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip(),
+                        'messageHeadline': 'Add ready endpoint docs',
+                    }
+                ],
+            }
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout=json.dumps(payload), stderr='')
+        if args[:2] == ['pr', 'comment']:
+            state['pr_comments'].append({'body': input_data or ''})
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout='pr commented\n', stderr='')
+        if args[:2] == ['pr', 'review']:
+            state['reviews'].append({'id': 'review-2', 'state': 'APPROVED', 'body': input_data or ''})
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout='review submitted\n', stderr='')
+        if args[:2] == ['pr', 'merge']:
+            state['pull_requests'][0]['state'] = 'MERGED'
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout='merged\n', stderr='')
+        raise AssertionError(f'unexpected gh args: {args}')
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._project_github_slug', lambda repo_dir: 'acme/demo-api')
+    monkeypatch.setattr('ouroboros.tools.project_issue_update._run_gh', fake_run_gh)
+    monkeypatch.setattr('ouroboros.tools.project_issue_update._project_github_slug', lambda repo_dir: 'acme/demo-api')
+    monkeypatch.setattr('ouroboros.tools.project_pr_update._run_gh', fake_run_gh)
+    monkeypatch.setattr('ouroboros.tools.project_pr_update._project_github_slug', lambda repo_dir: 'acme/demo-api')
+
+    branch_payload = json.loads(_project_branch_checkout(_ctx(tmp_path), name='demo-api', branch='feature/ready-endpoint', base='main'))
+    assert branch_payload['branch']['created'] is True
+
+    _project_file_write(_ctx(tmp_path), name='demo-api', path='README.md', content='# demo-api\n\nReady endpoint docs\n')
+    commit_payload = json.loads(_project_commit(_ctx(tmp_path), name='demo-api', message='Add ready endpoint docs'))
+    assert commit_payload['status'] == 'ok'
+
+    push_payload = json.loads(_project_push(_ctx(tmp_path), name='demo-api', branch='feature/ready-endpoint'))
+    assert push_payload['status'] == 'ok'
+
+    issue_create = json.loads(_project_issue_create(_ctx(tmp_path), name='demo-api', title='Add /ready endpoint', body='Need readiness endpoint'))
+    assert issue_create['github']['issue']['url'].endswith('/issues/2')
+    issue_number = 2
+
+    issue_comment = json.loads(_project_issue_comment(_ctx(tmp_path), name='demo-api', number=issue_number, body='Working on this now'))
+    assert issue_comment['status'] == 'ok'
+
+    issue_list = json.loads(_project_issue_list(_ctx(tmp_path), name='demo-api', state='open', limit=10))
+    assert issue_list['github']['issues'][-1]['number'] == 2
+
+    pr_create = json.loads(_project_pr_create(_ctx(tmp_path), name='demo-api', title='Add ready endpoint', body='Implements issue #2'))
+    assert pr_create['github']['pull_request']['head'] == 'feature/ready-endpoint'
+
+    pr_list = json.loads(_project_pr_list(_ctx(tmp_path), name='demo-api', state='open', limit=10))
+    assert pr_list['github']['pull_requests'][0]['number'] == 7
+
+    pr_get = json.loads(_project_pr_get(_ctx(tmp_path), name='demo-api', number=7))
+    assert pr_get['github']['pull_request']['number'] == 7
+
+    pr_comment = json.loads(_project_pr_comment(_ctx(tmp_path), name='demo-api', number=7, body='Please review'))
+    assert pr_comment['status'] == 'ok'
+
+    review_submit = json.loads(_project_pr_review_submit(_ctx(tmp_path), name='demo-api', number=7, event='approve', body='Looks good to me'))
+    assert review_submit['github']['pull_request_review_submit']['event'] == 'approve'
+
+    review_list = json.loads(_project_pr_review_list(_ctx(tmp_path), name='demo-api', number=7))
+    assert review_list['github']['pull_request_reviews']['count'] == 2
+
+    merge_payload = json.loads(_project_pr_merge(_ctx(tmp_path), name='demo-api', number=7, method='squash', delete_branch=True))
+    assert merge_payload['status'] == 'ok'
+
+    fetch_payload = json.loads(_project_git_fetch(_ctx(tmp_path), name='demo-api'))
+    assert fetch_payload['status'] == 'ok'
+
+    compare_payload = json.loads(_project_branch_compare(_ctx(tmp_path), name='demo-api', branch='feature/ready-endpoint'))
+    assert compare_payload['branch']['ahead_behind']['available'] is True
+    assert compare_payload['branch']['ahead_behind']['ahead'] == 0
+    assert compare_payload['branch']['ahead_behind']['behind'] == 0
+
+    status_payload = json.loads(_project_status(_ctx(tmp_path), name='demo-api'))
+    assert status_payload['remote_awareness']['available'] is True
+    assert status_payload['remote_awareness']['branch'] == 'feature/ready-endpoint'
+    assert status_payload['remote_awareness']['ahead_behind']['ahead'] == 0
+    assert status_payload['remote_awareness']['ahead_behind']['behind'] == 0
+
+    called_pairs = [(call['args'][0], call['args'][1]) for call in gh_calls]
+    assert ('issue', 'create') in called_pairs
+    assert ('issue', 'comment') in called_pairs
+    assert ('pr', 'create') in called_pairs
+    assert ('pr', 'comment') in called_pairs
+    assert ('pr', 'review') in called_pairs
+    assert ('pr', 'merge') in called_pairs
