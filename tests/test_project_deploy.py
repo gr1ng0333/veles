@@ -150,10 +150,53 @@ def test_project_service_control_install_streams_unit_and_reloads_systemd(tmp_pa
     assert captured['timeout'] == 90
     assert captured['stdin_bytes'] == unit.encode('utf-8')
     command = captured['args'][-1]
+    assert 'sudo mkdir -p /etc/systemd/system' in command
     assert 'sudo tee /etc/systemd/system/demo-api.service >/dev/null' in command
     assert 'sudo systemctl daemon-reload' in command
-    assert 'sudo systemctl enable demo-api' in command
-    assert 'sudo systemctl start demo-api' in command
+    assert 'sudo systemctl enable demo-api.service' in command
+    assert 'sudo systemctl start demo-api.service' in command
+    assert payload['service']['name'] == 'demo-api'
+    assert payload['service']['unit_name'] == 'demo-api.service'
+
+
+def test_project_service_control_install_does_not_double_suffix_service_unit(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    captured = {}
+
+    def fake_run_ssh_stream(args, stdin_bytes, timeout):
+        captured['args'] = args
+        return subprocess.CompletedProcess(['ssh', *args], 0, stdout=b'installed\n', stderr=b'')
+
+    monkeypatch.setattr('ouroboros.tools.project_service._run_ssh_stream', fake_run_ssh_stream)
+
+    payload = json.loads(
+        _project_service_control(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api.service',
+            action='install',
+            unit_content='[Service]\nExecStart=/bin/true\n',
+        )
+    )
+
+    command = captured['args'][-1]
+    assert '/etc/systemd/system/demo-api.service.service' not in command
+    assert '/etc/systemd/system/demo-api.service' in command
+    assert 'sudo systemctl enable demo-api.service' in command
+    assert payload['service']['name'] == 'demo-api'
+    assert payload['service']['unit_name'] == 'demo-api.service'
+    assert payload['service']['unit_path'] == '/etc/systemd/system/demo-api.service'
 
 
 def test_project_service_control_status_runs_systemctl_over_ssh(tmp_path, monkeypatch):
