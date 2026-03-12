@@ -10,6 +10,7 @@ from ouroboros.tools.browser_auth_flow import (
     build_verification_continuation,
     build_verification_handoff,
     build_owner_handoff_completion,
+    compute_auth_flow_success,
     infer_auth_state,
     normalize_site_profile,
     summarize_auth_diagnostics,
@@ -1164,3 +1165,24 @@ def test_summarize_auth_diagnostics_exposes_completed_owner_handoff_after_verifi
 
     assert diagnostics["owner_handoff_completion"]["status"] == "not_applicable"
     assert diagnostics["owner_handoff_completion"]["can_resume_auth"] is True
+
+def test_compute_auth_flow_success_prefers_owner_handoff_completion():
+    success = compute_auth_flow_success(
+        {"state": "unknown"},
+        {"success": False, "can_continue": False},
+        {"status": "await_owner", "can_resume_auth": False},
+        {"status": "completed", "can_resume_auth": True},
+    )
+
+    assert success is True
+
+
+def test_compute_auth_flow_success_falls_back_to_verification_continuation():
+    success = compute_auth_flow_success(
+        {"state": "unknown"},
+        {"success": False, "can_continue": False},
+        {"status": "continue_login", "can_resume_auth": True},
+        {"status": "not_applicable", "can_resume_auth": False},
+    )
+
+    assert success is True

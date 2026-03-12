@@ -409,8 +409,12 @@ def _browser_fill_login_form(
         f"submit_selector={submit_result.get('selector', submit_sel or '')}; "
         f"current_url={page.url}"
     )
+    outcome = auth_result.get("outcome") or {}
+    top_level_success = bool(auth_result.get("auth_flow_success"))
+    top_level_error = bool(outcome.get("is_error"))
+
     return json.dumps({
-        "success": bool((auth_result.get("outcome") or {}).get("can_continue")),
+        "success": top_level_success,
         "message": message,
         "flow_plan": plan,
         "selectors": chosen,
@@ -418,7 +422,7 @@ def _browser_fill_login_form(
         "steps": step_results,
         "submit": submit_result,
         **auth_result,
-        "error": None if not (auth_result.get("outcome") or {}).get("is_error") else auth_result["post_submit_state"].get("reason"),
+        "error": None if not top_level_error else auth_result["post_submit_state"].get("reason"),
     }, ensure_ascii=False)
 
 
