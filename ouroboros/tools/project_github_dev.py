@@ -499,6 +499,58 @@ def _project_pr_get(
         indent=2,
     )
 
+def _project_pr_comment(
+    ctx: ToolContext,
+    name: str,
+    number: int,
+    body: str,
+) -> str:
+    del ctx
+    repo_dir = _require_local_project(name)
+    project_name = str(name or '').strip()
+    try:
+        pr_number = int(number)
+    except (TypeError, ValueError) as e:
+        raise ValueError('number must be an integer') from e
+    if pr_number <= 0:
+        raise ValueError('number must be positive')
+    body_value = str(body or '').strip()
+    if not body_value:
+        raise ValueError('body must be non-empty')
+
+    repo_slug = _project_github_slug(repo_dir)
+    res = _run_gh(
+        ['pr', 'comment', str(pr_number), '--body-file', '-'],
+        cwd=repo_dir,
+        timeout=180,
+        input_data=body_value,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or res.stdout.strip() or 'gh pr comment failed')
+
+    result_text = (res.stdout or '').strip() or 'comment added'
+    return json.dumps(
+        {
+            'status': 'ok',
+            'commented_at': _utc_now_iso(),
+            'project': {
+                'name': project_name,
+                'path': str(repo_dir),
+            },
+            'github': {
+                'repo': repo_slug,
+                'pull_request_comment': {
+                    'number': pr_number,
+                    'body': body_value,
+                    'result': result_text,
+                },
+            },
+            'repo': _repo_info(repo_dir),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
 
 def get_tools() -> List[ToolEntry]:
     return [
@@ -580,6 +632,18 @@ def get_tools() -> List[ToolEntry]:
             },
             ['name', 'number'],
             _project_pr_get,
+        ),
+        _tool_entry(
+            'project_pr_comment',
+            'Add a GitHub comment to a pull request in an existing bootstrapped local project repository, using its configured origin remote.',
+            {
+                'name': {'type': 'string', 'description': 'Existing local project name under the projects root'},
+                'number': {'type': 'integer', 'description': 'Pull request number to comment on'},
+                'body': {'type': 'string', 'description': 'Comment body'},
+            },
+            ['name', 'number', 'body'],
+            _project_pr_comment,
+            is_code_tool=True,
         ),
         _tool_entry(
             'project_pr_create',
