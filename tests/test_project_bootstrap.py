@@ -19,6 +19,8 @@ from ouroboros.tools.project_bootstrap import (
 )
 from ouroboros.tools.project_github_dev import (
     _project_branch_checkout,
+    _project_issue_comment,
+    _project_issue_create,
     _project_issue_get,
     _project_issue_list,
     _project_pr_create,
@@ -380,6 +382,20 @@ def test_project_issue_get_registered():
     assert "project_issue_get" in names
 
 
+def test_project_issue_create_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_issue_create" in names
+
+
+def test_project_issue_comment_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_issue_comment" in names
+
+
 def test_project_issue_list_reads_github_issues(tmp_path, monkeypatch):
     _project_init(_ctx(tmp_path), name="Demo API", language="python")
     repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
@@ -449,6 +465,56 @@ def test_project_issue_get_reads_one_github_issue(tmp_path, monkeypatch):
     assert payload['github']['issue']['number'] == 7
     assert payload['github']['issue']['body'] == 'Please add /health'
     assert payload['github']['issue']['comments'][0]['body'] == 'working on it'
+
+
+def test_project_issue_create_returns_url_and_uses_stdin_for_body(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout=120, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="https://github.com/acme/demo-api/issues/9\n", stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_issue_create(_ctx(tmp_path), name="demo-api", title="Need /health", body="Please add a health endpoint"))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['issue']['title'] == 'Need /health'
+    assert payload['github']['issue']['body_provided'] is True
+    assert payload['github']['issue']['url'] == 'https://github.com/acme/demo-api/issues/9'
+    assert calls[0]['args'][:2] == ['issue', 'create']
+    assert '--title=Need /health' in calls[0]['args']
+    assert '--body-file=-' in calls[0]['args']
+    assert calls[0]['input'] == 'Please add a health endpoint'
+
+
+def test_project_issue_comment_passes_body_via_stdin(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:acme/demo-api.git"], cwd=repo_dir, check=True)
+
+    calls = []
+
+    def fake_run_gh(args, cwd, timeout=120, input_data=None):
+        calls.append({"args": args, "cwd": cwd, "timeout": timeout, "input": input_data})
+        return subprocess.CompletedProcess(["gh", *args], 0, stdout="comment added\n", stderr="")
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+
+    payload = json.loads(_project_issue_comment(_ctx(tmp_path), name="demo-api", number=9, body="I am taking this"))
+
+    assert payload['status'] == 'ok'
+    assert payload['github']['repo'] == 'acme/demo-api'
+    assert payload['github']['issue_comment']['number'] == 9
+    assert payload['github']['issue_comment']['body'] == 'I am taking this'
+    assert payload['github']['issue_comment']['result'] == 'comment added'
+    assert calls[0]['args'] == ['issue', 'comment', '9', '--body-file', '-']
+    assert calls[0]['input'] == 'I am taking this'
 
 
 def test_project_pr_list_registered():
