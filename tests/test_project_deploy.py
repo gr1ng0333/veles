@@ -4,10 +4,11 @@ import subprocess
 
 import pytest
 
-from ouroboros.tools.project_bootstrap import _project_init, _project_server_register
+from ouroboros.tools.project_bootstrap import _git, _project_init, _project_server_register
 from ouroboros.tools.project_deploy_state import _project_deploy_state_path, _read_project_deploy_state
 from ouroboros.tools.project_deploy import _build_sync_archive, _project_deploy_apply, _project_deploy_recipe, _project_server_sync
 from ouroboros.tools.project_service import _project_service_control, _project_service_render_unit
+from ouroboros.tools.project_overview import _project_overview
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
@@ -151,6 +152,96 @@ def test_project_service_render_unit_rejects_bad_environment_entry(tmp_path):
 
 
 
+
+def test_project_overview_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_overview" in names
+
+
+def test_project_overview_returns_unified_local_snapshot_without_runtime(tmp_path):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    payload = json.loads(_project_overview(_ctx(tmp_path), name='demo-api'))
+
+    assert payload['status'] == 'ok'
+    assert payload['project']['name'] == 'demo-api'
+    assert payload['repo']['snapshot']['working_tree']['clean'] is True
+    assert payload['github']['configured'] is False
+    assert payload['servers']['count'] == 0
+    assert payload['deploy']['state_file']['exists'] is False
+    assert payload['deploy']['recipe_preview']['available'] is False
+    assert payload['deploy']['runtime_snapshot']['included'] is False
+
+
+def test_project_overview_aggregates_github_recipe_and_runtime_snapshot(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / 'projects' / 'demo-api'
+    remote_res = _git(['remote', 'add', 'origin', 'git@github.com:example/demo-api.git'], repo_dir, timeout=30)
+    assert remote_res.returncode == 0
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fake_run_project_gh_json(repo_dir, args, timeout=120):
+        if args[:2] == ['issue', 'list']:
+            return [{'number': 1, 'title': 'Bug', 'state': 'OPEN', 'url': 'https://github.com/example/demo-api/issues/1', 'author': {'login': 'alice'}, 'labels': []}]
+        if args[:2] == ['pr', 'list']:
+            return [{'number': 2, 'title': 'Fix', 'state': 'OPEN', 'headRefName': 'fix', 'baseRefName': 'main', 'url': 'https://github.com/example/demo-api/pull/2', 'isDraft': False, 'author': {'login': 'bob'}}]
+        raise AssertionError(args)
+
+    def fake_project_deploy_recipe(ctx, name, alias, service_name, **kwargs):
+        return json.dumps({
+            'generated_at': '2026-03-13T14:30:00Z',
+            'runtime': {'requested': 'auto', 'resolved': 'python'},
+            'server': {'alias': alias, 'deploy_path': '/srv/demo-api'},
+            'recipe': {'kind': 'project_deploy_recipe', 'steps': [{'key': 'sync'}, {'key': 'setup'}, {'key': 'install_service'}]},
+        })
+
+    def fake_project_deploy_status(ctx, name, alias, service_name, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'deploy': {'exists': True, 'writable': True, 'path': '/srv/demo-api'},
+            'service': {'unit_name': 'demo-api.service', 'active_state': 'active', 'running': True},
+            'diagnostics': {'severity': 'healthy', 'summary': 'service is running'},
+            'last_deploy': {'exists': False, 'outcome': None},
+        })
+
+    monkeypatch.setattr('ouroboros.tools.project_overview._run_project_gh_json', fake_run_project_gh_json)
+    monkeypatch.setattr('ouroboros.tools.project_overview._project_deploy_recipe', fake_project_deploy_recipe)
+    monkeypatch.setattr('ouroboros.tools.project_overview._project_deploy_status', fake_project_deploy_status)
+
+    payload = json.loads(
+        _project_overview(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            include_runtime=True,
+            issue_limit=5,
+            pr_limit=5,
+        )
+    )
+
+    assert payload['github']['configured'] is True
+    assert payload['github']['available'] is True
+    assert payload['github']['repo'] == 'example/demo-api'
+    assert payload['github']['issues']['returned_count'] == 1
+    assert payload['github']['pull_requests']['returned_count'] == 1
+    assert payload['servers']['count'] == 1
+    assert payload['servers']['selected']['alias'] == 'prod'
+    assert payload['deploy']['recipe_preview']['available'] is True
+    assert payload['deploy']['recipe_preview']['runtime']['resolved'] == 'python'
+    assert payload['deploy']['runtime_snapshot']['included'] is True
+    assert payload['deploy']['runtime_snapshot']['deploy']['exists'] is True
+    assert payload['deploy']['runtime_snapshot']['service']['running'] is True
 
 def test_project_server_observability_tools_registered():
     tmp = pathlib.Path("/tmp")
