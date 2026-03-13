@@ -173,6 +173,12 @@ def test_project_overview_returns_unified_local_snapshot_without_runtime(tmp_pat
     assert payload['deploy']['state_file']['exists'] is False
     assert payload['deploy']['recipe_preview']['available'] is False
     assert payload['deploy']['runtime_snapshot']['included'] is False
+    assert payload['summary']['working_tree_clean'] is True
+    assert payload['summary']['meaningful_working_tree_change_count'] == 0
+    assert payload['summary']['github_configured'] is False
+    assert payload['summary']['registered_server_count'] == 0
+    assert 'create and attach a GitHub origin with project_github_create' in payload['next_actions']
+    assert 'register at least one deploy target with project_server_register' in payload['next_actions']
 
 
 def test_project_overview_aggregates_github_recipe_and_runtime_snapshot(tmp_path, monkeypatch):
@@ -242,6 +248,61 @@ def test_project_overview_aggregates_github_recipe_and_runtime_snapshot(tmp_path
     assert payload['deploy']['runtime_snapshot']['included'] is True
     assert payload['deploy']['runtime_snapshot']['deploy']['exists'] is True
     assert payload['deploy']['runtime_snapshot']['service']['running'] is True
+    assert payload['summary']['github_configured'] is True
+    assert payload['summary']['open_issue_count'] == 1
+    assert payload['summary']['open_pull_request_count'] == 1
+    assert payload['summary']['selected_server_alias'] == 'prod'
+    assert payload['summary']['service_running'] is True
+    assert payload['summary']['meaningful_working_tree_change_count'] == 0
+    assert payload['summary']['diagnostic_severity'] == 'healthy'
+    assert payload['next_actions'] == []
+
+
+def test_project_overview_surfaces_failed_deploy_next_action(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / 'projects' / 'demo-api'
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+    state_path = _project_deploy_state_path(repo_dir)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        'status': 'error',
+        'failed_step': 'setup',
+        'deploy': {'execution': {'last_step_key': 'setup'}},
+    }), encoding='utf-8')
+
+    def fake_project_deploy_status(ctx, name, alias, service_name, **kwargs):
+        return json.dumps({
+            'status': 'error',
+            'deploy': {'exists': True, 'writable': True, 'path': '/srv/demo-api'},
+            'service': {'unit_name': 'demo-api.service', 'active_state': 'failed', 'running': False, 'exists': True},
+            'diagnostics': {'severity': 'critical', 'summary': 'service is failed', 'recommended_checks': ['read project_service_logs for the most recent journal output']},
+            'last_deploy': {'status': 'error', 'failed_step': 'setup'},
+        })
+
+    monkeypatch.setattr('ouroboros.tools.project_overview._project_deploy_status', fake_project_deploy_status)
+
+    payload = json.loads(
+        _project_overview(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            include_runtime=True,
+        )
+    )
+
+    assert payload['summary']['last_deploy_status'] == 'error'
+    assert payload['summary']['diagnostic_severity'] == 'critical'
+    assert 'resolve the last failed deploy step: setup' in payload['next_actions']
+    assert 'read project_service_logs for the most recent journal output' in payload['next_actions']
 
 def test_project_server_observability_tools_registered():
     tmp = pathlib.Path("/tmp")
