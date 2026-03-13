@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from ouroboros.tools.project_bootstrap import _project_commit, _project_file_write, _project_init, _project_push, _project_server_register, _project_status
+from ouroboros.tools.project_composite_flows import _project_deploy_and_verify
 from ouroboros.tools.project_deploy import _project_deploy_apply
 from ouroboros.tools.project_github_dev import _project_branch_checkout, _project_issue_comment, _project_issue_create, _project_issue_list, _project_pr_comment, _project_pr_create, _project_pr_get, _project_pr_list, _project_pr_merge
 from ouroboros.tools.project_operational_snapshot import _project_operational_snapshot
@@ -412,3 +413,212 @@ def test_project_deploy_operational_loop_scenario_smoke(tmp_path, monkeypatch):
 
     assert any('systemctl show' in command for command in status_calls)
     assert any('journalctl' in command for command in status_calls)
+
+
+def test_stage3_full_cycle_scenario_smoke(tmp_path, monkeypatch):
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    repo_dir = pathlib.Path(_ctx(tmp_path).drive_root) / "projects" / "demo-api"
+    remote_dir = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote_dir)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_dir)], cwd=repo_dir, check=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote_dir, check=True)
+
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='/tmp/id_demo',
+        deploy_path='/srv/demo-api',
+        label='Production',
+    )
+
+    gh_calls = []
+    gh_state = {
+        'issues': [],
+        'pull_requests': [],
+        'merged_numbers': [],
+    }
+
+    def fake_run_gh(args, cwd, timeout=120, input_data=None):
+        gh_calls.append({'args': list(args), 'cwd': cwd, 'timeout': timeout, 'input': input_data})
+        if args[:2] == ['issue', 'list']:
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout=json.dumps(gh_state['issues']), stderr='')
+        if args[:2] == ['issue', 'create']:
+            issue = {
+                'number': 1,
+                'title': next((a.split('=', 1)[1] for a in args if a.startswith('--title=')), ''),
+                'state': 'OPEN',
+                'url': 'https://github.com/acme/demo-api/issues/1',
+                'author': {'login': 'veles'},
+                'labels': [],
+            }
+            gh_state['issues'] = [issue]
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout=issue['url'] + '\n', stderr='')
+        if args[:2] == ['pr', 'create']:
+            pr = {
+                'number': 7,
+                'title': next((a.split('=', 1)[1] for a in args if a.startswith('--title=')), ''),
+                'state': 'OPEN',
+                'headRefName': next((a.split('=', 1)[1] for a in args if a.startswith('--head=')), ''),
+                'baseRefName': next((a.split('=', 1)[1] for a in args if a.startswith('--base=')), ''),
+                'url': 'https://github.com/acme/demo-api/pull/7',
+                'isDraft': False,
+                'author': {'login': 'veles'},
+            }
+            gh_state['pull_requests'] = [pr]
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout=pr['url'] + '\n', stderr='')
+        if args[:2] == ['pr', 'list']:
+            state_value = next((args[i + 1] for i, value in enumerate(args[:-1]) if value == '--state'), 'open')
+            prs = gh_state['pull_requests']
+            if state_value == 'open':
+                prs = [pr for pr in prs if pr['state'] == 'OPEN']
+            elif state_value == 'merged':
+                prs = [pr for pr in prs if pr['state'] == 'MERGED']
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout=json.dumps(prs), stderr='')
+        if args[:2] == ['pr', 'merge']:
+            pr = gh_state['pull_requests'][0]
+            pr['state'] = 'MERGED'
+            gh_state['merged_numbers'].append(int(args[2]))
+            subprocess.run(['git', 'checkout', 'main'], cwd=cwd, check=True)
+            subprocess.run(['git', 'merge', '--ff-only', pr['headRefName']], cwd=cwd, check=True)
+            subprocess.run(['git', 'push', 'origin', 'main'], cwd=cwd, check=True)
+            return subprocess.CompletedProcess(['gh', *args], 0, stdout='merged\n', stderr='')
+        raise AssertionError(f'unexpected gh args: {args}')
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_gh', fake_run_gh)
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._project_github_slug', lambda repo_dir: 'acme/demo-api')
+    monkeypatch.setattr('ouroboros.tools.project_read_side._project_github_slug', lambda repo_dir: 'acme/demo-api')
+
+    def fake_run_project_gh_json(repo_dir, args, timeout=120):
+        if args[:2] == ['issue', 'list']:
+            return gh_state['issues']
+        if args[:2] == ['pr', 'list']:
+            state_value = next((args[i + 1] for i, value in enumerate(args[:-1]) if value == '--state'), 'open')
+            prs = gh_state['pull_requests']
+            if state_value == 'open':
+                return [pr for pr in prs if pr['state'] == 'OPEN']
+            if state_value == 'merged':
+                return [pr for pr in prs if pr['state'] == 'MERGED']
+            return prs
+        raise AssertionError(f'unexpected gh json args: {args}')
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_project_gh_json', fake_run_project_gh_json)
+    monkeypatch.setattr('ouroboros.tools.project_read_side._run_project_gh_json', fake_run_project_gh_json)
+
+    branch_payload = json.loads(_project_branch_checkout(_ctx(tmp_path), name='demo-api', branch='feature/full-cycle', base='main'))
+    assert branch_payload['branch']['created'] is True
+
+    _project_file_write(_ctx(tmp_path), name='demo-api', path='README.md', content='# demo-api\n\nFull cycle smoke\n')
+    commit_payload = json.loads(_project_commit(_ctx(tmp_path), name='demo-api', message='Add Stage 3 full cycle docs'))
+    assert commit_payload['status'] == 'ok'
+
+    push_payload = json.loads(_project_push(_ctx(tmp_path), name='demo-api', branch='feature/full-cycle'))
+    assert push_payload['status'] == 'ok'
+
+    issue_payload = json.loads(_project_issue_create(_ctx(tmp_path), name='demo-api', title='Ship Stage 3 full cycle', body='Need one end-to-end system contract'))
+    assert issue_payload['status'] == 'ok'
+
+    pr_payload = json.loads(_project_pr_create(_ctx(tmp_path), name='demo-api', title='Stage 3 full cycle smoke', body='Implements issue #1'))
+    assert pr_payload['status'] == 'ok'
+
+    merge_payload = json.loads(_project_pr_merge(_ctx(tmp_path), name='demo-api', number=7, method='squash', delete_branch=True))
+    assert merge_payload['status'] == 'ok'
+
+    fetch_payload = json.loads(_project_git_fetch(_ctx(tmp_path), name='demo-api'))
+    assert fetch_payload['status'] == 'ok'
+
+    compare_payload = json.loads(_project_branch_compare(_ctx(tmp_path), name='demo-api', branch='main'))
+    assert compare_payload['branch']['ahead_behind']['available'] is True
+    assert compare_payload['branch']['ahead_behind']['ahead'] == 0
+    assert compare_payload['branch']['ahead_behind']['behind'] == 0
+
+    status_payload = json.loads(_project_status(_ctx(tmp_path), name='demo-api'))
+    assert status_payload['remote_awareness']['available'] is True
+    assert status_payload['remote_awareness']['branch'] == 'main'
+    assert status_payload['remote_awareness']['ahead_behind']['ahead'] == 0
+    assert status_payload['remote_awareness']['ahead_behind']['behind'] == 0
+
+    deploy_calls = []
+
+    def fake_project_deploy_apply(ctx, **kwargs):
+        deploy_calls.append(('deploy_apply', kwargs))
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(repo_dir)},
+            'server': {'alias': 'prod'},
+            'execution': {'failed_step': '', 'last_step_key': 'status', 'ok_steps': 5},
+            'summary': {'service_name': 'demo-api'},
+            'deploy_record': {
+                'exists': True,
+                'outcome': {
+                    'status': 'ok',
+                    'deploy': {
+                        'mode': 'update',
+                        'lifecycle_action': 'restart',
+                        'execution': {'ok_steps': 5},
+                    },
+                },
+            },
+        })
+
+    def fake_project_operational_snapshot(ctx, **kwargs):
+        deploy_calls.append(('operational_snapshot', kwargs))
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(repo_dir)},
+            'selection': {'alias': 'prod', 'service_name': 'demo-api', 'runtime_included': True},
+            'readiness': {
+                'local_clean': True,
+                'github_ready': True,
+                'deploy_target_ready': True,
+                'service_running': True,
+                'rollout_ready': True,
+                'blocked_reasons': [],
+            },
+            'risk_flags': [],
+            'next_actions': [],
+            'runtime': {'diagnostics': {'severity': 'healthy'}},
+            'github': {
+                'configured': True,
+                'available': True,
+                'repo': 'acme/demo-api',
+                'open_issue_count': 1,
+                'open_pull_request_count': 0,
+            },
+            'last_deploy': {
+                'status': 'ok',
+                'deploy': {'execution': {'ok_steps': 5}},
+            },
+        })
+
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_deploy_apply', fake_project_deploy_apply)
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_operational_snapshot', fake_project_operational_snapshot)
+
+    verify_payload = json.loads(
+        _project_deploy_and_verify(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            mode='update',
+        )
+    )
+
+    assert verify_payload['status'] == 'ok'
+    assert [step['tool'] for step in verify_payload['steps']] == ['project_deploy_apply', 'project_operational_snapshot']
+    assert verify_payload['verdict']['healthy'] is True
+    assert verify_payload['verdict']['rollout_ready'] is True
+    assert verify_payload['verdict']['service_running'] is True
+    assert verify_payload['verification']['github']['open_pull_request_count'] == 0
+    assert verify_payload['verification']['github']['open_issue_count'] == 1
+    assert verify_payload['verification']['last_deploy']['deploy']['execution']['ok_steps'] == 5
+
+    gh_pairs = [(call['args'][0], call['args'][1]) for call in gh_calls]
+    assert ('issue', 'create') in gh_pairs
+    assert ('pr', 'create') in gh_pairs
+    assert ('pr', 'merge') in gh_pairs
+    assert gh_state['merged_numbers'] == [7]
+    assert [name for name, _ in deploy_calls] == ['deploy_apply', 'operational_snapshot']
