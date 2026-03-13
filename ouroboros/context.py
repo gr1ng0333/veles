@@ -35,6 +35,14 @@ def _build_user_content(task: Dict[str, Any]) -> Any:
             return "(empty message)"
         return text
 
+    if not str(image_mime or '').lower().startswith('image/'):
+        combined_text = (
+            ((image_caption + '\n' + text).strip())
+            if image_caption and text and text != image_caption
+            else (image_caption or text or '(attachment received)')
+        )
+        return combined_text or '(attachment received)'
+
     # Multipart content with text + image
     parts = []
     # Combine caption and text for the text part
