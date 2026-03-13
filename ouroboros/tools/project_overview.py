@@ -15,96 +15,9 @@ from ouroboros.tools.project_bootstrap import (
 )
 from ouroboros.tools.project_deploy import _project_deploy_recipe
 from ouroboros.tools.project_deploy_state import _project_deploy_state_path, _read_project_deploy_state
-from ouroboros.tools.project_github_dev import _project_github_slug, _run_project_gh_json
+from ouroboros.tools.project_read_side import _decode_payload, _dedupe_items, _github_summary
 from ouroboros.tools.project_server_observability import _project_deploy_status
 from ouroboros.tools.registry import ToolContext, ToolEntry
-
-
-def _decode_payload(raw: str) -> Dict[str, Any]:
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError('tool returned invalid JSON payload') from e
-    if not isinstance(payload, dict):
-        raise RuntimeError('tool payload must be a JSON object')
-    return payload
-
-
-def _github_summary(repo_dir, issue_limit: int, pr_limit: int) -> Dict[str, Any]:
-    try:
-        repo_slug = _project_github_slug(repo_dir)
-    except Exception as e:
-        return {
-            'configured': False,
-            'available': False,
-            'repo': '',
-            'reason': str(e),
-            'issues': {
-                'returned_count': 0,
-                'limit': issue_limit,
-                'items': [],
-            },
-            'pull_requests': {
-                'returned_count': 0,
-                'limit': pr_limit,
-                'items': [],
-            },
-        }
-
-    summary: Dict[str, Any] = {
-        'configured': True,
-        'available': True,
-        'repo': repo_slug,
-    }
-    try:
-        issues = _run_project_gh_json(
-            repo_dir,
-            [
-                'issue', 'list',
-                '--state', 'open',
-                '--limit', str(issue_limit),
-                '--json', 'number,title,state,url,author,labels',
-            ],
-            timeout=60,
-        ) or []
-        prs = _run_project_gh_json(
-            repo_dir,
-            [
-                'pr', 'list',
-                '--state', 'open',
-                '--limit', str(pr_limit),
-                '--json', 'number,title,state,headRefName,baseRefName,url,isDraft,author',
-            ],
-            timeout=60,
-        ) or []
-    except Exception as e:
-        summary.update({
-            'available': False,
-            'reason': str(e),
-            'issues': {
-                'returned_count': 0,
-                'limit': issue_limit,
-                'items': [],
-            },
-            'pull_requests': {
-                'returned_count': 0,
-                'limit': pr_limit,
-                'items': [],
-            },
-        })
-        return summary
-
-    summary['issues'] = {
-        'returned_count': len(issues),
-        'limit': issue_limit,
-        'items': issues,
-    }
-    summary['pull_requests'] = {
-        'returned_count': len(prs),
-        'limit': pr_limit,
-        'items': prs,
-    }
-    return summary
 
 
 def _recipe_preview(ctx: ToolContext, project_name: str, alias: str, service_name: str) -> Dict[str, Any]:
@@ -160,15 +73,9 @@ def _runtime_snapshot(ctx: ToolContext, project_name: str, alias: str, service_n
 
 
 def _meaningful_working_tree_changes(status_payload: Dict[str, Any]) -> int:
-    working_tree = status_payload.get('working_tree') or {}
-    entries = working_tree.get('entries') or []
-    count = 0
-    for item in entries:
-        path_value = str((item or {}).get('path') or '').strip()
-        if not path_value or path_value == '.veles' or path_value.startswith('.veles/'):
-            continue
-        count += 1
-    return count
+    from ouroboros.tools.project_read_side import _meaningful_working_tree_entries
+
+    return len(_meaningful_working_tree_entries(status_payload))
 
 
 def _next_actions(status_payload: Dict[str, Any], github: Dict[str, Any], servers: Dict[str, Any], deploy: Dict[str, Any]) -> List[str]:
@@ -216,11 +123,7 @@ def _next_actions(status_payload: Dict[str, Any], github: Dict[str, Any], server
         if severity in {'critical', 'warning'} and not diagnostics.get('recommended_checks'):
             actions.append('inspect project_deploy_status and project_service_logs for live diagnostics')
 
-    deduped: List[str] = []
-    for item in actions:
-        if item not in deduped:
-            deduped.append(item)
-    return deduped
+    return _dedupe_items(actions)
 
 
 def _operational_summary(status_payload: Dict[str, Any], github: Dict[str, Any], servers: Dict[str, Any], deploy: Dict[str, Any]) -> Dict[str, Any]:

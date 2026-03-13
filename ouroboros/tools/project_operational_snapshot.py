@@ -6,76 +6,9 @@ from typing import Any, Dict, List
 from ouroboros.tools.external_repos import _tool_entry
 from ouroboros.tools.project_bootstrap import _normalize_project_name, _project_status, _require_local_project
 from ouroboros.tools.project_deploy_state import _read_project_deploy_state
-from ouroboros.tools.project_github_dev import _project_github_slug, _run_project_gh_json
+from ouroboros.tools.project_read_side import _decode_payload, _dedupe_items, _github_operational_summary, _working_tree_signal
 from ouroboros.tools.project_server_observability import _project_deploy_status
 from ouroboros.tools.registry import ToolContext, ToolEntry
-
-
-def _decode_payload(raw: str) -> Dict[str, Any]:
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError('tool returned invalid JSON payload') from e
-    if not isinstance(payload, dict):
-        raise RuntimeError('tool payload must be a JSON object')
-    return payload
-
-
-def _github_operational_summary(repo_dir, issue_limit: int, pr_limit: int) -> Dict[str, Any]:
-    try:
-        repo_slug = _project_github_slug(repo_dir)
-    except Exception as e:
-        return {
-            'configured': False,
-            'available': False,
-            'repo': '',
-            'reason': str(e),
-            'open_issue_count': 0,
-            'open_pull_request_count': 0,
-        }
-
-    summary: Dict[str, Any] = {
-        'configured': True,
-        'available': True,
-        'repo': repo_slug,
-        'open_issue_count': 0,
-        'open_pull_request_count': 0,
-    }
-    try:
-        issues = _run_project_gh_json(
-            repo_dir,
-            ['issue', 'list', '--state', 'open', '--limit', str(issue_limit), '--json', 'number'],
-            timeout=60,
-        ) or []
-        prs = _run_project_gh_json(
-            repo_dir,
-            ['pr', 'list', '--state', 'open', '--limit', str(pr_limit), '--json', 'number'],
-            timeout=60,
-        ) or []
-    except Exception as e:
-        summary['available'] = False
-        summary['reason'] = str(e)
-        return summary
-
-    summary['open_issue_count'] = len(issues)
-    summary['open_pull_request_count'] = len(prs)
-    return summary
-
-
-def _working_tree_signal(status_payload: Dict[str, Any]) -> Dict[str, Any]:
-    working_tree = status_payload.get('working_tree') or {}
-    entries = working_tree.get('entries') or []
-    meaningful_entries: List[Dict[str, Any]] = []
-    for item in entries:
-        path_value = str((item or {}).get('path') or '').strip()
-        if not path_value or path_value == '.veles' or path_value.startswith('.veles/'):
-            continue
-        meaningful_entries.append(item)
-    return {
-        'clean': len(meaningful_entries) == 0,
-        'changed_count': len(meaningful_entries),
-        'entries': meaningful_entries,
-    }
 
 
 def _readiness(status_payload: Dict[str, Any], github: Dict[str, Any], runtime: Dict[str, Any], last_outcome: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -128,11 +61,7 @@ def _risk_flags(status_payload: Dict[str, Any], github: Dict[str, Any], runtime:
     status = str((last_outcome or {}).get('status') or '')
     if status and status != 'ok':
         flags.append(f'last_deploy_{status}')
-    deduped: List[str] = []
-    for item in flags:
-        if item not in deduped:
-            deduped.append(item)
-    return deduped
+    return _dedupe_items(flags)
 
 
 def _next_actions(status_payload: Dict[str, Any], github: Dict[str, Any], runtime: Dict[str, Any], last_outcome: Dict[str, Any] | None) -> List[str]:
@@ -159,11 +88,7 @@ def _next_actions(status_payload: Dict[str, Any], github: Dict[str, Any], runtim
             actions.append(f'resolve the last failed deploy step: {failed_step}')
         else:
             actions.append('resolve the last failed deploy outcome before the next rollout')
-    deduped: List[str] = []
-    for item in actions:
-        if item not in deduped:
-            deduped.append(item)
-    return deduped
+    return _dedupe_items(actions)
 
 
 def _project_operational_snapshot(
