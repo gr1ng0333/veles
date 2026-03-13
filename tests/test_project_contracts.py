@@ -164,3 +164,50 @@ def test_stage3_read_side_helpers_share_meaningful_working_tree_filter():
     assert signal['clean'] is False
     assert signal['changed_count'] == 2
     assert [item['path'] for item in signal['entries']] == ['README.md', 'src/app.py']
+
+
+def test_stage3_shared_github_helpers_keep_overview_and_operational_snapshot_in_sync(tmp_path, monkeypatch):
+    from ouroboros.tools.project_bootstrap import _project_init
+    from ouroboros.tools.project_operational_snapshot import _project_operational_snapshot
+    from ouroboros.tools.project_overview import _project_overview
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    def fake_project_github_slug(repo_dir):
+        return 'acme/demo-api'
+
+    def fake_run_project_gh_json(repo_dir, args, timeout=120):
+        if args[:2] == ['issue', 'list']:
+            if '--json' in args and 'number,title,state,url,author,labels' in args:
+                return [
+                    {'number': 1, 'title': 'Issue one', 'state': 'OPEN', 'url': 'https://github.com/acme/demo-api/issues/1', 'author': {'login': 'veles'}, 'labels': []},
+                    {'number': 2, 'title': 'Issue two', 'state': 'OPEN', 'url': 'https://github.com/acme/demo-api/issues/2', 'author': {'login': 'veles'}, 'labels': []},
+                ]
+            return [{'number': 1}, {'number': 2}]
+        if args[:2] == ['pr', 'list']:
+            if '--json' in args and 'number,title,state,headRefName,baseRefName,url,isDraft,author' in args:
+                return [
+                    {'number': 7, 'title': 'PR one', 'state': 'OPEN', 'headRefName': 'feature/x', 'baseRefName': 'main', 'url': 'https://github.com/acme/demo-api/pull/7', 'isDraft': False, 'author': {'login': 'veles'}},
+                ]
+            return [{'number': 7}]
+        raise AssertionError(f'unexpected gh args: {args}')
+
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._project_github_slug', fake_project_github_slug)
+    monkeypatch.setattr('ouroboros.tools.project_github_dev._run_project_gh_json', fake_run_project_gh_json)
+    monkeypatch.setattr('ouroboros.tools.project_read_side._project_github_slug', fake_project_github_slug)
+    monkeypatch.setattr('ouroboros.tools.project_read_side._run_project_gh_json', fake_run_project_gh_json)
+
+    overview = json.loads(_project_overview(_ctx(tmp_path), name='demo-api', issue_limit=10, pr_limit=10))
+    snapshot = json.loads(_project_operational_snapshot(_ctx(tmp_path), name='demo-api', issue_limit=10, pr_limit=10))
+
+    assert overview['github']['configured'] is True
+    assert overview['github']['available'] is True
+    assert overview['github']['repo'] == 'acme/demo-api'
+    assert overview['github']['issues']['returned_count'] == 2
+    assert overview['github']['pull_requests']['returned_count'] == 1
+
+    assert snapshot['github']['configured'] is True
+    assert snapshot['github']['available'] is True
+    assert snapshot['github']['repo'] == 'acme/demo-api'
+    assert snapshot['github']['open_issue_count'] == 2
+    assert snapshot['github']['open_pull_request_count'] == 1

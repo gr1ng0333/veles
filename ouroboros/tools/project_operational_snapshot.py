@@ -6,57 +6,16 @@ from typing import Any, Dict, List
 from ouroboros.tools.external_repos import _tool_entry
 from ouroboros.tools.project_bootstrap import _normalize_project_name, _project_status, _require_local_project
 from ouroboros.tools.project_deploy_state import _read_project_deploy_state
-from ouroboros.tools.project_github_dev import _project_github_slug, _run_project_gh_json
 from ouroboros.tools.project_read_side import (
     _build_operational_next_actions,
     _build_operational_readiness,
     _build_operational_risk_flags,
     _decode_payload,
+    _github_operational_summary,
     _working_tree_signal,
 )
 from ouroboros.tools.project_server_observability import _project_deploy_status
 from ouroboros.tools.registry import ToolContext, ToolEntry
-
-
-def _github_operational_summary(repo_dir, issue_limit: int, pr_limit: int) -> Dict[str, Any]:
-    try:
-        repo_slug = _project_github_slug(repo_dir)
-    except Exception as e:
-        return {
-            'configured': False,
-            'available': False,
-            'repo': '',
-            'reason': str(e),
-            'open_issue_count': 0,
-            'open_pull_request_count': 0,
-        }
-
-    summary: Dict[str, Any] = {
-        'configured': True,
-        'available': True,
-        'repo': repo_slug,
-        'open_issue_count': 0,
-        'open_pull_request_count': 0,
-    }
-    try:
-        issues = _run_project_gh_json(
-            repo_dir,
-            ['issue', 'list', '--state', 'open', '--limit', str(issue_limit), '--json', 'number'],
-            timeout=60,
-        ) or []
-        prs = _run_project_gh_json(
-            repo_dir,
-            ['pr', 'list', '--state', 'open', '--limit', str(pr_limit), '--json', 'number'],
-            timeout=60,
-        ) or []
-    except Exception as e:
-        summary['available'] = False
-        summary['reason'] = str(e)
-        return summary
-
-    summary['open_issue_count'] = len(issues)
-    summary['open_pull_request_count'] = len(prs)
-    return summary
 
 
 def _readiness(status_payload: Dict[str, Any], github: Dict[str, Any], runtime: Dict[str, Any], last_outcome: Dict[str, Any] | None) -> Dict[str, Any]:
