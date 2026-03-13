@@ -15,7 +15,50 @@ from ouroboros.tools.project_bootstrap import (
 )
 from ouroboros.tools.project_deploy import _project_deploy_recipe
 from ouroboros.tools.project_deploy_state import _project_deploy_state_path, _read_project_deploy_state
-from ouroboros.tools.project_read_side import _decode_payload, _dedupe_items, _github_summary
+from ouroboros.tools.project_github_dev import _run_project_gh_json
+from ouroboros.tools.project_read_side import _decode_payload, _dedupe_items
+
+
+def _github_summary(repo_dir, issue_limit: int, pr_limit: int) -> Dict[str, Any]:
+    from ouroboros.tools.project_read_side import _project_github_slug as _shared_project_github_slug
+
+    try:
+        repo_slug = _shared_project_github_slug(repo_dir)
+    except Exception as e:
+        return {
+            'configured': False,
+            'available': False,
+            'repo': '',
+            'reason': str(e),
+            'issues': {'returned_count': 0, 'limit': issue_limit, 'items': []},
+            'pull_requests': {'returned_count': 0, 'limit': pr_limit, 'items': []},
+        }
+
+    payload: Dict[str, Any] = {'configured': True, 'available': True, 'repo': repo_slug}
+    try:
+        issues = _run_project_gh_json(
+            repo_dir,
+            ['issue', 'list', '--state', 'open', '--limit', str(issue_limit), '--json', 'number,title,state,url,author,labels'],
+            timeout=60,
+        ) or []
+        prs = _run_project_gh_json(
+            repo_dir,
+            ['pr', 'list', '--state', 'open', '--limit', str(pr_limit), '--json', 'number,title,state,headRefName,baseRefName,url,isDraft,author'],
+            timeout=60,
+        ) or []
+    except Exception as e:
+        payload.update({
+            'available': False,
+            'reason': str(e),
+            'issues': {'returned_count': 0, 'limit': issue_limit, 'items': []},
+            'pull_requests': {'returned_count': 0, 'limit': pr_limit, 'items': []},
+        })
+        return payload
+
+    payload['issues'] = {'returned_count': len(issues), 'limit': issue_limit, 'items': issues}
+    payload['pull_requests'] = {'returned_count': len(prs), 'limit': pr_limit, 'items': prs}
+    return payload
+
 from ouroboros.tools.project_server_observability import _project_deploy_status
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
