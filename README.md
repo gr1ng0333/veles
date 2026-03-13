@@ -1,18 +1,22 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.56.2-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.56.3-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.56.2 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.56.3 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.56.3
+- добавлены Stage 3 contract-тесты на консистентность `repo`/`server` result-shape между project bootstrap, server, deploy и observability tools
+- README теперь описывает project contour как цельный lifecycle (`bootstrap -> GitHub -> deploy -> operate`), а не только как россыпь release-пунктов
 
 ### 6.56.2
 - сценарные Stage 3 smoke-тесты вынесены в отдельный `tests/test_project_workflows.py`, чтобы lifecycle `bootstrap -> GitHub` и `register -> deploy -> status` читались как связные системные контракты
@@ -77,6 +81,30 @@
 - добавлен сценарный smoke-тест полного GitHub dev-loop для bootstrapped project repos
 - проверяется сквозной путь: branch -> commit -> push -> issue -> PR -> review -> merge -> fetch/compare/status
 - зафиксирован и проверен контракт между git remote-path и gh GitHub-path без ложной магии
+
+## Unified Project Lifecycle
+
+Stage 3 теперь собирает multi-project contour не как набор соседних tools, а как одну прозрачную рабочую систему. Локальный проект, GitHub development loop и deploy/server operational loop должны читаться как один жизненный цикл, а не как ручная склейка разных модулей.
+
+Базовая цепочка выглядит так:
+
+1. **Bootstrap** — `project_init`, `project_file_write`, `project_commit`, `project_push`
+2. **GitHub loop** — `project_github_create`, branch/issue/PR/fetch/compare tools
+3. **Deploy planning** — `project_server_register`, `project_server_validate`, `project_deploy_recipe`
+4. **Deploy apply** — `project_server_sync`, `project_service_control`, `project_deploy_apply`
+5. **Operate / diagnose** — `project_overview`, `project_deploy_status`, `project_service_status`, `project_service_logs`
+
+**Главный read-side:** `project_overview`
+
+Он сводит в один snapshot:
+- local repo state и working tree
+- GitHub origin + open issues/PRs
+- registered servers
+- last deploy outcome из `.veles/deploy-state.json`
+- optional recipe preview и live runtime snapshot
+- compact `summary` и `next_actions` для operator guidance
+
+Смысл Stage 3 не в “магическом one-click deploy”, а в том, чтобы новый проект можно было честно вести через весь цикл: **создание -> разработка -> collaboration -> deploy -> observability -> следующий change cycle**.
 
 ## Чем отличается от остальных
 
@@ -339,6 +367,10 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### 6.56.3
+- добавлены Stage 3 contract-тесты на консистентность `repo`/`server` result-shape между project bootstrap, server, deploy и observability tools
+- README теперь описывает project contour как цельный lifecycle (`bootstrap -> GitHub -> deploy -> operate`), а не только как россыпь release-пунктов
 
 ### 6.52.0
 - `project_deploy_apply` теперь записывает project-local deploy outcome state в `.veles/deploy-state.json` после успешного и неуспешного apply
