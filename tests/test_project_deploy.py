@@ -1593,3 +1593,144 @@ def test_project_deploy_status_surfaces_missing_deploy_record_and_path_problem(t
     assert 'no recorded deploy outcome' in payload['diagnostics']['summary']
     assert any('project_server_validate' in item for item in payload['diagnostics']['recommended_checks'])
     assert any('project_deploy_apply' in item for item in payload['diagnostics']['recommended_checks'])
+
+
+def test_project_deploy_and_verify_registered():
+    tmp = pathlib.Path('/tmp')
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t['function']['name'] for t in registry.schemas()}
+    assert 'project_deploy_and_verify' in names
+
+
+def test_project_deploy_and_verify_returns_deploy_and_snapshot_layers(tmp_path, monkeypatch):
+    from ouroboros.tools.project_composite_flows import _project_deploy_and_verify
+
+    _project_init(_ctx(tmp_path), name='Demo API', language='python')
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fake_project_deploy_apply(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'server': {'alias': 'prod'},
+            'execution': {'failed_step': '', 'last_step_key': 'status'},
+            'summary': {'service_name': 'demo-api'},
+        })
+
+    def fake_project_operational_snapshot(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'selection': {'alias': 'prod', 'service_name': 'demo-api', 'runtime_included': True},
+            'readiness': {
+                'local_clean': True,
+                'github_ready': True,
+                'deploy_target_ready': True,
+                'service_running': True,
+                'rollout_ready': True,
+                'blocked_reasons': [],
+            },
+            'risk_flags': [],
+            'next_actions': [],
+            'runtime': {'diagnostics': {'severity': 'healthy'}},
+        })
+
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_deploy_apply', fake_project_deploy_apply)
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_operational_snapshot', fake_project_operational_snapshot)
+
+    payload = json.loads(
+        _project_deploy_and_verify(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            mode='update',
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['selection'] == {
+        'alias': 'prod',
+        'service_name': 'demo-api',
+        'mode': 'update',
+        'dry_run': False,
+    }
+    assert [step['key'] for step in payload['steps']] == ['deploy_apply', 'verify_snapshot']
+    assert payload['verdict']['healthy'] is True
+    assert payload['verdict']['rollout_ready'] is True
+    assert payload['verdict']['service_running'] is True
+
+
+def test_project_deploy_and_verify_surfaces_failed_step_and_actions(tmp_path, monkeypatch):
+    from ouroboros.tools.project_composite_flows import _project_deploy_and_verify
+
+    _project_init(_ctx(tmp_path), name='Demo API', language='python')
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fake_project_deploy_apply(ctx, **kwargs):
+        return json.dumps({
+            'status': 'error',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'server': {'alias': 'prod'},
+            'failed_step': 'setup',
+            'execution': {'failed_step': 'setup', 'last_step_key': 'setup'},
+        })
+
+    def fake_project_operational_snapshot(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'selection': {'alias': 'prod', 'service_name': 'demo-api', 'runtime_included': True},
+            'readiness': {
+                'local_clean': True,
+                'github_ready': True,
+                'deploy_target_ready': False,
+                'service_running': False,
+                'rollout_ready': False,
+                'blocked_reasons': ['deploy target is not writable/ready'],
+            },
+            'risk_flags': ['runtime_critical', 'last_deploy_error'],
+            'next_actions': ['resolve the last failed deploy step: setup'],
+            'runtime': {'diagnostics': {'severity': 'critical'}},
+        })
+
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_deploy_apply', fake_project_deploy_apply)
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_operational_snapshot', fake_project_operational_snapshot)
+
+    payload = json.loads(
+        _project_deploy_and_verify(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+        )
+    )
+
+    assert payload['status'] == 'error'
+    assert payload['verdict']['healthy'] is False
+    assert payload['verdict']['failed_step'] == 'setup'
+    assert payload['verdict']['blocked_reasons'] == ['deploy target is not writable/ready']
+    assert payload['verdict']['next_actions'] == ['resolve the last failed deploy step: setup']
+
+
+def test_stage3_readme_mentions_project_deploy_and_verify():
+    readme = pathlib.Path(__file__).resolve().parent.parent / 'README.md'
+    text = readme.read_text(encoding='utf-8')
+
+    assert '`project_deploy_and_verify`' in text
