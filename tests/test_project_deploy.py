@@ -304,6 +304,88 @@ def test_project_overview_surfaces_failed_deploy_next_action(tmp_path, monkeypat
     assert 'resolve the last failed deploy step: setup' in payload['next_actions']
     assert 'read project_service_logs for the most recent journal output' in payload['next_actions']
 
+
+def test_project_operational_snapshot_registered():
+    tmp = pathlib.Path("/tmp")
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t["function"]["name"] for t in registry.schemas()}
+    assert "project_operational_snapshot" in names
+
+
+def test_project_operational_snapshot_focuses_rollout_readiness(tmp_path, monkeypatch):
+    from ouroboros.tools.project_operational_snapshot import _project_operational_snapshot
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+    _project_server_register(
+        _ctx(tmp_path),
+        name='demo-api',
+        alias='prod',
+        host='example.com',
+        user='deploy',
+        ssh_key_path='~/id_test',
+        deploy_path='/srv/demo-api',
+    )
+
+    def fake_run_project_gh_json(repo_dir, args, timeout=120):
+        if args[:2] == ['issue', 'list']:
+            return [{'number': 1}, {'number': 2}]
+        if args[:2] == ['pr', 'list']:
+            return [{'number': 7}]
+        raise AssertionError(args)
+
+    def fake_project_deploy_status(ctx, name, alias, service_name, **kwargs):
+        return json.dumps({
+            'status': 'error',
+            'deploy': {'exists': True, 'writable': False, 'path': '/srv/demo-api'},
+            'service': {'unit_name': 'demo-api.service', 'active_state': 'failed', 'running': False, 'exists': True},
+            'diagnostics': {
+                'severity': 'critical',
+                'summary': 'service is failed',
+                'recommended_checks': ['read project_service_logs for the most recent journal output'],
+            },
+        })
+
+    monkeypatch.setattr('ouroboros.tools.project_operational_snapshot._project_github_slug', lambda repo_dir: 'example/demo-api')
+    monkeypatch.setattr('ouroboros.tools.project_operational_snapshot._run_project_gh_json', fake_run_project_gh_json)
+    monkeypatch.setattr('ouroboros.tools.project_operational_snapshot._project_deploy_status', fake_project_deploy_status)
+
+    payload = json.loads(
+        _project_operational_snapshot(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+        )
+    )
+
+    assert payload['github']['configured'] is True
+    assert payload['github']['open_issue_count'] == 2
+    assert payload['github']['open_pull_request_count'] == 1
+    assert payload['selection']['runtime_included'] is True
+    assert payload['readiness']['deploy_target_ready'] is False
+    assert payload['readiness']['service_running'] is False
+    assert payload['readiness']['rollout_ready'] is False
+    assert 'deploy_path_not_writable' in payload['risk_flags']
+    assert 'runtime_critical' in payload['risk_flags']
+    assert 'validate or fix the deploy target before the next apply' in payload['next_actions']
+    assert 'read project_service_logs for the most recent journal output' in payload['next_actions']
+
+
+def test_project_operational_snapshot_without_runtime_stays_local(tmp_path, monkeypatch):
+    from ouroboros.tools.project_operational_snapshot import _project_operational_snapshot
+
+    _project_init(_ctx(tmp_path), name="Demo API", language="python")
+
+    payload = json.loads(_project_operational_snapshot(_ctx(tmp_path), name='demo-api'))
+
+    assert payload['selection']['runtime_included'] is False
+    assert payload['readiness']['deploy_target_ready'] is None
+    assert payload['readiness']['service_running'] is None
+    assert payload['readiness']['rollout_ready'] is True
+    assert payload['github']['configured'] is False
+    assert payload['risk_flags'] == []
+    assert 'attach a GitHub origin with project_github_create' in payload['next_actions']
+
 def test_project_server_observability_tools_registered():
     tmp = pathlib.Path("/tmp")
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
