@@ -7,6 +7,7 @@ import pytest
 from ouroboros.tools.project_bootstrap import _project_commit, _project_file_write, _project_init, _project_push, _project_server_register, _project_status
 from ouroboros.tools.project_deploy import _project_deploy_apply
 from ouroboros.tools.project_github_dev import _project_branch_checkout, _project_issue_comment, _project_issue_create, _project_issue_list, _project_pr_comment, _project_pr_create, _project_pr_get, _project_pr_list, _project_pr_merge
+from ouroboros.tools.project_operational_snapshot import _project_operational_snapshot
 from ouroboros.tools.project_overview import _project_overview
 from ouroboros.tools.project_pr_update import _project_pr_review_list, _project_pr_review_submit
 from ouroboros.tools.project_remote_awareness import _project_branch_compare, _project_git_fetch
@@ -388,5 +389,26 @@ def test_project_deploy_operational_loop_scenario_smoke(tmp_path, monkeypatch):
     assert logs_payload['logs']['empty'] is False
     assert logs_payload['result']['truncated'] is True
     assert logs_payload['logs']['content'] == 'line1\nline2\n'
+
+    snapshot_payload = json.loads(
+        _project_operational_snapshot(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+        )
+    )
+
+    assert snapshot_payload['selection']['runtime_included'] is True
+    assert snapshot_payload['readiness']['local_clean'] is True
+    assert snapshot_payload['readiness']['deploy_target_ready'] is True
+    assert snapshot_payload['readiness']['service_running'] is True
+    assert snapshot_payload['readiness']['rollout_ready'] is True
+    assert snapshot_payload['risk_flags'] == []
+    assert snapshot_payload['last_deploy']['status'] == 'ok'
+    assert snapshot_payload['last_deploy']['deploy']['execution']['ok_steps'] == 5
+    assert snapshot_payload['runtime']['diagnostics']['severity'] == 'healthy'
+    assert 'attach a GitHub origin with project_github_create' in snapshot_payload['next_actions']
+
     assert any('systemctl show' in command for command in status_calls)
     assert any('journalctl' in command for command in status_calls)
