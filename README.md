@@ -1,18 +1,22 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.58.0-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.58.1-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.58.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.58.1 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.58.1
+- README для Stage 3 дополнен operator map/table: read-side, action tools и composite tools теперь разведены явно, с кратким правилом когда брать `project_overview` против `project_operational_snapshot`
+- зафиксирована текущая boundary policy Stage 3: composites разрешены только на зрелых lifecycle seams, `project_change_flow` намеренно отсутствует, а раздел `What is still intentionally not in Stage 3` делает этот предел явным
 
 ### 6.58.0
 - добавлен один цельный Stage 3 full-cycle smoke как системный контракт на связку `branch -> edit -> commit -> push -> PR/merge -> deploy -> verify`, а не декоративный e2e-сценарий
@@ -140,27 +144,53 @@ Stage 3 теперь собирает multi-project contour не как набо
 6. **Deploy + verify** — `project_deploy_and_verify` как осторожный composite flow поверх уже зрелого deploy/operate path
 7. **Operate / diagnose** — `project_overview`, `project_deploy_status`, `project_service_status`, `project_service_logs`
 
-**Главный read-side:** `project_overview`
+### Stage 3 operator map
 
-**Быстрый operator read-side:** `project_operational_snapshot`
-**Stage 3 composite boundary policy:** `project_bootstrap_and_publish` и `project_deploy_and_verify` — это весь допустимый composite-layer на текущем этапе. `project_change_flow` намеренно отсутствует: change/collaboration path пока должен оставаться прозрачной цепочкой primitives и read-side, а не прятаться за третьим high-level macro tool.
+| Layer | Tools | Когда использовать |
+|---|---|---|
+| **Read-side** | `project_overview`, `project_operational_snapshot`, `project_deploy_status`, `project_service_status`, `project_service_logs` | Когда нужно понять текущее состояние проекта, rollout readiness, runtime health и следующий шаг без изменения state |
+| **Action / primitives** | `project_init`, `project_file_write`, `project_commit`, `project_push`, `project_github_create`, branch/issue/PR tools, `project_server_register`, `project_server_validate`, `project_deploy_recipe`, `project_deploy_apply`, `project_service_control` | Когда нужен прозрачный пошаговый lifecycle: изменение, collaboration, deploy, remediation |
+| **Composite tools** | `project_bootstrap_and_publish`, `project_deploy_and_verify` | Только на зрелых start/end seams, где sequence уже стабилен и полезно вернуть единый operator-facing verdict вместе с read-side |
 
-Stage 3 composite-layer intentionally stays limited to exactly two tools: `project_bootstrap_and_publish` and `project_deploy_and_verify`. `project_change_flow` is intentionally absent as a policy decision, not as unfinished work.
+### Overview vs operational snapshot
 
+| Tool | Роль | Брать когда |
+|---|---|---|
+| `project_overview` | Широкий unified snapshot проекта | Нужно увидеть общую картину: repo, GitHub, servers, deploy state, summary и следующие шаги |
+| `project_operational_snapshot` | Узкий operator-facing snapshot | Нужно быстро понять: можно ли сейчас катить, что блокирует rollout, жив ли сервис и что делать дальше |
 
-Он не пытается заменить `project_overview`, а сжимает сигнал до операционного минимума:
+`project_operational_snapshot` не заменяет `project_overview`, а сжимает сигнал до операционного минимума:
 - rollout readiness (`local_clean`, `deploy_target_ready`, `service_running`, `rollout_ready`)
 - `risk_flags` для быстрых стоп-сигналов
 - `next_actions` для следующего fix/deploy шага
 - компактный repo/GitHub/runtime срез по выбранному target
 
-Он сводит в один snapshot:
+`project_overview` остаётся главным широким read-side и сводит в один snapshot:
 - local repo state и working tree
 - GitHub origin + open issues/PRs
 - registered servers
 - last deploy outcome из `.veles/deploy-state.json`
 - optional recipe preview и live runtime snapshot
 - compact `summary` и `next_actions` для operator guidance
+
+### Current Stage 3 boundary
+
+**Stage 3 composite boundary policy:** `project_bootstrap_and_publish` и `project_deploy_and_verify` — это весь допустимый composite-layer на текущем этапе.
+
+Почему так:
+- composites допустимы только на **зрелых start/end lifecycle seams**
+- дневной change loop должен оставаться **прозрачной цепочкой primitives**, а не opaque macro
+- поэтому `project_change_flow` **намеренно отсутствует**: это policy-решение, а не недоделка
+
+Stage 3 composite-layer intentionally stays limited to exactly two tools: `project_bootstrap_and_publish` and `project_deploy_and_verify`. `project_change_flow` is intentionally absent as a policy decision, not as unfinished work.
+
+### What is still intentionally not in Stage 3
+
+- Нет `project_change_flow` macro-tool для day-to-day branch/edit/commit/push/PR/merge цикла
+- Нет непрозрачного one-click orchestration поверх всего lifecycle
+- Нет попытки спрятать диагностику deploy/runtime за “магическим” success verdict без read-side
+
+Смысл Stage 3 — не в декоративной автоматизации, а в том, чтобы **ежедневный рабочий цикл оставался наблюдаемым, предсказуемым и ремонтопригодным**.
 
 ### Minimal Stage 3 scenarios
 
