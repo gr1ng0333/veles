@@ -143,3 +143,24 @@ def test_project_tool_result_shapes_are_consistent_across_stage3(tmp_path, monke
     _assert_repo_shape(deploy_status, "demo-api")
     _assert_server_shape(deploy_status["server"], "prod")
     assert deploy_status["last_deploy"]["outcome"]["target"]["alias"] == "prod"
+
+
+
+def test_stage3_read_side_helpers_share_meaningful_working_tree_filter():
+    from ouroboros.tools.project_read_side import _working_tree_signal
+
+    status_payload = {
+        'working_tree': {
+            'entries': [
+                {'path': '.veles/servers.json', 'status': '??'},
+                {'path': '.veles/deploy-state.json', 'status': '??'},
+                {'path': 'README.md', 'status': ' M'},
+                {'path': 'src/app.py', 'status': '??'},
+            ]
+        }
+    }
+
+    signal = _working_tree_signal(status_payload)
+    assert signal['clean'] is False
+    assert signal['changed_count'] == 2
+    assert [item['path'] for item in signal['entries']] == ['README.md', 'src/app.py']
