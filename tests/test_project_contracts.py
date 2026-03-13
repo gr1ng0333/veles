@@ -211,3 +211,157 @@ def test_stage3_shared_github_helpers_keep_overview_and_operational_snapshot_in_
     assert snapshot['github']['repo'] == 'acme/demo-api'
     assert snapshot['github']['open_issue_count'] == 2
     assert snapshot['github']['open_pull_request_count'] == 1
+
+
+
+def test_stage3_composite_contracts_are_shape_locked(tmp_path, monkeypatch):
+    from ouroboros.tools.project_composite_flows import (
+        _project_bootstrap_and_publish,
+        _project_deploy_and_verify,
+    )
+
+    def fake_project_init(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'language': 'python'},
+            'repo': {'branch': 'main'},
+            'commit_message': 'Bootstrap demo-api',
+        })
+
+    def fake_project_github_create(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'github': {'slug': 'acme/demo-api', 'remote': 'git@github.com:acme/demo-api.git'},
+        })
+
+    def fake_project_overview(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'github': {'configured': True, 'repo': 'acme/demo-api'},
+            'summary': {
+                'github_configured': True,
+                'working_tree_clean': True,
+                'registered_server_count': 0,
+                'meaningful_working_tree_change_count': 0,
+            },
+            'next_actions': ['register at least one deploy target with project_server_register'],
+        })
+
+    def fake_project_deploy_apply(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'server': {'alias': 'prod'},
+            'execution': {'failed_step': '', 'last_step_key': 'status'},
+            'summary': {'service_name': 'demo-api'},
+        })
+
+    def fake_project_operational_snapshot(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'selection': {'alias': 'prod', 'service_name': 'demo-api', 'runtime_included': True},
+            'readiness': {
+                'local_clean': True,
+                'github_ready': True,
+                'deploy_target_ready': True,
+                'service_running': True,
+                'rollout_ready': True,
+                'blocked_reasons': [],
+            },
+            'risk_flags': [],
+            'next_actions': [],
+            'runtime': {'diagnostics': {'severity': 'healthy'}},
+        })
+
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_init', fake_project_init)
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_github_create', fake_project_github_create)
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_overview', fake_project_overview)
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_deploy_apply', fake_project_deploy_apply)
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_operational_snapshot', fake_project_operational_snapshot)
+
+    bootstrap = json.loads(
+        _project_bootstrap_and_publish(
+            _ctx(tmp_path),
+            name='Demo API',
+            language='python',
+            owner='acme',
+            private=True,
+            description='Demo API',
+        )
+    )
+    assert set(bootstrap) >= {'status', 'project', 'selection', 'steps', 'bootstrap', 'publish', 'overview', 'verdict'}
+    assert bootstrap['selection'] == {
+        'name': 'demo-api',
+        'language': 'python',
+        'github_name': '',
+        'owner': 'acme',
+        'private': True,
+    }
+    assert [step['tool'] for step in bootstrap['steps']] == [
+        'project_init',
+        'project_github_create',
+        'project_overview',
+    ]
+    assert set(bootstrap['verdict']) >= {
+        'ready',
+        'github_configured',
+        'working_tree_clean',
+        'registered_server_count',
+        'meaningful_working_tree_change_count',
+        'github_repo',
+        'next_actions',
+    }
+
+    deploy = json.loads(
+        _project_deploy_and_verify(
+            _ctx(tmp_path),
+            name='demo-api',
+            alias='prod',
+            service_name='demo-api',
+            mode='update',
+        )
+    )
+    assert set(deploy) >= {'status', 'project', 'server', 'selection', 'steps', 'deploy', 'verification', 'verdict'}
+    assert deploy['selection'] == {
+        'alias': 'prod',
+        'service_name': 'demo-api',
+        'mode': 'update',
+        'dry_run': False,
+    }
+    assert [step['tool'] for step in deploy['steps']] == [
+        'project_deploy_apply',
+        'project_operational_snapshot',
+    ]
+    assert set(deploy['verdict']) >= {
+        'healthy',
+        'failed_step',
+        'rollout_ready',
+        'service_running',
+        'blocked_reasons',
+        'risk_flags',
+        'next_actions',
+    }
+
+
+
+def test_stage3_composite_layer_is_intentionally_limited_to_two_tools():
+    from ouroboros.tools.project_composite_flows import get_tools
+
+    names = [tool.name for tool in get_tools()]
+    assert names == [
+        'project_bootstrap_and_publish',
+        'project_deploy_and_verify',
+    ]
+    assert 'project_change_flow' not in names
+
+
+
+def test_stage3_readme_locks_composite_boundary_policy():
+    readme = pathlib.Path(__file__).resolve().parent.parent / 'README.md'
+    text = readme.read_text(encoding='utf-8')
+
+    assert 'Stage 3 composite-layer intentionally stays limited to exactly two tools' in text
+    assert '`project_change_flow` is intentionally absent' in text
