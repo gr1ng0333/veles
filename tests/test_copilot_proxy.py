@@ -20,9 +20,12 @@ def test_payload_passes_messages_and_tools_as_is(monkeypatch):
 
     captured = {}
 
-    def fake_do_request(token, payload, endpoint=""):
+    def fake_do_request(token, payload, endpoint="", initiator="user", interaction_id=None):
         captured.update(payload)
         captured["_endpoint"] = endpoint
+        captured["_initiator"] = initiator
+        captured["_interaction_id"] = interaction_id
+        assert initiator in {"user", "agent"}
         return {
             "choices": [{"message": {"role": "assistant", "content": "ok"}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
@@ -62,7 +65,7 @@ def test_parse_response_with_tool_calls(monkeypatch):
     import ouroboros.copilot_proxy_accounts as cpa
     from ouroboros import copilot_proxy
 
-    def fake_do_request(token, payload, endpoint=""):
+    def fake_do_request(token, payload, endpoint="", initiator="user", interaction_id=None):
         return {
             "choices": [{
                 "message": {
@@ -232,10 +235,11 @@ def test_llm_routes_copilot_model(monkeypatch):
 
     routed = {}
 
-    def fake_call_copilot(messages, tools=None, model="claude-sonnet-4-5", max_tokens=16384):
+    def fake_call_copilot(messages, tools=None, model="claude-sonnet-4-5", max_tokens=16384, interaction_id=None):
         routed["model"] = model
         routed["messages"] = messages
         routed["tools"] = tools
+        routed["interaction_id"] = interaction_id
         return (
             {"role": "assistant", "content": "routed"},
             {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0},
