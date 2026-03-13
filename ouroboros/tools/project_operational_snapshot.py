@@ -6,16 +6,39 @@ from typing import Any, Dict, List
 from ouroboros.tools.external_repos import _tool_entry
 from ouroboros.tools.project_bootstrap import _normalize_project_name, _project_status, _require_local_project
 from ouroboros.tools.project_deploy_state import _read_project_deploy_state
+from ouroboros.tools import project_read_side as _project_read_side
 from ouroboros.tools.project_read_side import (
     _build_operational_next_actions,
     _build_operational_readiness,
     _build_operational_risk_flags,
     _decode_payload,
-    _github_operational_summary,
+    _project_github_slug,
+    _run_project_gh_json,
     _working_tree_signal,
 )
 from ouroboros.tools.project_server_observability import _project_deploy_status
 from ouroboros.tools.registry import ToolContext, ToolEntry
+
+
+# compatibility aliases for tests that monkeypatch previous module-local GitHub hooks
+_IMPORTED_PROJECT_GITHUB_SLUG = _project_github_slug
+_IMPORTED_RUN_PROJECT_GH_JSON = _run_project_gh_json
+_project_github_slug = _project_github_slug
+_run_project_gh_json = _run_project_gh_json
+
+
+def _github_operational_summary(repo_dir, issue_limit: int, pr_limit: int) -> Dict[str, Any]:
+    original_slug = _project_read_side._project_github_slug
+    original_run = _project_read_side._run_project_gh_json
+    slug_hook = _project_github_slug if _project_github_slug is not _IMPORTED_PROJECT_GITHUB_SLUG else original_slug
+    run_hook = _run_project_gh_json if _run_project_gh_json is not _IMPORTED_RUN_PROJECT_GH_JSON else original_run
+    try:
+        _project_read_side._project_github_slug = slug_hook
+        _project_read_side._run_project_gh_json = run_hook
+        return _project_read_side._github_operational_summary(repo_dir, issue_limit, pr_limit)
+    finally:
+        _project_read_side._project_github_slug = original_slug
+        _project_read_side._run_project_gh_json = original_run
 
 
 def _readiness(status_payload: Dict[str, Any], github: Dict[str, Any], runtime: Dict[str, Any], last_outcome: Dict[str, Any] | None) -> Dict[str, Any]:
