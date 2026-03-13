@@ -15,14 +15,30 @@ from ouroboros.tools.project_bootstrap import (
 )
 from ouroboros.tools.project_deploy import _project_deploy_recipe
 from ouroboros.tools.project_deploy_state import _project_deploy_state_path, _read_project_deploy_state
+from ouroboros.tools import project_read_side as _project_read_side
 from ouroboros.tools.project_read_side import (
     _decode_payload,
     _dedupe_items,
-    _github_summary,
     _meaningful_working_tree_entries,
+    _run_project_gh_json,
 )
 from ouroboros.tools.project_server_observability import _project_deploy_status
 from ouroboros.tools.registry import ToolContext, ToolEntry
+
+
+# compatibility alias for tests that monkeypatch module-local gh entrypoints
+_IMPORTED_RUN_PROJECT_GH_JSON = _run_project_gh_json
+_run_project_gh_json = _run_project_gh_json
+
+
+def _github_summary(repo_dir, issue_limit: int, pr_limit: int) -> Dict[str, Any]:
+    original = _project_read_side._run_project_gh_json
+    hook = _run_project_gh_json if _run_project_gh_json is not _IMPORTED_RUN_PROJECT_GH_JSON else original
+    try:
+        _project_read_side._run_project_gh_json = hook
+        return _project_read_side._github_summary(repo_dir, issue_limit, pr_limit)
+    finally:
+        _project_read_side._run_project_gh_json = original
 
 
 def _recipe_preview(ctx: ToolContext, project_name: str, alias: str, service_name: str) -> Dict[str, Any]:
