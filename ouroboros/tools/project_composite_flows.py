@@ -1,33 +1,19 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import List
 
 from ouroboros.tools.external_repos import _tool_entry
 from ouroboros.tools.project_bootstrap import _project_github_create, _project_init
 from ouroboros.tools.project_deploy import _project_deploy_apply
-from ouroboros.tools.project_operational_snapshot import _decode_payload, _project_operational_snapshot
+from ouroboros.tools.project_operational_snapshot import _project_operational_snapshot
 from ouroboros.tools.project_overview import _project_overview
+from ouroboros.tools.project_read_side import (
+    _build_bootstrap_publish_verdict,
+    _build_deploy_verify_verdict,
+    _decode_payload,
+)
 from ouroboros.tools.registry import ToolContext, ToolEntry
-
-
-def _bootstrap_publish_verdict(init_payload: Dict[str, Any], github_payload: Dict[str, Any], overview_payload: Dict[str, Any]) -> Dict[str, Any]:
-    summary = overview_payload.get('summary') or {}
-    github = overview_payload.get('github') or {}
-    actions = overview_payload.get('next_actions') or []
-    return {
-        'ready': bool(
-            init_payload.get('status') == 'ok'
-            and github_payload.get('status') == 'ok'
-            and bool(summary.get('github_configured'))
-        ),
-        'github_configured': bool(summary.get('github_configured')),
-        'working_tree_clean': summary.get('working_tree_clean'),
-        'registered_server_count': summary.get('registered_server_count'),
-        'meaningful_working_tree_change_count': summary.get('meaningful_working_tree_change_count'),
-        'github_repo': github.get('repo') or (github_payload.get('github') or {}).get('slug') or '',
-        'next_actions': actions,
-    }
 
 
 def _project_bootstrap_and_publish(
@@ -101,40 +87,9 @@ def _project_bootstrap_and_publish(
         'bootstrap': init_payload,
         'publish': github_payload,
         'overview': overview_payload,
-        'verdict': _bootstrap_publish_verdict(init_payload, github_payload, overview_payload),
+        'verdict': _build_bootstrap_publish_verdict(init_payload, github_payload, overview_payload),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def _composite_verdict(deploy_payload: Dict[str, Any], snapshot_payload: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
-    deploy_status = str(deploy_payload.get('status') or '')
-    execution = deploy_payload.get('execution') or {}
-    readiness = snapshot_payload.get('readiness') or {}
-    risk_flags = snapshot_payload.get('risk_flags') or []
-    next_actions = snapshot_payload.get('next_actions') or []
-    runtime = snapshot_payload.get('runtime') or {}
-    diagnostics = runtime.get('diagnostics') or {}
-
-    healthy = False
-    if dry_run:
-        healthy = bool(readiness.get('rollout_ready'))
-    else:
-        healthy = (
-            deploy_status == 'ok'
-            and bool(readiness.get('rollout_ready'))
-            and str(diagnostics.get('severity') or 'healthy') not in {'warning', 'critical'}
-        )
-
-    return {
-        'healthy': bool(healthy),
-        'deploy_status': deploy_status,
-        'failed_step': str(deploy_payload.get('failed_step') or execution.get('failed_step') or ''),
-        'rollout_ready': bool(readiness.get('rollout_ready')),
-        'service_running': readiness.get('service_running'),
-        'blocked_reasons': readiness.get('blocked_reasons') or [],
-        'risk_flags': risk_flags,
-        'next_actions': next_actions,
-    }
 
 
 def _project_deploy_and_verify(
@@ -229,7 +184,7 @@ def _project_deploy_and_verify(
         ],
         'deploy': deploy_payload,
         'verification': snapshot_payload,
-        'verdict': _composite_verdict(deploy_payload, snapshot_payload, bool(dry_run)),
+        'verdict': _build_deploy_verify_verdict(deploy_payload, snapshot_payload, bool(dry_run)),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
