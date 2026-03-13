@@ -1,18 +1,22 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.57.3-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.57.4-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.57.3 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.57.4 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.57.4
+- добавлен `project_bootstrap_and_publish` — второй осторожный composite tool для Stage 3, который прозрачно сшивает `project_init`, `project_github_create` и `project_overview` в один bootstrap/publish flow с явным step trace и operator-facing verdict
+- шаг 6 Stage 3 добит не через магический orchestration layer, а через два точечных high-level flow для уже зрелых контуров: `project_bootstrap_and_publish` и `project_deploy_and_verify`
 
 ### 6.57.3
 - добавлен `project_deploy_and_verify` — осторожный composite tool для Stage 3, который прозрачно сшивает существующие `project_deploy_apply` и `project_operational_snapshot` в один operator-facing deploy/verify цикл
@@ -105,11 +109,12 @@ Stage 3 теперь собирает multi-project contour не как набо
 Базовая цепочка выглядит так:
 
 1. **Bootstrap** — `project_init`, `project_file_write`, `project_commit`, `project_push`
-2. **GitHub loop** — `project_github_create`, branch/issue/PR/fetch/compare tools
-3. **Deploy planning** — `project_server_register`, `project_server_validate`, `project_deploy_recipe`
-4. **Deploy apply** — `project_server_sync`, `project_service_control`, `project_deploy_apply`
-5. **Deploy + verify** — `project_deploy_and_verify` как осторожный composite flow поверх уже зрелого deploy/operate path
-6. **Operate / diagnose** — `project_overview`, `project_deploy_status`, `project_service_status`, `project_service_logs`
+2. **Bootstrap + publish** — `project_bootstrap_and_publish` как прозрачный shortcut поверх зрелого init/publish read-side
+3. **GitHub loop** — `project_github_create`, branch/issue/PR/fetch/compare tools
+4. **Deploy planning** — `project_server_register`, `project_server_validate`, `project_deploy_recipe`
+5. **Deploy apply** — `project_server_sync`, `project_service_control`, `project_deploy_apply`
+6. **Deploy + verify** — `project_deploy_and_verify` как осторожный composite flow поверх уже зрелого deploy/operate path
+7. **Operate / diagnose** — `project_overview`, `project_deploy_status`, `project_service_status`, `project_service_logs`
 
 **Главный read-side:** `project_overview`
 
@@ -132,11 +137,8 @@ Stage 3 теперь собирает multi-project contour не как набо
 ### Minimal Stage 3 scenarios
 
 **1. Новый проект -> GitHub publish**
-- `project_init`
-- `project_file_write`
-- `project_commit`
-- `project_github_create`
-- `project_push`
+- `project_bootstrap_and_publish`
+- или вручную: `project_init` -> `project_file_write` -> `project_commit` -> `project_github_create` -> `project_push`
 - `project_overview`
 
 **2. Изменение -> collaboration loop**
