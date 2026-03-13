@@ -4,9 +4,106 @@ import json
 from typing import Any, Dict, List
 
 from ouroboros.tools.external_repos import _tool_entry
+from ouroboros.tools.project_bootstrap import _project_github_create, _project_init
 from ouroboros.tools.project_deploy import _project_deploy_apply
 from ouroboros.tools.project_operational_snapshot import _decode_payload, _project_operational_snapshot
+from ouroboros.tools.project_overview import _project_overview
 from ouroboros.tools.registry import ToolContext, ToolEntry
+
+
+def _bootstrap_publish_verdict(init_payload: Dict[str, Any], github_payload: Dict[str, Any], overview_payload: Dict[str, Any]) -> Dict[str, Any]:
+    summary = overview_payload.get('summary') or {}
+    github = overview_payload.get('github') or {}
+    actions = overview_payload.get('next_actions') or []
+    return {
+        'ready': bool(
+            init_payload.get('status') == 'ok'
+            and github_payload.get('status') == 'ok'
+            and bool(summary.get('github_configured'))
+        ),
+        'github_configured': bool(summary.get('github_configured')),
+        'working_tree_clean': summary.get('working_tree_clean'),
+        'registered_server_count': summary.get('registered_server_count'),
+        'meaningful_working_tree_change_count': summary.get('meaningful_working_tree_change_count'),
+        'github_repo': github.get('repo') or (github_payload.get('github') or {}).get('slug') or '',
+        'next_actions': actions,
+    }
+
+
+def _project_bootstrap_and_publish(
+    ctx: ToolContext,
+    name: str,
+    language: str,
+    github_name: str = '',
+    owner: str = '',
+    private: bool = True,
+    description: str = '',
+) -> str:
+    init_payload = _decode_payload(
+        _project_init(
+            ctx,
+            name=name,
+            language=language,
+            description=description,
+        )
+    )
+
+    project_name = (init_payload.get('project') or {}).get('name') or str(name or '').strip()
+
+    github_payload = _decode_payload(
+        _project_github_create(
+            ctx,
+            name=project_name,
+            github_name=github_name,
+            owner=owner,
+            private=private,
+            description=description,
+        )
+    )
+
+    overview_payload = _decode_payload(
+        _project_overview(
+            ctx,
+            name=project_name,
+        )
+    )
+
+    payload = {
+        'status': 'ok' if github_payload.get('status') == 'ok' else 'error',
+        'project': init_payload.get('project') or overview_payload.get('project') or {},
+        'selection': {
+            'name': project_name,
+            'language': str(language or '').strip(),
+            'github_name': str(github_name or '').strip(),
+            'owner': str(owner or '').strip(),
+            'private': bool(private),
+        },
+        'steps': [
+            {
+                'key': 'project_init',
+                'tool': 'project_init',
+                'status': init_payload.get('status') or 'unknown',
+                'payload': init_payload,
+            },
+            {
+                'key': 'github_create',
+                'tool': 'project_github_create',
+                'status': github_payload.get('status') or 'unknown',
+                'payload': github_payload,
+            },
+            {
+                'key': 'project_overview',
+                'tool': 'project_overview',
+                'status': overview_payload.get('status') or 'unknown',
+                'payload': overview_payload,
+            },
+        ],
+        'bootstrap': init_payload,
+        'publish': github_payload,
+        'overview': overview_payload,
+        'verdict': _bootstrap_publish_verdict(init_payload, github_payload, overview_payload),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _composite_verdict(deploy_payload: Dict[str, Any], snapshot_payload: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
@@ -140,6 +237,21 @@ def _project_deploy_and_verify(
 
 def get_tools() -> List[ToolEntry]:
     return [
+        _tool_entry(
+            'project_bootstrap_and_publish',
+            'Create a brand-new local project, publish it to GitHub through project_github_create, and immediately return a unified project_overview snapshot with a compact bootstrap/publish verdict.',
+            {
+                'name': {'type': 'string', 'description': 'Project name/slug; becomes directory name under the projects root'},
+                'language': {'type': 'string', 'description': 'Project template language', 'enum': ['python', 'node', 'static']},
+                'github_name': {'type': 'string', 'description': 'Optional GitHub repository name; defaults to the local project slug'},
+                'owner': {'type': 'string', 'description': 'Optional GitHub owner/org; empty means current gh account default'},
+                'private': {'type': 'boolean', 'description': 'Whether to create the GitHub repository as private', 'default': True},
+                'description': {'type': 'string', 'description': 'Optional short project / GitHub repository description'},
+            },
+            ['name', 'language'],
+            _project_bootstrap_and_publish,
+            is_code_tool=True,
+        ),
         _tool_entry(
             'project_deploy_and_verify',
             'Run the existing typed deploy flow for a bootstrapped project and immediately verify the result through project_operational_snapshot, returning both layers plus a compact operator verdict.',

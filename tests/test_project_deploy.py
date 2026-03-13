@@ -1734,3 +1734,78 @@ def test_stage3_readme_mentions_project_deploy_and_verify():
     text = readme.read_text(encoding='utf-8')
 
     assert '`project_deploy_and_verify`' in text
+
+
+def test_project_bootstrap_and_publish_registered():
+    tmp = pathlib.Path('/tmp')
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    names = {t['function']['name'] for t in registry.schemas()}
+    assert 'project_bootstrap_and_publish' in names
+
+
+def test_project_bootstrap_and_publish_returns_bootstrap_publish_and_overview_layers(tmp_path, monkeypatch):
+    from ouroboros.tools.project_composite_flows import _project_bootstrap_and_publish
+
+    def fake_project_init(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'language': 'python'},
+            'repo': {'branch': 'main'},
+            'commit_message': 'Bootstrap demo-api',
+        })
+
+    def fake_project_github_create(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'github': {'slug': 'acme/demo-api', 'remote': 'git@github.com:acme/demo-api.git'},
+        })
+
+    def fake_project_overview(ctx, **kwargs):
+        return json.dumps({
+            'status': 'ok',
+            'project': {'name': 'demo-api', 'path': str(tmp_path / 'projects' / 'demo-api')},
+            'github': {'configured': True, 'repo': 'acme/demo-api'},
+            'summary': {
+                'github_configured': True,
+                'working_tree_clean': True,
+                'registered_server_count': 0,
+                'meaningful_working_tree_change_count': 0,
+            },
+            'next_actions': ['register at least one deploy target with project_server_register'],
+        })
+
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_init', fake_project_init)
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_github_create', fake_project_github_create)
+    monkeypatch.setattr('ouroboros.tools.project_composite_flows._project_overview', fake_project_overview)
+
+    payload = json.loads(
+        _project_bootstrap_and_publish(
+            _ctx(tmp_path),
+            name='Demo API',
+            language='python',
+            owner='acme',
+            private=True,
+            description='Demo API',
+        )
+    )
+
+    assert payload['status'] == 'ok'
+    assert payload['selection'] == {
+        'name': 'demo-api',
+        'language': 'python',
+        'github_name': '',
+        'owner': 'acme',
+        'private': True,
+    }
+    assert [step['key'] for step in payload['steps']] == ['project_init', 'github_create', 'project_overview']
+    assert payload['verdict']['ready'] is True
+    assert payload['verdict']['github_repo'] == 'acme/demo-api'
+    assert payload['verdict']['next_actions'] == ['register at least one deploy target with project_server_register']
+
+
+def test_stage3_readme_mentions_project_bootstrap_and_publish():
+    readme = pathlib.Path(__file__).resolve().parent.parent / 'README.md'
+    text = readme.read_text(encoding='utf-8')
+
+    assert '`project_bootstrap_and_publish`' in text
