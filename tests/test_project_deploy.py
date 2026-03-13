@@ -371,6 +371,21 @@ def test_project_operational_snapshot_focuses_rollout_readiness(tmp_path, monkey
     assert 'read project_service_logs for the most recent journal output' in payload['next_actions']
 
 
+def test_stage3_readme_keeps_minimal_lifecycle_map():
+    readme = pathlib.Path(__file__).resolve().parent.parent / 'README.md'
+    text = readme.read_text(encoding='utf-8')
+
+    assert '## Unified Project Lifecycle' in text
+    assert '### Minimal Stage 3 scenarios' in text
+    assert '**1. Новый проект -> GitHub publish**' in text
+    assert '**2. Изменение -> collaboration loop**' in text
+    assert '**3. Deploy / operate loop**' in text
+    assert '`project_init`' in text
+    assert '`project_github_create`' in text
+    assert '`project_deploy_apply`' in text
+    assert '`project_operational_snapshot`' in text
+
+
 def test_project_operational_snapshot_without_runtime_stays_local(tmp_path, monkeypatch):
     from ouroboros.tools.project_operational_snapshot import _project_operational_snapshot
 
