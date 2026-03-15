@@ -1,18 +1,22 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.63.0-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.64.0-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.63.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.64.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.64.0
+- Added `remote_capabilities_overview` as an operator-facing entrypoint for the SSH contour: registered targets, tool layers, policy boundaries and recommended workflows in one snapshot.
+- Documented the remote SSH contour as a read-only-first operator system with an explicit overview tool.
 
 ### 6.63.0
 - Synced README/header version markers after guarded remote command execution release.
@@ -260,6 +264,17 @@ Stage 3 composite-layer intentionally stays limited to exactly two tools: `proje
 | **Filesystem read-side** | `remote_list_dir`, `remote_stat`, `remote_read_file`, `remote_find`, `remote_grep`, `remote_project_discover` | Когда нужно честно исследовать структуру машины, найти project roots и отличить source tree от deploy artifact |
 | **Execution** | `remote_command_exec` | Когда нужно выполнить безопасную удалённую команду с policy guard, timeout'ами и audit trail |
 | **Materialization / composite** | `remote_project_fetch`, `remote_investigate_project` | Когда нужно забрать проект локально, построить manifest, tech profile и получить operator-facing summary |
+
+### Operator entrypoint
+
+Если не помнишь форму remote-контура, начинай с **`remote_capabilities_overview`**.
+Он возвращает один компактный snapshot с:
+- зарегистрированными SSH target'ами и их рекомендуемыми roots
+- картой слоёв (`targets / read-side / execution / materialization / composite`)
+- границей между read-only и mutating путями
+- рекомендуемыми workflow для первого контакта, расследования и fetch
+
+Это штатная operator-facing точка входа в remote SSH contour: она уменьшает зависимость от памяти о порядке tool'ов и делает контур проще для реального использования.
 
 ### Minimal remote investigation scenario
 
