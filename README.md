@@ -238,6 +238,56 @@ Stage 3 composite-layer intentionally stays limited to exactly two tools: `proje
 
 Смысл Stage 3 не в “магическом one-click deploy”, а в том, чтобы новый проект можно было честно вести через весь цикл: **создание -> разработка -> collaboration -> deploy -> observability -> следующий change cycle**.
 
+
+## Remote SSH Investigation Contour
+
+Начиная с `v6.63.0+`, у Veles есть отдельный first-class SSH contour для исследования удалённых машин и материализации проектов, который не смешан с project-local deploy loop.
+
+Базовая цепочка выглядит так:
+
+1. **Target registry** — `ssh_target_register`, `ssh_target_list`, `ssh_target_get`
+2. **Session bootstrap / connectivity** — `ssh_session_bootstrap`, `ssh_target_ping`
+3. **Read-side remote filesystem** — `remote_list_dir`, `remote_stat`, `remote_read_file`, `remote_find`, `remote_grep`, `remote_project_discover`
+4. **Safe command execution** — `remote_command_exec` (read-only by default, mutating mode only explicitly)
+5. **Materialization** — `remote_project_fetch`
+6. **Composite investigation** — `remote_investigate_project`
+
+### Remote operator path
+
+| Layer | Tools | Когда использовать |
+|---|---|---|
+| **Targets / session** | `ssh_target_register`, `ssh_target_list`, `ssh_target_get`, `ssh_session_bootstrap`, `ssh_target_ping` | Когда нужно дать удалённой машине субъектность: alias, auth mode, default root, known project paths, reuse сессии |
+| **Filesystem read-side** | `remote_list_dir`, `remote_stat`, `remote_read_file`, `remote_find`, `remote_grep`, `remote_project_discover` | Когда нужно честно исследовать структуру машины, найти project roots и отличить source tree от deploy artifact |
+| **Execution** | `remote_command_exec` | Когда нужно выполнить безопасную удалённую команду с policy guard, timeout'ами и audit trail |
+| **Materialization / composite** | `remote_project_fetch`, `remote_investigate_project` | Когда нужно забрать проект локально, построить manifest, tech profile и получить operator-facing summary |
+
+### Minimal remote investigation scenario
+
+**1. Зарегистрировать target**
+- `ssh_target_register`
+- `ssh_target_ping`
+
+**2. Найти проект на сервере**
+- `remote_project_discover`
+- при необходимости уточнить через `remote_list_dir` / `remote_stat` / `remote_read_file`
+
+**3. Понять, что это за дерево**
+- `remote_investigate_project`
+- или вручную: `remote_project_fetch` -> manifest -> `remote_command_exec` в read-only режиме
+
+**4. Выполнить безопасную диагностику**
+- `remote_command_exec` c `mode=read_only`
+- mutating mode использовать только явно и осознанно
+
+### Boundaries / out of scope
+
+Этот контур **не** пытается:
+- маскировать deploy artifact под исходники;
+- выполнять непрозрачные mutating-операции по умолчанию;
+- заменять project-local deploy loop.
+
+Этот контур **делает** другое: даёт честный операторский путь **найти -> исследовать -> забрать -> верифицировать -> анализировать**, когда проект живёт на удалённой машине и сначала нужно восстановить реальную картину.
+
 ## Чем отличается от остальных
 
 Большинство AI-агентов выполняют задачи. Veles **создаёт себя.**
