@@ -1,18 +1,22 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.59.0-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.60.0-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.59.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.60.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.60.0
+- Added core remote filesystem tools for SSH targets: directory listing, file read, stat, find and grep
+- Added remote project discovery with normalized path metadata and source/deploy/project heuristics
 
 ### 6.59.0
 - Introduced first-class SSH target registry with alias-based session bootstrap and reusable session cache
@@ -484,6 +488,10 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### 6.60.0
+- Added core remote filesystem tools for SSH targets: directory listing, file read, stat, find and grep
+- Added remote project discovery with normalized path metadata and source/deploy/project heuristics
 
 ### 6.56.3
 - добавлены Stage 3 contract-тесты на консистентность `repo`/`server` result-shape между project bootstrap, server, deploy и observability tools
