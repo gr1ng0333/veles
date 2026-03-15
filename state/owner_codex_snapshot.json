@@ -1,0 +1,61 @@
+{
+  "timestamp_utc": "2026-03-12T20:09:06.099544Z",
+  "overall_healthy": false,
+  "sources": {
+    "state": {
+      "status": "ok",
+      "path": "/opt/veles-data/state/state.json",
+      "summary": {
+        "current_branch": "veles",
+        "current_sha": "3be5787fe807dfd036924397e3590525af3b3bb4",
+        "spent_usd": 494.31955840000256,
+        "remaining_usd": null,
+        "evolution_mode_enabled": false,
+        "evolution_cycle": 126,
+        "evolution_consecutive_failures": 0
+      }
+    },
+    "doctor_report": {
+      "status": "ok",
+      "path": "/opt/veles-data/state/doctor_report.json",
+      "summary": {
+        "overall_healthy": false,
+        "checks": {
+          "version_sync": true,
+          "github_cli": false,
+          "identity_freshness": false,
+          "budget_drift": true
+        }
+      }
+    },
+    "health_check": {
+      "status": "ok",
+      "path": "/opt/veles-data/state/health_check.json",
+      "summary": {
+        "overall_healthy": true,
+        "disk_used_percent": 8.19,
+        "ram_used_percent": 21.72,
+        "searxng_healthy": true
+      }
+    },
+    "codex_accounts_state": {
+      "status": "ok",
+      "path": "/opt/veles-data/state/codex_accounts_state.json",
+      "summary": {
+        "accounts_count": 3,
+        "active_idx": 2,
+        "dead_count": 0
+      }
+    },
+    "queue_snapshot": {
+      "status": "ok",
+      "path": "/opt/veles-data/state/queue_snapshot.json",
+      "summary": {
+        "pending_count": 0,
+        "running_count": 0,
+        "reason": "main_loop",
+        "ts": "2026-03-12T20:09:05.158690+00:00"
+      }
+    }
+  }
+}
