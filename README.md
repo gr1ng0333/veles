@@ -14,6 +14,10 @@
 
 ## Changelog
 
+### 6.62.0
+- Added policy-guarded `remote_command_exec` with read-only default mode, explicit mutating mode, and normalized owner-facing remote errors.
+- Added remote execution audit events with target/cwd/command/exit/stdout-stderr summaries and mutation risk metadata.
+
 ### 6.61.0
 - Added `remote_project_fetch` to materialize remote projects into local snapshot directories with manifest-based integrity checks
 - Supports full or source-only fetch modes, optional heavy-directory exclusion, key-file hashes, and explicit source vs deployment snapshot classification
