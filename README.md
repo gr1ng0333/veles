@@ -489,10 +489,6 @@ python colab_launcher.py
 
 ## Changelog
 
-### 6.60.0
-- Added core remote filesystem tools for SSH targets: directory listing, file read, stat, find and grep
-- Added remote project discovery with normalized path metadata and source/deploy/project heuristics
-
 ### 6.56.3
 - добавлены Stage 3 contract-тесты на консистентность `repo`/`server` result-shape между project bootstrap, server, deploy и observability tools
 - README теперь описывает project contour как цельный lifecycle (`bootstrap -> GitHub -> deploy -> operate`), а не только как россыпь release-пунктов
