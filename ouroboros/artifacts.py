@@ -5,17 +5,14 @@ import hashlib
 import json
 import pathlib
 import re
+import threading
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 _OUTBOX_ROOT = "artifacts/outbox"
 _INBOX_ROOT = "artifacts/inbox"
-
-
-def _slug(value: str, fallback: str) -> str:
-    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9._-]+", "-", (value or "").strip().lower())).strip("-._") or fallback
 
 
 def _write_artifact(
@@ -35,9 +32,9 @@ def _write_artifact(
 ) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     base_dir = drive_root / root_dir / now.strftime('%Y/%m/%d')
-    task_part = _slug(task_id or 'direct-chat', 'direct-chat')
+    task_part = re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', (task_id or 'direct-chat').strip().lower())).strip('-._') or 'direct-chat'
     if content_kind:
-        kind_part = _slug(content_kind, 'generic')
+        kind_part = re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', (content_kind or '').strip().lower())).strip('-._') or 'generic'
     else:
         suffix_hint = pathlib.Path(filename or '').suffix.lower()
         if suffix_hint == '.py':
@@ -56,7 +53,7 @@ def _write_artifact(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     path = pathlib.Path((filename or '').strip())
-    stem = _slug(path.stem or kind_part, kind_part)
+    stem = re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', ((path.stem or kind_part) or '').strip().lower())).strip('-._') or kind_part
     suffix = path.suffix[:20].lower()
     if not suffix or not re.fullmatch(r"\.[A-Za-z0-9._-]{1,19}", suffix):
         suffix = '.bin'
@@ -164,3 +161,62 @@ def list_incoming_artifacts(
         'total_matches': len(items),
         'items': result,
     }
+
+
+
+_INBOX_CONFIRMATION_WINDOW_SEC = 15.0
+_INBOX_CONFIRMATION_LOCK = threading.Lock()
+_INBOX_CONFIRMATION_STATE: Dict[int, Dict[str, Any]] = {}
+
+
+def schedule_inbox_confirmation(
+    chat_id: int,
+    file_name: str,
+    sender: Callable[[int, str], None],
+    window_sec: float = _INBOX_CONFIRMATION_WINDOW_SEC,
+) -> None:
+    chat_id = int(chat_id)
+    file_name = str(file_name or 'file')
+    with _INBOX_CONFIRMATION_LOCK:
+        state = _INBOX_CONFIRMATION_STATE.get(chat_id)
+        if state is None:
+            def _send_summary() -> None:
+                with _INBOX_CONFIRMATION_LOCK:
+                    current = _INBOX_CONFIRMATION_STATE.pop(chat_id, None)
+                if not current:
+                    return
+                names = [
+                    str(name or 'file')
+                    for name in (current.get('file_names') or [])
+                    if str(name or '').strip()
+                ]
+                if not names:
+                    sender(
+                        chat_id,
+                        '📥 Файлы сохранены во входящий архив и пока не отправлены в обработку.\n'
+                        'Можешь потом сказать: посмотри 10 последних загруженных файлов.',
+                    )
+                    return
+                total = len(names)
+                preview = names[:6]
+                lines = [f'• {name}' for name in preview]
+                if total > len(preview):
+                    lines.append(f'• … и ещё {total - len(preview)}')
+                noun = 'Файл сохранён' if total == 1 else 'Файлы сохранены'
+                suffix = 'не отправлен' if total == 1 else 'не отправлены'
+                sender(
+                    chat_id,
+                    f'📥 {noun} во входящий архив и пока {suffix} в обработку ({total}):\n'
+                    + '\n'.join(lines)
+                    + '\nМожешь потом сказать: посмотри 10 последних загруженных файлов.',
+                )
+
+            timer = threading.Timer(float(window_sec), _send_summary)
+            timer.daemon = True
+            _INBOX_CONFIRMATION_STATE[chat_id] = {
+                'file_names': [file_name],
+                'timer': timer,
+            }
+            timer.start()
+            return
+        state.setdefault('file_names', []).append(file_name)
