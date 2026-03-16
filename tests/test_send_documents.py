@@ -7,13 +7,9 @@ from ouroboros.tools.registry import ToolContext
 from supervisor.events import _handle_send_documents
 
 
-def make_ctx():
-    tmp = pathlib.Path(tempfile.mkdtemp())
-    return ToolContext(repo_dir=tmp, drive_root=tmp, current_chat_id=12345)
-
-
 def test_send_documents_queues_single_bulk_event_with_default_caption():
-    ctx = make_ctx()
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    ctx = ToolContext(repo_dir=tmp, drive_root=tmp, current_chat_id=12345)
     result = _send_documents(
         ctx,
         files=[
@@ -35,7 +31,8 @@ def test_send_documents_queues_single_bulk_event_with_default_caption():
 
 
 def test_send_documents_rejects_empty_files_list():
-    ctx = make_ctx()
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    ctx = ToolContext(repo_dir=tmp, drive_root=tmp, current_chat_id=12345)
     result = _send_documents(ctx, files=[])
     assert "requires a non-empty files list" in result
 
@@ -90,3 +87,31 @@ def test_handle_send_documents_sends_each_file_with_caption_fallback():
     assert calls[1]["caption"] == "own"
     assert calls[1]["payload"] == "beta"
     assert log_rows == []
+
+
+
+def test_document_archive_paths_are_persisted(tmp_path):
+    from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools.core import _send_document, _send_documents
+
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, current_chat_id=42, task_id="task-doc")
+    single = _send_document(ctx, content="print(\'ok\')\n", filename="solution.py", mime_type="text/x-python")
+    assert "archived at artifacts/outbox" in single
+    evt = ctx.pending_events[-1]
+    archived = tmp_path / evt["artifact_archive_path"]
+    assert archived.exists()
+    assert archived.read_text(encoding="utf-8") == "print(\'ok\')\n"
+    assert archived.with_suffix(archived.suffix + ".meta.json").exists()
+
+    batch_ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, current_chat_id=42, task_id="task-batch")
+    batch = _send_documents(batch_ctx, files=[
+        {"content": "# plan\n- a\n", "filename": "plan.md", "mime_type": "text/markdown"},
+        {"content": "hello", "filename": "notes.txt", "mime_type": "text/plain"},
+    ])
+    assert "archived under artifacts/outbox" in batch
+    batch_evt = batch_ctx.pending_events[-1]
+    assert batch_evt["type"] == "send_documents"
+    for item in batch_evt["files"]:
+        persisted = tmp_path / item["artifact_archive_path"]
+        assert persisted.exists()
+        assert persisted.with_suffix(persisted.suffix + ".meta.json").exists()

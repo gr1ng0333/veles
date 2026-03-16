@@ -98,7 +98,7 @@ EXPECTED_TOOLS = [
     "request_restart", "promote_to_stable", "request_review",
     "schedule_task", "cancel_task",
     "switch_model", "toggle_evolution", "toggle_consciousness",
-    "send_owner_message", "send_photo", "send_browser_screenshot", "send_document", "send_documents",
+    "send_owner_message", "send_photo", "send_browser_screenshot", "save_artifact", "send_document", "send_documents",
     "switch_codex_account",
     "codebase_digest", "codebase_health",
     "knowledge_read", "knowledge_write", "knowledge_list",

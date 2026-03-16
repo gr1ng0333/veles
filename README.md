@@ -1,18 +1,23 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.66.1-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.67.0-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.66.1 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.67.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.67.0
+- Added persistent local artifact storage under `/opt/veles-data/artifacts/outbox/...` for owner-facing files, so generated Python solutions, plans, markdown and txt documents are archived with metadata instead of disappearing after delivery.
+- Added native `save_artifact` tool for explicitly saving text/code/plan artifacts to the local store, and wired `send_document` / `send_documents` to archive outgoing files automatically before Telegram delivery.
+- Added regression coverage for artifact persistence and document-queue archive paths, so future file sending can rely on real files on disk rather than reconstructed chat content.
 
 ### 6.66.1
 - Fixed post-restart `NameError` by importing `sanitize_owner_facing_text` into `loop.py`, restoring owner-facing message sanitization after the restart path.

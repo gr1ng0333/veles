@@ -9,8 +9,10 @@ import logging
 import os
 import pathlib
 import uuid
+from functools import partial
 from typing import Any, Dict, List, Tuple
 
+from ouroboros.artifacts import save_artifact
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import read_text, safe_relpath, utc_now_iso
 
@@ -36,20 +38,12 @@ def _list_dir(root: pathlib.Path, rel: str, max_entries: int = 500) -> List[str]
     return items
 
 
-def _repo_read(ctx: ToolContext, path: str) -> str:
-    return read_text(ctx.repo_path(path))
+def _read_from(ctx: ToolContext, path: str, which: str) -> str:
+    return read_text(getattr(ctx, which)(path))
 
 
-def _repo_list(ctx: ToolContext, dir: str = ".", max_entries: int = 500) -> str:
-    return json.dumps(_list_dir(ctx.repo_dir, dir, max_entries), ensure_ascii=False, indent=2)
-
-
-def _drive_read(ctx: ToolContext, path: str) -> str:
-    return read_text(ctx.drive_path(path))
-
-
-def _drive_list(ctx: ToolContext, dir: str = ".", max_entries: int = 500) -> str:
-    return json.dumps(_list_dir(ctx.drive_root, dir, max_entries), ensure_ascii=False, indent=2)
+def _list_from(ctx: ToolContext, dir: str = ".", max_entries: int = 500, root_attr: str = "repo_dir") -> str:
+    return json.dumps(_list_dir(getattr(ctx, root_attr), dir, max_entries), ensure_ascii=False, indent=2)
 
 
 def _drive_write(ctx: ToolContext, path: str, content: str, mode: str = "overwrite") -> str:
@@ -61,6 +55,8 @@ def _drive_write(ctx: ToolContext, path: str, content: str, mode: str = "overwri
         with p.open("a", encoding="utf-8") as f:
             f.write(content)
     return f"OK: wrote {mode} {path} ({len(content)} chars)"
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -90,16 +86,30 @@ def _send_document(
         return "⚠️ send_document requires file_base64 or content."
 
     safe_filename = (filename or "").strip() or "file.bin"
+    mime = mime_type or "application/octet-stream"
+    archive_meta = save_artifact(
+        ctx.drive_root,
+        file_base64=payload_b64,
+        filename=safe_filename,
+        content_kind=("python" if pathlib.Path(safe_filename).suffix.lower() == ".py" else "html" if pathlib.Path(safe_filename).suffix.lower() in {".html", ".htm"} else "config" if pathlib.Path(safe_filename).suffix.lower() in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"} else "table" if pathlib.Path(safe_filename).suffix.lower() in {".csv", ".tsv"} else "text" if pathlib.Path(safe_filename).suffix.lower() in {".txt", ".md", ".rst"} or mime.startswith("text/") else "generic"),
+        source="send_document_tool",
+        task_id=ctx.task_id or "",
+        chat_id=chat_id,
+        mime_type=mime,
+        caption=caption or "",
+    )
+
     event = {
         "type": "send_document",
         "chat_id": chat_id,
         "file_base64": payload_b64,
         "filename": safe_filename,
         "caption": caption or "",
-        "mime_type": mime_type or "application/octet-stream",
+        "mime_type": mime,
+        "artifact_archive_path": archive_meta["relative_path"],
     }
     ctx.pending_events.append(event)
-    return f"✅ Document queued for delivery: {safe_filename}"
+    return f"✅ Document queued for delivery: {safe_filename} · archived at {archive_meta['relative_path']}"
 
 
 def _send_documents(ctx: ToolContext, files: List[Dict[str, Any]], caption: str = "") -> str:
@@ -125,11 +135,25 @@ def _send_documents(ctx: ToolContext, files: List[Dict[str, Any]], caption: str 
             return f"⚠️ send_documents item #{idx} requires file_base64 or content."
 
         safe_filename = str(item.get("filename") or "").strip() or f"file_{idx}.bin"
+        mime = str(item.get("mime_type") or "application/octet-stream")
+        archive_meta = save_artifact(
+            ctx.drive_root,
+            file_base64=payload_b64,
+            filename=safe_filename,
+            content_kind=("python" if pathlib.Path(safe_filename).suffix.lower() == ".py" else "html" if pathlib.Path(safe_filename).suffix.lower() in {".html", ".htm"} else "config" if pathlib.Path(safe_filename).suffix.lower() in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"} else "table" if pathlib.Path(safe_filename).suffix.lower() in {".csv", ".tsv"} else "text" if pathlib.Path(safe_filename).suffix.lower() in {".txt", ".md", ".rst"} or mime.startswith("text/") else "generic"),
+            source="send_documents_tool",
+            task_id=ctx.task_id or "",
+            chat_id=chat_id,
+            mime_type=mime,
+            caption=str(item.get("caption") or caption or ""),
+            metadata={"batch_index": idx},
+        )
         prepared_files.append({
             "file_base64": payload_b64,
             "filename": safe_filename,
             "caption": str(item.get("caption") or ""),
-            "mime_type": str(item.get("mime_type") or "application/octet-stream"),
+            "mime_type": mime,
+            "artifact_archive_path": archive_meta["relative_path"],
         })
 
     event = {
@@ -139,7 +163,7 @@ def _send_documents(ctx: ToolContext, files: List[Dict[str, Any]], caption: str 
         "files": prepared_files,
     }
     ctx.pending_events.append(event)
-    return f"✅ {len(prepared_files)} documents queued for sequential delivery"
+    return f"✅ {len(prepared_files)} documents queued for sequential delivery · archived under artifacts/outbox"
 
 def _send_photo(ctx: ToolContext, image_base64: str, caption: str = "") -> str:
     """Send a base64-encoded image to the owner's Telegram chat."""
@@ -431,7 +455,7 @@ def get_tools() -> List[ToolEntry]:
             "name": "repo_read",
             "description": "Read a UTF-8 text file from the GitHub repo (relative path).",
             "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        }, _repo_read),
+        }, partial(_read_from, which="repo_path")),
         ToolEntry("repo_list", {
             "name": "repo_list",
             "description": "List files under a repo directory (relative path).",
@@ -439,12 +463,12 @@ def get_tools() -> List[ToolEntry]:
                 "dir": {"type": "string", "default": "."},
                 "max_entries": {"type": "integer", "default": 500},
             }, "required": []},
-        }, _repo_list),
+        }, partial(_list_from, root_attr="repo_dir")),
         ToolEntry("drive_read", {
             "name": "drive_read",
             "description": "Read a UTF-8 text file from Google Drive (relative to MyDrive/Ouroboros/).",
             "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        }, _drive_read),
+        }, partial(_read_from, which="drive_path")),
         ToolEntry("drive_list", {
             "name": "drive_list",
             "description": "List files under a Drive directory.",
@@ -452,7 +476,7 @@ def get_tools() -> List[ToolEntry]:
                 "dir": {"type": "string", "default": "."},
                 "max_entries": {"type": "integer", "default": 500},
             }, "required": []},
-        }, _drive_list),
+        }, partial(_list_from, root_attr="drive_root")),
         ToolEntry("drive_write", {
             "name": "drive_write",
             "description": "Write a UTF-8 text file on Google Drive.",
@@ -462,6 +486,18 @@ def get_tools() -> List[ToolEntry]:
                 "mode": {"type": "string", "enum": ["overwrite", "append"], "default": "overwrite"},
             }, "required": ["path", "content"]},
         }, _drive_write),
+
+        ToolEntry("save_artifact", {
+            "name": "save_artifact",
+            "description": "Сохранить локальный текстовый артефакт в постоянное хранилище под drive_root/artifacts/outbox. Подходит для Python-кода, планов, markdown и txt, чтобы потом можно было к ним вернуться.",
+            "parameters": {"type": "object", "properties": {
+                "content": {"type": "string", "description": "Текст артефакта"},
+                "filename": {"type": "string", "description": "Имя файла, например plan.md или solution.py"},
+                "content_kind": {"type": "string", "description": "Категория: python, text, plan, markdown, html, config, generic"},
+                "mime_type": {"type": "string", "description": "MIME-тип артефакта"},
+                "note": {"type": "string", "description": "Короткая заметка о происхождении артефакта"}
+            }, "required": ["content", "filename"]},
+        }, save_artifact),
 
         ToolEntry("send_document", {
             "name": "send_document",
