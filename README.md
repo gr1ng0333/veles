@@ -14,6 +14,10 @@
 
 ## Changelog
 
+### 6.64.1
+- Added structured browser failure diagnostics with normalized failure classes, diagnostic payloads, and automatic HTML/text/screenshot artifacts on browser errors.
+- Browser failures now return owner-facing reasons like incomplete hydration, anti-bot/challenge suspicion, empty DOM, stale selectors, or content not rendered instead of generic timeouts.
+
 ### 6.64.0
 - Added `remote_capabilities_overview` as an operator-facing entrypoint for the SSH contour: registered targets, tool layers, policy boundaries and recommended workflows in one snapshot.
 - Documented the remote SSH contour as a read-only-first operator system with an explicit overview tool.
