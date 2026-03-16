@@ -381,6 +381,7 @@ def cleanup_browser(ctx: ToolContext) -> None:
     ctx.browser_state.browser = None
     ctx.browser_state.pw_instance = None
     ctx.browser_state.active_session_name = None
+    ctx.browser_state.last_failure_diagnostics = None
 
 
 def _extract_page_output(page: Any, output: str, ctx: ToolContext) -> str:
