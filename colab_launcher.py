@@ -220,32 +220,27 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
         'xml', 'sql', 'log', 'env', 'gitignore', 'dockerfile',
     }
     image_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}
+    inbox_note = (
+        f"📥 Файл сохранён во входящий архив и пока не отправлен в обработку: {file_name}\n"
+        "Можешь потом сказать: посмотри 10 последних загруженных файлов."
+    )
+    archive = lambda raw_b64, detected_mime, kind: save_incoming_artifact(
+        drive_root, filename=file_name, file_base64=raw_b64, content_kind=kind,
+        mime_type=detected_mime or mime_type or 'application/octet-stream',
+        chat_id=chat_id, caption=caption, metadata={
+            'message_id': int(message_id or 0),
+            'telegram_file_id': file_id or '',
+            'activation_mode': 'immediate' if has_caption else 'deferred',
+        },
+    )
 
     if ((mime_type or '').strip().lower().startswith('image/') or file_ext in image_extensions) and file_id:
         b64, detected_mime = tg.download_file_base64(file_id)
         if not b64:
             return None, None, False
-        meta = save_incoming_artifact(
-            drive_root,
-            archive_root='artifacts/inbox',
-            filename=file_name,
-            file_base64=b64,
-            content_kind='image',
-            mime_type=detected_mime or mime_type or 'application/octet-stream',
-            chat_id=chat_id,
-            caption=caption,
-            metadata={
-                'message_id': int(message_id or 0),
-                'telegram_file_id': file_id or '',
-                'activation_mode': 'immediate' if has_caption else 'deferred',
-            },
-        )
+        meta = archive(b64, detected_mime, 'image')
         if isinstance(meta, dict) and not has_caption:
-            send_with_budget(
-                chat_id,
-                f"📥 Файл сохранён во входящий архив и пока не отправлен в обработку: {file_name}\n"
-                "Можешь потом сказать: посмотри 10 последних загруженных файлов."
-            )
+            send_with_budget(chat_id, inbox_note)
         if has_caption:
             return None, (b64, detected_mime, caption), True
         return None, None, True
@@ -254,27 +249,9 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
         raw_b64, detected_mime = tg.download_file_base64(file_id)
         if not raw_b64:
             return None, None, False
-        meta = save_incoming_artifact(
-            drive_root,
-            archive_root='artifacts/inbox',
-            filename=file_name,
-            file_base64=raw_b64,
-            content_kind='incoming',
-            mime_type=detected_mime or mime_type or 'application/octet-stream',
-            chat_id=chat_id,
-            caption=caption,
-            metadata={
-                'message_id': int(message_id or 0),
-                'telegram_file_id': file_id or '',
-                'activation_mode': 'immediate' if has_caption else 'deferred',
-            },
-        )
+        meta = archive(raw_b64, detected_mime, 'incoming')
         if isinstance(meta, dict) and not has_caption:
-            send_with_budget(
-                chat_id,
-                f"📥 Файл сохранён во входящий архив и пока не отправлен в обработку: {file_name}\n"
-                "Можешь потом сказать: посмотри 10 последних загруженных файлов."
-            )
+            send_with_budget(chat_id, inbox_note)
         if not has_caption:
             return None, None, True
         import base64 as _b64mod
@@ -295,27 +272,9 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
         raw_b64, detected_mime = tg.download_file_base64(file_id)
         if not raw_b64:
             return None, None, False
-        meta = save_incoming_artifact(
-            drive_root,
-            archive_root='artifacts/inbox',
-            filename=file_name,
-            file_base64=raw_b64,
-            content_kind='pdf',
-            mime_type=detected_mime or 'application/pdf',
-            chat_id=chat_id,
-            caption=caption,
-            metadata={
-                'message_id': int(message_id or 0),
-                'telegram_file_id': file_id or '',
-                'activation_mode': 'immediate' if has_caption else 'deferred',
-            },
-        )
+        meta = archive(raw_b64, detected_mime or 'application/pdf', 'pdf')
         if isinstance(meta, dict) and not has_caption:
-            send_with_budget(
-                chat_id,
-                f"📥 Файл сохранён во входящий архив и пока не отправлен в обработку: {file_name}\n"
-                "Можешь потом сказать: посмотри 10 последних загруженных файлов."
-            )
+            send_with_budget(chat_id, inbox_note)
         if not has_caption:
             return None, None, True
         import base64 as _b64mod
