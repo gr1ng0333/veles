@@ -125,7 +125,7 @@ def save_artifact(
     )
 
 
-save_incoming_artifact = partial(save_artifact, source='telegram_inbox')
+save_incoming_artifact = partial(save_artifact, source='telegram_inbox', archive_root=_INBOX_ROOT)
 
 
 def list_incoming_artifacts(
