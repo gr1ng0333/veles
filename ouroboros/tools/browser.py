@@ -28,9 +28,7 @@ from ouroboros.tools.browser_runtime import (
     _reset_playwright_greenlet,
     cleanup_browser,
 )
-
 log = logging.getLogger(__name__)
-
 
 from ouroboros.tools.browser_login_helpers import (
     _FILL_INPUT_JS,
@@ -48,9 +46,8 @@ from ouroboros.tools.browser_auth_flow import (
     normalize_site_profile,
 )
 from ouroboros.tools.browser_tool_defs import build_browser_tool_entries
+from ouroboros.tools.browser_diagnostics import capture_browser_failure_diagnostics
 from ouroboros.tools.captcha_solver import solve_captcha_image
-
-
 def _with_thread_safety_retry(func):
     """Retry browser operation if Playwright thread mismatch detected."""
     import functools
@@ -71,12 +68,8 @@ def _with_thread_safety_retry(func):
                 return func(ctx, *args, **kwargs)
             raise
     return wrapper
-
-
 def _normalize_selector(value: Optional[str]) -> str:
     return (value or "").strip()
-
-
 def choose_login_field_selectors(
     username_candidates: List[Dict[str, Any]],
     password_candidates: List[Dict[str, Any]],
@@ -125,7 +118,6 @@ def choose_login_field_selectors(
         ),
     }
 
-
 def _safe_selector_presence(page: Any, selector: str, timeout: int) -> bool:
     selector = _normalize_selector(selector)
     if not selector:
@@ -140,7 +132,6 @@ def _login_json_error(message: str, *, error: str, **extra: Any) -> str:
     payload = {"success": False, "message": message, "error": error}
     payload.update(extra)
     return json.dumps(payload, ensure_ascii=False)
-
 
 def _advance_multi_step_login(
     page: Any,
@@ -189,7 +180,6 @@ def _advance_multi_step_login(
         }
     return {"ok": True, "submit": next_result, "chosen": chosen2, "pass_sel": pass_sel, "step_result": {"step": "username_submit", **next_result}}
 
-
 def _session_snapshot(context: Any) -> Dict[str, Any]:
     state = context.storage_state()
     cookies = list(state.get("cookies") or [])
@@ -199,7 +189,6 @@ def _session_snapshot(context: Any) -> Dict[str, Any]:
         "cookies_count": len(cookies),
         "origins_count": len(origins),
     }
-
 
 def _browser_save_session(ctx: ToolContext, session_name: str) -> str:
     name = (session_name or "").strip()
@@ -216,7 +205,6 @@ def _browser_save_session(ctx: ToolContext, session_name: str) -> str:
         "current_url": page.url,
     }
     return json.dumps(result, ensure_ascii=False)
-
 
 def _browser_restore_session(ctx: ToolContext, session_name: str, url: str = "") -> str:
     name = (session_name or "").strip()
@@ -240,29 +228,48 @@ def _browser_restore_session(ctx: ToolContext, session_name: str, url: str = "")
     }
     return json.dumps(result, ensure_ascii=False)
 
-
-
 def _browse_page(ctx: ToolContext, url: str, output: str = "text",
                  wait_for: str = "", timeout: int = 30000) -> str:
-    try:
+    page = None
+    def _do_browse() -> str:
+        nonlocal page
         page = _ensure_browser(ctx)
         page.goto(url, timeout=timeout, wait_until="domcontentloaded")
         if wait_for:
             page.wait_for_selector(wait_for, timeout=timeout)
+        ctx.browser_state.last_failure_diagnostics = None
         return _extract_page_output(page, output, ctx)
+
+    try:
+        return _do_browse()
     except Exception as e:
         if "cannot switch" in str(e) or "different thread" in str(e) or "greenlet" in str(e).lower():
             log.warning(f"Browser thread error detected: {e}. Resetting Playwright and retrying...")
             cleanup_browser(ctx)
             _reset_playwright_greenlet()
-            page = _ensure_browser(ctx)
-            page.goto(url, timeout=timeout, wait_until="domcontentloaded")
-            if wait_for:
-                page.wait_for_selector(wait_for, timeout=timeout)
-            return _extract_page_output(page, output, ctx)
+            return _do_browse()
+        page = page or getattr(getattr(ctx, "browser_state", None), "page", None)
+        diagnostics = None
+        if page is not None:
+            diagnostics = capture_browser_failure_diagnostics(
+                ctx,
+                page=page,
+                operation="browse_page",
+                selector_waited=wait_for,
+                attempted_selectors=[wait_for] if wait_for else [],
+                exception=e,
+            )
+        if diagnostics:
+            title = str(diagnostics.get("title", ""))
+            if len(title) > 120:
+                title = title[:120] + "... [truncated]"
+            return (
+                f"Browser failure [{diagnostics.get('probable_failure_class', 'content_not_rendered')}] during browse_page: {diagnostics.get('short_reason', 'Браузерная операция завершилась с неясной причиной.')} "
+                f"final_url={diagnostics.get('final_url', '')} title={title!r} ready_state={diagnostics.get('ready_state', '')} visible_text_size={diagnostics.get('visible_text_size', 0)} "
+                f"dom_size={diagnostics.get('dom_size', 0)} selector_waited={diagnostics.get('selector_waited') or '-'} matched_selectors={diagnostics.get('matched_selectors', [])} "
+                f"artifacts={diagnostics.get('artifacts', {})} original_error={str(e)}"
+            )
         raise
-
-
 @_with_thread_safety_retry
 def _browser_fill_login_form(
     ctx: ToolContext,
@@ -425,7 +432,6 @@ def _browser_fill_login_form(
         "error": None if not top_level_error else auth_result["post_submit_state"].get("reason"),
     }, ensure_ascii=False)
 
-
 @_with_thread_safety_retry
 def _browser_check_login_state(
     ctx: ToolContext,
@@ -529,7 +535,6 @@ def _browser_check_login_state(
     }
     return json.dumps(result, ensure_ascii=False)
 
-
 def _auto_solve_captcha_if_present(ctx, page):
     """Silently detect and solve captcha on page before submit. No-op if none found."""
     img_sel = page.evaluate(_CAPTCHA_IMG_HEURISTIC_JS)
@@ -608,10 +613,11 @@ def _auto_solve_captcha_if_present(ctx, page):
         except Exception as e:
             log.warning("auto-captcha: failed to fill input: %s", e)
 
-
 def _browser_action(ctx: ToolContext, action: str, selector: str = "",
                     value: str = "", timeout: int = 5000) -> str:
+    page = None
     def _do_action():
+        nonlocal page
         page = _ensure_browser(ctx)
 
         if action == "click":
@@ -624,30 +630,32 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
                 pass
             page.click(selector, timeout=timeout)
             page.wait_for_timeout(500)
+            ctx.browser_state.last_failure_diagnostics = None
             return f"Clicked: {selector}"
         elif action == "fill":
             if not selector:
                 return "Error: selector required for fill"
             page.fill(selector, value, timeout=timeout)
+            ctx.browser_state.last_failure_diagnostics = None
             return f"Filled {selector} with: {value}"
         elif action == "select":
             if not selector:
                 return "Error: selector required for select"
             page.select_option(selector, value, timeout=timeout)
+            ctx.browser_state.last_failure_diagnostics = None
             return f"Selected {value} in {selector}"
         elif action == "screenshot":
             data = page.screenshot(type="png", full_page=False)
             b64 = base64.b64encode(data).decode()
             ctx.browser_state.last_screenshot_b64 = b64
-            return (
-                f"Screenshot captured ({len(b64)} bytes base64). "
-                f"Call send_photo(image_base64='__last_screenshot__') to deliver it to the owner."
-            )
+            ctx.browser_state.last_failure_diagnostics = None
+            return f"Screenshot captured ({len(b64)} bytes base64). Call send_photo(image_base64='__last_screenshot__') to deliver it to the owner."
         elif action == "evaluate":
             if not value:
                 return "Error: value (JS code) required for evaluate"
             result = page.evaluate(value)
             out = str(result)
+            ctx.browser_state.last_failure_diagnostics = None
             return out[:20000] + ("... [truncated]" if len(out) > 20000 else "")
         elif action == "scroll":
             direction = value or "down"
@@ -659,10 +667,9 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
                 page.evaluate("window.scrollTo(0, 0)")
             elif direction == "bottom":
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            ctx.browser_state.last_failure_diagnostics = None
             return f"Scrolled {direction}"
-        else:
-            return f"Unknown action: {action}. Use: click, fill, select, screenshot, evaluate, scroll"
-
+        return f"Unknown action: {action}. Use: click, fill, select, screenshot, evaluate, scroll"
     try:
         return _do_action()
     except (RuntimeError, Exception) as e:
@@ -671,13 +678,28 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
             cleanup_browser(ctx)
             _reset_playwright_greenlet()
             return _do_action()
-        else:
-            raise
-
-
-# ---------------------------------------------------------------------------
-# JS helpers for captcha heuristics
-# ---------------------------------------------------------------------------
+        page = page or getattr(getattr(ctx, "browser_state", None), "page", None)
+        diagnostics = None
+        if page is not None:
+            diagnostics = capture_browser_failure_diagnostics(
+                ctx,
+                page=page,
+                operation=f"browser_action:{action}",
+                selector_waited=selector,
+                attempted_selectors=[selector] if selector else [],
+                exception=e,
+            )
+        if diagnostics:
+            title = str(diagnostics.get("title", ""))
+            if len(title) > 120:
+                title = title[:120] + "... [truncated]"
+            return (
+                f"Browser failure [{diagnostics.get('probable_failure_class', 'content_not_rendered')}] during browser_action:{action}: {diagnostics.get('short_reason', 'Браузерная операция завершилась с неясной причиной.')} "
+                f"final_url={diagnostics.get('final_url', '')} title={title!r} ready_state={diagnostics.get('ready_state', '')} visible_text_size={diagnostics.get('visible_text_size', 0)} "
+                f"dom_size={diagnostics.get('dom_size', 0)} selector_waited={diagnostics.get('selector_waited') or '-'} matched_selectors={diagnostics.get('matched_selectors', [])} "
+                f"artifacts={diagnostics.get('artifacts', {})} original_error={str(e)}"
+            )
+        raise
 
 _CAPTCHA_IMG_HEURISTIC_JS = r"""() => {
     const keywords = ['captcha', 'verify', 'code', 'vcode', 'checkcode', 'seccode', 'imgcode',
@@ -741,7 +763,6 @@ _CAPTCHA_INPUT_HEURISTIC_JS = r"""() => {
     }
     return null;
 }"""
-
 
 # ---------------------------------------------------------------------------
 # browser_solve_captcha implementation
@@ -809,7 +830,6 @@ def _capture_pre_submit_verification_attempt(ctx: ToolContext, page: Any) -> Opt
             "error": str(e),
             "reason": "captcha auto-attempt crashed before submit",
         }
-
 
 def _browser_solve_captcha(
     ctx: ToolContext,
@@ -965,7 +985,6 @@ def _browser_solve_captcha(
         "method": "", "attempts": max_retries,
         "error": "Max retries exhausted",
     }, ensure_ascii=False)
-
 
 def get_tools() -> List[ToolEntry]:
     return build_browser_tool_entries(

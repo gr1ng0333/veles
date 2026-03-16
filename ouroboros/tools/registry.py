@@ -24,6 +24,7 @@ class BrowserState:
     context: Any = None
     page: Any = None
     last_screenshot_b64: Optional[str] = None
+    last_failure_diagnostics: Optional[Dict[str, Any]] = None
     saved_sessions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     active_session_name: Optional[str] = None
 
