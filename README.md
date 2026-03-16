@@ -1,18 +1,22 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.66.0-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.66.1-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.66.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.66.1 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.66.1
+- Fixed post-restart `NameError` by importing `sanitize_owner_facing_text` into `loop.py`, restoring owner-facing message sanitization after the restart path.
+- Repaired release-state after the broken side release: `VERSION`, `pyproject.toml`, README and the live tag line now point to the current hotfix branch head instead of the stale `v6.67.0` side commit.
 
 ### 6.66.0
 - Added bounded browser recovery patterns for hostile pages: soft reload, delayed retry, scroll nudge, alternative selector retry, direct URL retry, desktop-layout retry, and text-first extraction after unstable DOM reads.
