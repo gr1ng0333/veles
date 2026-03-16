@@ -80,6 +80,7 @@ def build_browser_tool_entries(
                         },
                         "wait_for": {"type": "string", "description": "CSS selector to wait for before extraction"},
                         "timeout": {"type": "integer", "description": "Page load timeout in ms (default: 30000)"},
+                        "read_mode": {"type": "string", "enum": ["quick", "stable"], "description": "Readiness mode: quick for simple pages, stable for JS-heavy pages (default: quick)"},
                     },
                     "required": ["url"],
                 },

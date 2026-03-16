@@ -172,6 +172,154 @@ _MARKDOWN_JS = """() => {
     return walk(document.body);
 }"""
 
+
+_READINESS_STATS_JS = """() => {
+    const body = document.body;
+    const text = body ? (body.innerText || '') : '';
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    const domSize = document.documentElement ? document.documentElement.outerHTML.length : 0;
+    const visibleTextSize = normalized.length;
+    const bodyChildrenTotal = body ? body.children.length : 0;
+    const title = document.title || '';
+    const readyState = document.readyState || '';
+    const placeholderSelectors = [
+        '.skeleton', '.skeleton-loader', '.loading', '.loader', '.spinner', '[aria-busy="true"]',
+        '[data-testid*="skeleton"]', '[class*="skeleton"]', '[class*="placeholder"]', '[class*="loading"]'
+    ];
+    let placeholderCount = 0;
+    for (const sel of placeholderSelectors) {
+        try {
+            placeholderCount += document.querySelectorAll(sel).length;
+        } catch (e) {}
+    }
+    return {
+        ready_state: readyState,
+        title,
+        visible_text_size: visibleTextSize,
+        dom_size: domSize,
+        body_child_count: bodyChildrenTotal,
+        meaningful_text: normalized.slice(0, 5000),
+        has_meaningful_text: visibleTextSize >= 120,
+        loading_placeholder_count: placeholderCount,
+        url: window.location.href,
+    };
+}"""
+
+
+def _safe_readiness_stats(page: Any) -> Dict[str, Any]:
+    try:
+        stats = page.evaluate(_READINESS_STATS_JS) or {}
+    except Exception:
+        stats = {}
+    return {
+        'ready_state': str(stats.get('ready_state') or ''),
+        'title': str(stats.get('title') or ''),
+        'visible_text_size': int(stats.get('visible_text_size') or 0),
+        'dom_size': int(stats.get('dom_size') or 0),
+        'body_child_count': int(stats.get('body_child_count') or 0),
+        'meaningful_text': str(stats.get('meaningful_text') or ''),
+        'has_meaningful_text': bool(stats.get('has_meaningful_text')),
+        'loading_placeholder_count': int(stats.get('loading_placeholder_count') or 0),
+        'url': str(stats.get('url') or getattr(page, 'url', '') or ''),
+    }
+
+
+def _stabilize_browser_page(
+    page: Any,
+    *,
+    read_mode: str = 'quick',
+    selector: str = '',
+    timeout_ms: int = 5000,
+) -> Dict[str, Any]:
+    mode = (read_mode or 'quick').strip().lower()
+    selector = (selector or '').strip()
+    before_url = getattr(page, 'url', '') or ''
+    initial_stats = _safe_readiness_stats(page)
+    result: Dict[str, Any] = {
+        'read_mode': mode,
+        'initial_stats': initial_stats,
+        'selector': selector,
+        'selector_found': False,
+        'selector_wait_error': '',
+        'fallback_used': False,
+        'url_change': None,
+        'text_growth': None,
+        'meaningful_content': None,
+        'stability': None,
+    }
+
+    if selector:
+        try:
+            page.wait_for_selector(selector, timeout=min(timeout_ms, 1200), state='attached')
+            result['selector_found'] = True
+        except Exception as exc:
+            result['selector_wait_error'] = str(exc)
+
+    def _phase(kind: str, phase_timeout_ms: int, min_text_size: int = 120, require_stable: bool = False, allow_placeholders: bool = False) -> Dict[str, Any]:
+        deadline = time.monotonic() + max(phase_timeout_ms, 0) / 1000.0
+        best = _safe_readiness_stats(page)
+        prev_signature = None
+        stable_cycles = 0
+        while time.monotonic() < deadline:
+            current = _safe_readiness_stats(page)
+            if current['visible_text_size'] >= best['visible_text_size']:
+                best = current
+            signature = (
+                current['ready_state'],
+                current['dom_size'],
+                current['visible_text_size'],
+                current['loading_placeholder_count'],
+            )
+            stable_cycles = stable_cycles + 1 if signature == prev_signature else 0
+            prev_signature = signature
+            changed = bool(current.get('url')) and current.get('url') != before_url
+            grew = current['visible_text_size'] >= initial_stats['visible_text_size'] + 80
+            meaningful = current['ready_state'] in {'interactive', 'complete'} and current['visible_text_size'] >= min_text_size
+            placeholders_ok = allow_placeholders or current['loading_placeholder_count'] == 0
+            stable = (not require_stable) or (current['ready_state'] == 'complete' and placeholders_ok and stable_cycles >= 1)
+            if (kind == 'url_change' and changed) or (kind == 'text_growth' and grew) or (kind == 'meaningful' and meaningful and placeholders_ok) or (kind == 'stable' and meaningful and stable):
+                return {
+                    'ok': True,
+                    'kind': kind,
+                    'matched': True,
+                    'stats': current,
+                    'stable_cycles': stable_cycles + 1,
+                    'changed': changed,
+                    'grew': grew,
+                    'meaningful': meaningful and placeholders_ok,
+                }
+            try:
+                page.wait_for_timeout(200)
+            except Exception:
+                time.sleep(0.2)
+        return {
+            'ok': True,
+            'kind': kind,
+            'matched': False,
+            'stats': best,
+            'stable_cycles': stable_cycles,
+            'changed': bool(best.get('url')) and best.get('url') != before_url,
+            'grew': best['visible_text_size'] >= initial_stats['visible_text_size'] + 80,
+            'meaningful': best['visible_text_size'] >= min_text_size and (allow_placeholders or best['loading_placeholder_count'] == 0),
+        }
+
+    if mode == 'quick':
+        if not result['selector_found'] and selector:
+            result['meaningful_content'] = _phase('meaningful', min(timeout_ms, 1500), allow_placeholders=True)
+            result['fallback_used'] = bool(result['meaningful_content'].get('meaningful'))
+        result['final_stats'] = _safe_readiness_stats(page)
+        return result
+
+    result['url_change'] = _phase('url_change', min(timeout_ms, 1200))
+    result['text_growth'] = _phase('text_growth', min(timeout_ms, 1600))
+    result['meaningful_content'] = _phase('meaningful', timeout_ms, allow_placeholders=False)
+    result['stability'] = _phase('stable', timeout_ms, require_stable=True, allow_placeholders=False)
+    final_stats = result['stability']['stats'] if result['stability'].get('matched') else result['meaningful_content']['stats']
+    result['final_stats'] = final_stats
+    if not result['selector_found'] and selector:
+        result['fallback_used'] = bool(result['meaningful_content'].get('meaningful') or result['stability'].get('matched'))
+    return result
+
 def _ensure_playwright_installed():
     """Install Playwright and Chromium if not already available."""
     global _playwright_ready
@@ -394,15 +542,14 @@ def _extract_page_output(page: Any, output: str, ctx: ToolContext) -> str:
             f"Screenshot captured ({len(b64)} bytes base64). "
             f"Call send_photo(image_base64='__last_screenshot__') to deliver it to the owner."
         )
-    elif output == "html":
+    if output == "html":
         html = page.content()
         return html[:50000] + ("... [truncated]" if len(html) > 50000 else "")
-    elif output == "markdown":
+    if output == "markdown":
         text = page.evaluate(_MARKDOWN_JS)
         return text[:30000] + ("... [truncated]" if len(text) > 30000 else "")
-    else:
-        text = page.inner_text("body")
-        return text[:30000] + ("... [truncated]" if len(text) > 30000 else "")
+    text = page.inner_text("body")
+    return text[:30000] + ("... [truncated]" if len(text) > 30000 else "")
 
 
 

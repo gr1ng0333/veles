@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.browser_session_actions import _browser_run_actions
@@ -26,6 +26,8 @@ from ouroboros.tools.browser_runtime import (
     _post_submit_wait,
     _replace_browser_context,
     _reset_playwright_greenlet,
+    _safe_readiness_stats,
+    _stabilize_browser_page,
     cleanup_browser,
 )
 log = logging.getLogger(__name__)
@@ -68,8 +70,7 @@ def _with_thread_safety_retry(func):
                 return func(ctx, *args, **kwargs)
             raise
     return wrapper
-def _normalize_selector(value: Optional[str]) -> str:
-    return (value or "").strip()
+_normalize_selector = lambda value: (value or "").strip()
 def choose_login_field_selectors(
     username_candidates: List[Dict[str, Any]],
     password_candidates: List[Dict[str, Any]],
@@ -229,25 +230,46 @@ def _browser_restore_session(ctx: ToolContext, session_name: str, url: str = "")
     return json.dumps(result, ensure_ascii=False)
 
 def _browse_page(ctx: ToolContext, url: str, output: str = "text",
-                 wait_for: str = "", timeout: int = 30000) -> str:
+                 wait_for: str = "", timeout: int = 30000, read_mode: str = "quick") -> str:
     page = None
-    def _do_browse() -> str:
-        nonlocal page
+    try:
         page = _ensure_browser(ctx)
         page.goto(url, timeout=timeout, wait_until="domcontentloaded")
-        if wait_for:
-            page.wait_for_selector(wait_for, timeout=timeout)
+        stabilization = _stabilize_browser_page(page, read_mode=read_mode, selector=wait_for, timeout_ms=timeout)
+        if wait_for and not stabilization.get("selector_found") and not stabilization.get("fallback_used"):
+            raise TimeoutError(stabilization.get("selector_wait_error") or f"Timeout waiting for selector {wait_for}")
         ctx.browser_state.last_failure_diagnostics = None
-        return _extract_page_output(page, output, ctx)
-
-    try:
-        return _do_browse()
+        extracted = _extract_page_output(page, output, ctx)
+        if output == "screenshot" or read_mode != "stable":
+            return extracted
+        final_stats = stabilization.get("final_stats") or _safe_readiness_stats(page)
+        return (
+            f"[browser_read mode=stable fallback_used={str(bool(stabilization.get('fallback_used'))).lower()} "
+            f"selector_found={str(bool(stabilization.get('selector_found'))).lower()} ready_state={final_stats.get('ready_state','')} "
+            f"visible_text_size={final_stats.get('visible_text_size',0)} dom_size={final_stats.get('dom_size',0)} "
+            f"placeholder_count={final_stats.get('loading_placeholder_count',0)}]\n" + extracted
+        )
     except Exception as e:
         if "cannot switch" in str(e) or "different thread" in str(e) or "greenlet" in str(e).lower():
             log.warning(f"Browser thread error detected: {e}. Resetting Playwright and retrying...")
             cleanup_browser(ctx)
             _reset_playwright_greenlet()
-            return _do_browse()
+            page = _ensure_browser(ctx)
+            page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+            stabilization = _stabilize_browser_page(page, read_mode=read_mode, selector=wait_for, timeout_ms=timeout)
+            if wait_for and not stabilization.get("selector_found") and not stabilization.get("fallback_used"):
+                raise TimeoutError(stabilization.get("selector_wait_error") or f"Timeout waiting for selector {wait_for}")
+            ctx.browser_state.last_failure_diagnostics = None
+            extracted = _extract_page_output(page, output, ctx)
+            if output == "screenshot" or read_mode != "stable":
+                return extracted
+            final_stats = stabilization.get("final_stats") or _safe_readiness_stats(page)
+            return (
+                f"[browser_read mode=stable fallback_used={str(bool(stabilization.get('fallback_used'))).lower()} "
+                f"selector_found={str(bool(stabilization.get('selector_found'))).lower()} ready_state={final_stats.get('ready_state','')} "
+                f"visible_text_size={final_stats.get('visible_text_size',0)} dom_size={final_stats.get('dom_size',0)} "
+                f"placeholder_count={final_stats.get('loading_placeholder_count',0)}]\n" + extracted
+            )
         page = page or getattr(getattr(ctx, "browser_state", None), "page", None)
         diagnostics = None
         if page is not None:
@@ -616,10 +638,8 @@ def _auto_solve_captcha_if_present(ctx, page):
 def _browser_action(ctx: ToolContext, action: str, selector: str = "",
                     value: str = "", timeout: int = 5000) -> str:
     page = None
-    def _do_action():
-        nonlocal page
+    try:
         page = _ensure_browser(ctx)
-
         if action == "click":
             if not selector:
                 return "Error: selector required for click"
@@ -632,32 +652,31 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
             page.wait_for_timeout(500)
             ctx.browser_state.last_failure_diagnostics = None
             return f"Clicked: {selector}"
-        elif action == "fill":
+        if action == "fill":
             if not selector:
                 return "Error: selector required for fill"
             page.fill(selector, value, timeout=timeout)
             ctx.browser_state.last_failure_diagnostics = None
             return f"Filled {selector} with: {value}"
-        elif action == "select":
+        if action == "select":
             if not selector:
                 return "Error: selector required for select"
             page.select_option(selector, value, timeout=timeout)
             ctx.browser_state.last_failure_diagnostics = None
             return f"Selected {value} in {selector}"
-        elif action == "screenshot":
+        if action == "screenshot":
             data = page.screenshot(type="png", full_page=False)
             b64 = base64.b64encode(data).decode()
             ctx.browser_state.last_screenshot_b64 = b64
             ctx.browser_state.last_failure_diagnostics = None
             return f"Screenshot captured ({len(b64)} bytes base64). Call send_photo(image_base64='__last_screenshot__') to deliver it to the owner."
-        elif action == "evaluate":
+        if action == "evaluate":
             if not value:
                 return "Error: value (JS code) required for evaluate"
-            result = page.evaluate(value)
-            out = str(result)
+            out = str(page.evaluate(value))
             ctx.browser_state.last_failure_diagnostics = None
             return out[:20000] + ("... [truncated]" if len(out) > 20000 else "")
-        elif action == "scroll":
+        if action == "scroll":
             direction = value or "down"
             if direction == "down":
                 page.evaluate("window.scrollBy(0, 600)")
@@ -670,14 +689,12 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
             ctx.browser_state.last_failure_diagnostics = None
             return f"Scrolled {direction}"
         return f"Unknown action: {action}. Use: click, fill, select, screenshot, evaluate, scroll"
-    try:
-        return _do_action()
     except (RuntimeError, Exception) as e:
         if "cannot switch" in str(e) or "different thread" in str(e) or "greenlet" in str(e).lower():
             log.warning(f"Browser thread error detected: {e}. Resetting Playwright and retrying...")
             cleanup_browser(ctx)
             _reset_playwright_greenlet()
-            return _do_action()
+            return _browser_action(ctx, action, selector, value, timeout)
         page = page or getattr(getattr(ctx, "browser_state", None), "page", None)
         diagnostics = None
         if page is not None:
@@ -697,78 +714,10 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
                 f"Browser failure [{diagnostics.get('probable_failure_class', 'content_not_rendered')}] during browser_action:{action}: {diagnostics.get('short_reason', 'Браузерная операция завершилась с неясной причиной.')} "
                 f"final_url={diagnostics.get('final_url', '')} title={title!r} ready_state={diagnostics.get('ready_state', '')} visible_text_size={diagnostics.get('visible_text_size', 0)} "
                 f"dom_size={diagnostics.get('dom_size', 0)} selector_waited={diagnostics.get('selector_waited') or '-'} matched_selectors={diagnostics.get('matched_selectors', [])} "
-                f"artifacts={diagnostics.get('artifacts', {})} original_error={str(e)}"
+                f"artifacts=html:{diagnostics.get('html_snapshot_path','-')} text:{diagnostics.get('text_snapshot_path','-')} screenshot:{diagnostics.get('screenshot_path','-')}"
             )
-        raise
+        return f"Browser error during {action}: {e}"
 
-_CAPTCHA_IMG_HEURISTIC_JS = r"""() => {
-    const keywords = ['captcha', 'verify', 'code', 'vcode', 'checkcode', 'seccode', 'imgcode',
-        'yzm', 'yanzhengma', 'kaptcha', 'securimage', 'validation',
-        'captcha-image', 'verify-code', 'img-code', 'auth-code', 'pic-code'];
-    var found = null;
-    const imgs = Array.from(document.querySelectorAll('img'));
-    for (const img of imgs) {
-        const haystack = [
-            img.src || '',
-            img.className || '',
-            img.alt || '',
-            img.id || '',
-            img.getAttribute('name') || '',
-        ].join(' ').toLowerCase();
-        if (keywords.some(kw => haystack.includes(kw))) {
-            found = img; break;
-        }
-    }
-    if (!found) {
-        var canvases = document.querySelectorAll('canvas');
-        for (var i = 0; i < canvases.length; i++) {
-            var c = canvases[i];
-            var attrs = ((c.id || '') + ' ' + (c.className || '') + ' ' + (c.getAttribute('data-role') || '')).toLowerCase();
-            if (/captcha|verify|code|auth/.test(attrs)) { found = c; break; }
-        }
-    }
-    if (!found) {
-        var divs = document.querySelectorAll('div[style*="background"], span[style*="background"]');
-        for (var i = 0; i < divs.length; i++) {
-            var d = divs[i];
-            var style = d.getAttribute('style') || '';
-            var dattrs = ((d.id || '') + ' ' + (d.className || '')).toLowerCase();
-            if (/captcha|verify|code/.test(dattrs) && /url\(/.test(style)) { found = d; break; }
-        }
-    }
-    if (!found) return null;
-    return window.__veles_build_selector
-        ? window.__veles_build_selector(found)
-        : (found.id ? '#' + found.id : null);
-}"""
-
-_CAPTCHA_INPUT_HEURISTIC_JS = r"""() => {
-    const keywords = ['captcha', 'verify', 'code', 'vcode', 'checkcode', 'seccode', 'imgcode',
-        'yzm', 'yanzhengma', 'kaptcha', 'securimage', 'validation',
-        'captcha-image', 'verify-code', 'img-code', 'auth-code', 'pic-code'];
-    const inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
-    for (const inp of inputs) {
-        const haystack = [
-            inp.name || '',
-            inp.placeholder || '',
-            inp.id || '',
-            inp.className || '',
-            inp.getAttribute('aria-label') || '',
-        ].join(' ').toLowerCase();
-        if (keywords.some(kw => haystack.includes(kw))) {
-            return window.__veles_build_selector
-                ? window.__veles_build_selector(inp)
-                : (inp.id ? '#' + inp.id : null);
-        }
-    }
-    return null;
-}"""
-
-# ---------------------------------------------------------------------------
-# browser_solve_captcha implementation
-# ---------------------------------------------------------------------------
-
-@_with_thread_safety_retry
 def _capture_pre_submit_verification_attempt(ctx: ToolContext, page: Any) -> Optional[Dict[str, Any]]:
     try:
         captcha_check = page.evaluate(r"""(function() {
