@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 from ouroboros.tools.browser_diagnostics import capture_browser_failure_diagnostics, classify_browser_failure
 from ouroboros.tools.browser import _browse_page, _browser_action
+from ouroboros.tools.browser_runtime import _stabilize_browser_page
 from ouroboros.tools.registry import ToolContext, BrowserState
 
 
@@ -15,7 +16,7 @@ class DummyLocator:
 
 
 class DummyPage:
-    def __init__(self, *, url='https://example.com/login', title='Just a moment...', ready_state='complete', text='Verify you are human', html='<html><body>Verify you are human</body></html>', body_child_count=1, has_app_root=False, script_count=1):
+    def __init__(self, *, url='https://example.com/login', title='Just a moment...', ready_state='complete', text='Verify you are human', html='<html><body>Verify you are human</body></html>', body_child_count=1, has_app_root=False, script_count=1, loading_placeholder_count=0, dynamic_stats=None):
         self.url = url
         self._title = title
         self._ready_state = ready_state
@@ -24,7 +25,9 @@ class DummyPage:
         self._body_child_count = body_child_count
         self._has_app_root = has_app_root
         self._script_count = script_count
+        self._loading_placeholder_count = loading_placeholder_count
         self._selectors = {}
+        self._dynamic_stats = list(dynamic_stats or [])
 
     def title(self):
         return self._title
@@ -39,14 +42,34 @@ class DummyPage:
     def evaluate(self, script, arg=None):
         if script == "() => document.readyState":
             return self._ready_state
+        if script == "(sel) => !!document.querySelector(sel)":
+            return self._selectors.get(arg, False)
         if 'bodyChildCount' in script:
             return {
                 'bodyChildCount': self._body_child_count,
                 'hasRoot': self._has_app_root,
                 'scriptCount': self._script_count,
             }
-        if script == "(sel) => !!document.querySelector(sel)":
-            return self._selectors.get(arg, False)
+        if 'meaningful_text' in script and 'loading_placeholder_count' in script:
+            if self._dynamic_stats:
+                current = self._dynamic_stats.pop(0)
+                self._ready_state = current.get('ready_state', self._ready_state)
+                self._text = current.get('meaningful_text', self._text)
+                self._html = current.get('html', self._html)
+                self._loading_placeholder_count = current.get('loading_placeholder_count', self._loading_placeholder_count)
+                self.url = current.get('url', self.url)
+            normalized = ' '.join((self._text or '').split())
+            return {
+                'ready_state': self._ready_state,
+                'title': self._title,
+                'visible_text_size': len(normalized),
+                'dom_size': len(self._html),
+                'body_child_count': self._body_child_count,
+                'meaningful_text': normalized[:5000],
+                'has_meaningful_text': len(normalized) >= 120,
+                'loading_placeholder_count': self._loading_placeholder_count,
+                'url': self.url,
+            }
         raise AssertionError(f'unexpected evaluate: {script!r}')
 
     def locator(self, selector):
@@ -60,8 +83,13 @@ class DummyPage:
         self.url = url
         return None
 
-    def wait_for_selector(self, selector, timeout):
+    def wait_for_selector(self, selector, timeout, state='attached'):
+        if self._selectors.get(selector, False):
+            return object()
         raise TimeoutError(f'Timeout {timeout}ms waiting for selector {selector}')
+
+    def wait_for_timeout(self, timeout):
+        return None
 
     def click(self, selector, timeout):
         raise RuntimeError('another element would receive the click')
@@ -141,3 +169,51 @@ def test_browser_action_returns_diagnostic_message_on_click_intercept(tmp_path, 
 
     assert 'interaction_intercepted' in result
     assert ctx.browser_state.last_failure_diagnostics['probable_failure_class'] == 'interaction_intercepted'
+
+
+
+def test_stabilize_browser_page_uses_meaningful_content_fallback():
+    page = DummyPage(
+        title='Catalog',
+        text='Loading',
+        html='<html><body><div id="root">Loading</div></body></html>',
+        has_app_root=True,
+        script_count=6,
+        dynamic_stats=[
+            {'ready_state': 'interactive', 'meaningful_text': 'Loading', 'html': '<html><body><div id="root">Loading</div></body></html>', 'loading_placeholder_count': 2},
+            {'ready_state': 'complete', 'meaningful_text': 'Каталог товаров ' * 20, 'html': '<html><body><main>Каталог товаров</main></body></html>', 'loading_placeholder_count': 0},
+            {'ready_state': 'complete', 'meaningful_text': 'Каталог товаров ' * 20, 'html': '<html><body><main>Каталог товаров</main></body></html>', 'loading_placeholder_count': 0},
+            {'ready_state': 'complete', 'meaningful_text': 'Каталог товаров ' * 20, 'html': '<html><body><main>Каталог товаров</main></body></html>', 'loading_placeholder_count': 0},
+        ],
+    )
+
+    result = _stabilize_browser_page(page, read_mode='stable', selector='.product-card', timeout_ms=1000)
+
+    assert result['selector_found'] is False
+    assert result['fallback_used'] is True
+    assert result['meaningful_content']['meaningful'] is True
+
+
+def test_browse_page_stable_mode_returns_prefixed_output_on_fallback(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path)
+    page = DummyPage(
+        url='https://example.com/catalog',
+        title='Catalog',
+        text='Loading',
+        html='<html><body><div id="root">Loading</div></body></html>',
+        has_app_root=True,
+        script_count=5,
+        dynamic_stats=[
+            {'ready_state': 'interactive', 'meaningful_text': 'Loading', 'html': '<html><body><div id="root">Loading</div></body></html>', 'loading_placeholder_count': 2},
+            {'ready_state': 'complete', 'meaningful_text': 'Полезный каталог ' * 20, 'html': '<html><body><main>Полезный каталог</main></body></html>', 'loading_placeholder_count': 0},
+            {'ready_state': 'complete', 'meaningful_text': 'Полезный каталог ' * 20, 'html': '<html><body><main>Полезный каталог</main></body></html>', 'loading_placeholder_count': 0},
+            {'ready_state': 'complete', 'meaningful_text': 'Полезный каталог ' * 20, 'html': '<html><body><main>Полезный каталог</main></body></html>', 'loading_placeholder_count': 0},
+        ],
+    )
+    monkeypatch.setattr('ouroboros.tools.browser._ensure_browser', lambda _ctx: page)
+
+    result = _browse_page(ctx, url='https://example.com/catalog', wait_for='.product-card', timeout=1000, read_mode='stable')
+
+    assert result.startswith('[browser_read mode=stable')
+    assert 'fallback_used=true' in result
+    assert 'Полезный каталог' in result
