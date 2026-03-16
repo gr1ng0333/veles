@@ -158,6 +158,7 @@ def test_browse_page_returns_diagnostic_message_on_failure(tmp_path, monkeypatch
     assert 'Browser failure [' in result
     assert 'selector_waited=' in result
     assert ctx.browser_state.last_failure_diagnostics is not None
+    assert 'recovery_attempts=' in result
 
 
 def test_browser_action_returns_diagnostic_message_on_click_intercept(tmp_path, monkeypatch):
@@ -168,6 +169,7 @@ def test_browser_action_returns_diagnostic_message_on_click_intercept(tmp_path, 
     result = _browser_action(ctx, action='click', selector='#buy', timeout=1000)
 
     assert 'interaction_intercepted' in result
+    assert 'recovery_attempts=' in result
     assert ctx.browser_state.last_failure_diagnostics['probable_failure_class'] == 'interaction_intercepted'
 
 

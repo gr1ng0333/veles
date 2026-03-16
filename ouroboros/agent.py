@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 from ouroboros.utils import (
     utc_now_iso, read_text, append_jsonl,
     safe_relpath, truncate_for_log,
-    get_git_info, sanitize_task_for_event,
+    get_git_info, sanitize_owner_facing_text, sanitize_task_for_event,
 )
 from ouroboros.llm import LLMClient, add_usage
 from ouroboros.model_modes import get_runtime_diagnostics, sync_mode_env_from_state
@@ -574,7 +574,7 @@ class OuroborosAgent:
             "task_type": task.get("type"),
             "ok": True,
             "response_len": len(text),
-            "response_text": (text or "")[:1000],
+            "response_text": sanitize_owner_facing_text(text or "")[:1000],
             "cost_usd": effective_cost,
             "total_rounds": int(usage.get("rounds") or 0),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
@@ -663,10 +663,13 @@ class OuroborosAgent:
         self._last_progress_ts = time.time()
         if self._event_queue is None or self._current_chat_id is None:
             return
+        safe_text = sanitize_owner_facing_text(text or "")
+        if not safe_text.strip():
+            return
         try:
             self._event_queue.put({
                 "type": "send_message", "chat_id": self._current_chat_id,
-                "text": f"💬 {text}", "format": "markdown", "is_progress": True,
+                "text": f"💬 {safe_text}", "format": "markdown", "is_progress": True,
                 "ts": utc_now_iso(),
             })
         except Exception:
