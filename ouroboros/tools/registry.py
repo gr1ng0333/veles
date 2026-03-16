@@ -25,6 +25,7 @@ class BrowserState:
     page: Any = None
     last_screenshot_b64: Optional[str] = None
     last_failure_diagnostics: Optional[Dict[str, Any]] = None
+    last_recovery_attempts: List[Dict[str, Any]] = field(default_factory=list)
     saved_sessions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     active_session_name: Optional[str] = None
 

@@ -271,12 +271,39 @@ _SECRET_PATTERNS = _re.compile(
 )
 
 
-def sanitize_tool_result_for_log(result: str) -> str:
-    """Redact potential secrets from tool result before logging."""
-    if not isinstance(result, str) or len(result) < 20:
+def sanitize_tool_result_for_log(result: str, *, owner_facing: bool = False) -> str:
+    """Redact potential secrets from tool result before logging or owner-facing send."""
+    if not isinstance(result, str):
+        result = "" if result is None else str(result)
+    if owner_facing:
+        sanitized = result
+        for pattern in _TOOL_LEAK_PATTERNS:
+            sanitized = pattern.sub("", sanitized)
+        leak_markers = ('to=functions.', 'to=multi_tool_use.', '"tool_uses"', '"recipient_name"')
+        if any(marker in sanitized for marker in leak_markers):
+            sanitized = "\n".join(
+                line for line in sanitized.splitlines()
+                if not any(marker in line for marker in leak_markers)
+                and not line.strip().startswith('"parameters"')
+                and not line.strip().startswith('"cmd"')
+            )
+        result = _re.sub(r"\n{3,}", "\n\n", sanitized).strip()
+    if len(result) < 20:
         return result
     return _SECRET_PATTERNS.sub("***REDACTED***", result)
 
+
+_TOOL_LEAK_PATTERNS = [
+    _re.compile(r'(?m)^\s*to=functions\.[^\n]*$'),
+    _re.compile(r'(?m)^\s*to=multi_tool_use\.[^\n]*$'),
+    _re.compile(r'(?m)^\s*"recipient_name"\s*:\s*.*$'),
+    _re.compile(r'(?m)^\s*"parameters"\s*:\s*.*$'),
+    _re.compile(r'(?m)^\s*"cmd"\s*:\s*.*$'),
+    _re.compile(r'(?ms)^\{\s*"tool_uses"\s*:\s*\[.*?\}\s*$'),
+]
+
+
+sanitize_owner_facing_text = lambda text: sanitize_tool_result_for_log(text, owner_facing=True)
 
 def sanitize_tool_args_for_log(
     fn_name: str, args: Dict[str, Any], threshold: int = 3000,

@@ -500,9 +500,10 @@ def _handle_text_response(
 
     Returns: (final_text, accumulated_usage, llm_trace)
     """
-    if content and content.strip():
-        llm_trace["assistant_notes"].append(content.strip()[:320])
-    return (content or ""), accumulated_usage, llm_trace
+    final_text = sanitize_owner_facing_text(content or "")
+    if final_text.strip():
+        llm_trace["assistant_notes"].append(final_text.strip()[:320])
+    return final_text, accumulated_usage, llm_trace
 
 def _check_budget_limits(
     budget_remaining_usd: Optional[float],

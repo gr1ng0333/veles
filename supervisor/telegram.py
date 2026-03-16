@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from supervisor.state import load_state, save_state, append_jsonl
+from ouroboros.utils import sanitize_owner_facing_text
 
 log = logging.getLogger(__name__)
 
@@ -455,18 +456,20 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
                      is_progress: bool = False) -> None:
     st = load_state()
     owner_id = int(st.get("owner_id") or 0)
+    safe_text = sanitize_owner_facing_text(str(text or ""))
+    safe_log_text = sanitize_owner_facing_text(str(log_text)) if log_text is not None else safe_text
     # Progress messages go to progress.jsonl instead of chat.jsonl
     # This keeps chat history clean for context building
     if is_progress:
         append_jsonl(DRIVE_ROOT / "logs" / "progress.jsonl", {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "direction": "out", "chat_id": chat_id, "user_id": owner_id,
-            "text": text if log_text is None else log_text,
+            "text": safe_log_text,
         })
     else:
-        log_chat("out", chat_id, owner_id, text if log_text is None else log_text)
+        log_chat("out", chat_id, owner_id, safe_log_text)
     budget = budget_line(force=force_budget)
-    _text = str(text or "")
+    _text = safe_text
     if not budget:
         if _text.strip() in ("", "\u200b"):
             return

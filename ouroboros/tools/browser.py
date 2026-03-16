@@ -49,6 +49,7 @@ from ouroboros.tools.browser_auth_flow import (
 )
 from ouroboros.tools.browser_tool_defs import build_browser_tool_entries
 from ouroboros.tools.browser_diagnostics import capture_browser_failure_diagnostics
+from ouroboros.tools.browser_recovery import recover_browser_operation
 from ouroboros.tools.captcha_solver import solve_captcha_image
 def _with_thread_safety_retry(func):
     """Retry browser operation if Playwright thread mismatch detected."""
@@ -129,10 +130,18 @@ def _safe_selector_presence(page: Any, selector: str, timeout: int) -> bool:
     except Exception:
         return False
 
-def _login_json_error(message: str, *, error: str, **extra: Any) -> str:
-    payload = {"success": False, "message": message, "error": error}
-    payload.update(extra)
-    return json.dumps(payload, ensure_ascii=False)
+
+
+def _session_snapshot(context: Any) -> Dict[str, Any]:
+    state = context.storage_state()
+    cookies = list(state.get("cookies") or [])
+    origins = list(state.get("origins") or [])
+    return {
+        "storage_state": state,
+        "cookies_count": len(cookies),
+        "origins_count": len(origins),
+    }
+
 
 def _advance_multi_step_login(
     page: Any,
@@ -181,15 +190,7 @@ def _advance_multi_step_login(
         }
     return {"ok": True, "submit": next_result, "chosen": chosen2, "pass_sel": pass_sel, "step_result": {"step": "username_submit", **next_result}}
 
-def _session_snapshot(context: Any) -> Dict[str, Any]:
-    state = context.storage_state()
-    cookies = list(state.get("cookies") or [])
-    origins = list(state.get("origins") or [])
-    return {
-        "storage_state": state,
-        "cookies_count": len(cookies),
-        "origins_count": len(origins),
-    }
+
 
 def _browser_save_session(ctx: ToolContext, session_name: str) -> str:
     name = (session_name or "").strip()
@@ -239,6 +240,7 @@ def _browse_page(ctx: ToolContext, url: str, output: str = "text",
         if wait_for and not stabilization.get("selector_found") and not stabilization.get("fallback_used"):
             raise TimeoutError(stabilization.get("selector_wait_error") or f"Timeout waiting for selector {wait_for}")
         ctx.browser_state.last_failure_diagnostics = None
+        ctx.browser_state.last_recovery_attempts = []
         extracted = _extract_page_output(page, output, ctx)
         if output == "screenshot" or read_mode != "stable":
             return extracted
@@ -260,6 +262,7 @@ def _browse_page(ctx: ToolContext, url: str, output: str = "text",
             if wait_for and not stabilization.get("selector_found") and not stabilization.get("fallback_used"):
                 raise TimeoutError(stabilization.get("selector_wait_error") or f"Timeout waiting for selector {wait_for}")
             ctx.browser_state.last_failure_diagnostics = None
+            ctx.browser_state.last_recovery_attempts = []
             extracted = _extract_page_output(page, output, ctx)
             if output == "screenshot" or read_mode != "stable":
                 return extracted
@@ -281,15 +284,33 @@ def _browse_page(ctx: ToolContext, url: str, output: str = "text",
                 attempted_selectors=[wait_for] if wait_for else [],
                 exception=e,
             )
-        if diagnostics:
+        if diagnostics and page is not None:
+            recovery = recover_browser_operation(
+                ctx,
+                page=page,
+                diagnostics=diagnostics,
+                operation="browse_page",
+                original_url=url,
+                output=output,
+                read_mode=read_mode,
+                selector=wait_for,
+                timeout_ms=timeout,
+            )
+            ctx.browser_state.last_recovery_attempts = list(recovery.get("attempts") or [])
+            if recovery.get("recovered"):
+                ctx.browser_state.last_failure_diagnostics = None
+                return recovery["result"]
+            diagnostics["recovery_attempts"] = ctx.browser_state.last_recovery_attempts
+            ctx.browser_state.last_failure_diagnostics = diagnostics
             title = str(diagnostics.get("title", ""))
             if len(title) > 120:
                 title = title[:120] + "... [truncated]"
+            recovery_summary = ', '.join(f"{item.get('strategy','?')}:{item.get('status','unknown')}" for item in ctx.browser_state.last_recovery_attempts) or '-'
             return (
                 f"Browser failure [{diagnostics.get('probable_failure_class', 'content_not_rendered')}] during browse_page: {diagnostics.get('short_reason', 'Браузерная операция завершилась с неясной причиной.')} "
                 f"final_url={diagnostics.get('final_url', '')} title={title!r} ready_state={diagnostics.get('ready_state', '')} visible_text_size={diagnostics.get('visible_text_size', 0)} "
                 f"dom_size={diagnostics.get('dom_size', 0)} selector_waited={diagnostics.get('selector_waited') or '-'} matched_selectors={diagnostics.get('matched_selectors', [])} "
-                f"artifacts={diagnostics.get('artifacts', {})} original_error={str(e)}"
+                f"recovery_attempts={recovery_summary} artifacts={diagnostics.get('artifacts', {})} original_error={str(e)}"
             )
         raise
 @_with_thread_safety_retry
@@ -651,30 +672,35 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
             page.click(selector, timeout=timeout)
             page.wait_for_timeout(500)
             ctx.browser_state.last_failure_diagnostics = None
+            ctx.browser_state.last_recovery_attempts = []
             return f"Clicked: {selector}"
         if action == "fill":
             if not selector:
                 return "Error: selector required for fill"
             page.fill(selector, value, timeout=timeout)
             ctx.browser_state.last_failure_diagnostics = None
+            ctx.browser_state.last_recovery_attempts = []
             return f"Filled {selector} with: {value}"
         if action == "select":
             if not selector:
                 return "Error: selector required for select"
             page.select_option(selector, value, timeout=timeout)
             ctx.browser_state.last_failure_diagnostics = None
+            ctx.browser_state.last_recovery_attempts = []
             return f"Selected {value} in {selector}"
         if action == "screenshot":
             data = page.screenshot(type="png", full_page=False)
             b64 = base64.b64encode(data).decode()
             ctx.browser_state.last_screenshot_b64 = b64
             ctx.browser_state.last_failure_diagnostics = None
+            ctx.browser_state.last_recovery_attempts = []
             return f"Screenshot captured ({len(b64)} bytes base64). Call send_photo(image_base64='__last_screenshot__') to deliver it to the owner."
         if action == "evaluate":
             if not value:
                 return "Error: value (JS code) required for evaluate"
             out = str(page.evaluate(value))
             ctx.browser_state.last_failure_diagnostics = None
+            ctx.browser_state.last_recovery_attempts = []
             return out[:20000] + ("... [truncated]" if len(out) > 20000 else "")
         if action == "scroll":
             direction = value or "down"
@@ -687,6 +713,7 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
             elif direction == "bottom":
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             ctx.browser_state.last_failure_diagnostics = None
+            ctx.browser_state.last_recovery_attempts = []
             return f"Scrolled {direction}"
         return f"Unknown action: {action}. Use: click, fill, select, screenshot, evaluate, scroll"
     except (RuntimeError, Exception) as e:
@@ -706,15 +733,31 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
                 attempted_selectors=[selector] if selector else [],
                 exception=e,
             )
-        if diagnostics:
+        if diagnostics and page is not None:
+            recovery = recover_browser_operation(
+                ctx,
+                page=page,
+                diagnostics=diagnostics,
+                operation=action,
+                selector=selector,
+                value=value,
+                timeout_ms=timeout,
+            )
+            ctx.browser_state.last_recovery_attempts = list(recovery.get("attempts") or [])
+            if recovery.get("recovered"):
+                ctx.browser_state.last_failure_diagnostics = None
+                return recovery["result"]
+            diagnostics["recovery_attempts"] = ctx.browser_state.last_recovery_attempts
+            ctx.browser_state.last_failure_diagnostics = diagnostics
             title = str(diagnostics.get("title", ""))
             if len(title) > 120:
                 title = title[:120] + "... [truncated]"
+            recovery_summary = ', '.join(f"{item.get('strategy','?')}:{item.get('status','unknown')}" for item in ctx.browser_state.last_recovery_attempts) or '-'
             return (
                 f"Browser failure [{diagnostics.get('probable_failure_class', 'content_not_rendered')}] during browser_action:{action}: {diagnostics.get('short_reason', 'Браузерная операция завершилась с неясной причиной.')} "
                 f"final_url={diagnostics.get('final_url', '')} title={title!r} ready_state={diagnostics.get('ready_state', '')} visible_text_size={diagnostics.get('visible_text_size', 0)} "
                 f"dom_size={diagnostics.get('dom_size', 0)} selector_waited={diagnostics.get('selector_waited') or '-'} matched_selectors={diagnostics.get('matched_selectors', [])} "
-                f"artifacts=html:{diagnostics.get('html_snapshot_path','-')} text:{diagnostics.get('text_snapshot_path','-')} screenshot:{diagnostics.get('screenshot_path','-')}"
+                f"recovery_attempts={recovery_summary} artifacts={diagnostics.get('artifacts', {})} original_error={str(e)}"
             )
         return f"Browser error during {action}: {e}"
 
