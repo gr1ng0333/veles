@@ -14,6 +14,10 @@
 
 ## Changelog
 
+### 6.68.0
+- Added incoming file inbox: Telegram files are archived under `artifacts/inbox`; files without caption stay deferred until explicitly requested.
+- Added `list_incoming_artifacts` tool for reviewing recent uploaded files before activation.
+
 ### 6.67.0
 - Added persistent local artifact storage under `/opt/veles-data/artifacts/outbox/...` for owner-facing files, so generated Python solutions, plans, markdown and txt documents are archived with metadata instead of disappearing after delivery.
 - Added native `save_artifact` tool for explicitly saving text/code/plan artifacts to the local store, and wired `send_document` / `send_documents` to archive outgoing files automatically before Telegram delivery.

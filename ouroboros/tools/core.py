@@ -12,7 +12,7 @@ import uuid
 from functools import partial
 from typing import Any, Dict, List, Tuple
 
-from ouroboros.artifacts import save_artifact
+from ouroboros.artifacts import list_incoming_artifacts, save_artifact
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import read_text, safe_relpath, utc_now_iso
 
@@ -498,6 +498,17 @@ def get_tools() -> List[ToolEntry]:
                 "note": {"type": "string", "description": "Короткая заметка о происхождении артефакта"}
             }, "required": ["content", "filename"]},
         }, save_artifact),
+
+        ToolEntry("list_incoming_artifacts", {
+            "name": "list_incoming_artifacts",
+            "description": "Показать последние входящие файлы, сохранённые в artifacts/inbox. Используется для сценариев вроде: посмотреть 10 последних загруженных файлов и потом явно выбрать, что с ними делать.",
+            "parameters": {"type": "object", "properties": {
+                "limit": {"type": "integer", "description": "Сколько последних файлов показать", "default": 10},
+                "chat_id": {"type": "integer", "description": "Необязательный chat_id для фильтрации"},
+                "content_kind": {"type": "string", "description": "Фильтр по content_kind, например incoming или pdf"},
+                "filename_contains": {"type": "string", "description": "Подстрока в имени файла"}
+            }, "required": []},
+        }, list_incoming_artifacts),
 
         ToolEntry("send_document", {
             "name": "send_document",

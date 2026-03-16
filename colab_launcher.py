@@ -12,6 +12,7 @@ install_launcher_deps()
 from ouroboros.apply_patch import install as install_apply_patch
 from ouroboros.llm import DEFAULT_LIGHT_MODEL
 from ouroboros.model_modes import bootstrap_mode_env, get_active_mode, mode_summary_text, persist_active_mode
+from ouroboros.artifacts import save_incoming_artifact
 install_apply_patch()
 _LEGACY_CFG_WARNED: Set[str] = set()
 def _userdata_get(key: str) -> Optional[str]:
@@ -204,8 +205,11 @@ def _is_supported_image_mime(mime_type: str) -> bool:
     return mime.startswith('image/')
 
 
-def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramClient, chat_id: int) -> Tuple[Optional[str], Optional[Tuple[str, str, str]], bool]:
+def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramClient, chat_id: int, drive_root: pathlib.Path, message_id: int = 0) -> Tuple[Optional[str], Optional[Tuple[str, str, str]], bool]:
     """Normalize Telegram document into either text augmentation or image payload.
+
+    New rule: every incoming file is archived to artifacts/inbox first.
+    Files without caption stay deferred in inbox and are not injected into LLM context.
 
     Returns: (text_override, image_data, handled)
     handled=False means unsupported and caller should stop processing.
@@ -214,6 +218,7 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
     file_name = str(doc.get('file_name') or 'file')
     file_ext = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else ''
     file_id = doc.get('file_id')
+    has_caption = bool((caption or '').strip())
     text_extensions = {
         'py', 'txt', 'md', 'json', 'csv', 'yaml', 'yml', 'toml',
         'cfg', 'ini', 'sh', 'bash', 'js', 'ts', 'html', 'css',
@@ -221,70 +226,108 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
     }
     image_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}
 
+    def _archive(raw_b64: str, detected_mime: str, kind: str) -> None:
+        meta = save_incoming_artifact(
+            drive_root,
+            filename=file_name,
+            file_base64=raw_b64,
+            content_kind=kind,
+            mime_type=detected_mime or mime_type or 'application/octet-stream',
+            chat_id=chat_id,
+            caption=caption,
+            metadata={
+                'message_id': int(message_id or 0),
+                'telegram_file_id': file_id or '',
+                'activation_mode': 'immediate' if has_caption else 'deferred',
+            },
+        )
+        if isinstance(meta, dict) and not has_caption:
+            send_with_budget(
+                chat_id,
+                f"📥 Файл сохранён во входящий архив и пока не отправлен в обработку: {file_name}\n"
+                "Можешь потом сказать: посмотри 10 последних загруженных файлов."
+            )
+
     if (_is_supported_image_mime(mime_type) or file_ext in image_extensions) and file_id:
-        b64, mime = tg.download_file_base64(file_id)
-        if b64:
-            return None, (b64, mime, caption), True
-        return None, None, False
+        b64, detected_mime = tg.download_file_base64(file_id)
+        if not b64:
+            return None, None, False
+        _archive(b64, detected_mime, 'image')
+        if has_caption:
+            return None, (b64, detected_mime, caption), True
+        return None, None, True
 
     if (file_ext in text_extensions or mime_type.startswith('text/')) and file_id:
-        raw_b64, _ = tg.download_file_base64(file_id)
-        if raw_b64:
-            import base64 as _b64mod
-            file_bytes = _b64mod.b64decode(raw_b64)
-            try:
-                text_content = file_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                text_content = file_bytes.decode('latin-1')
-            max_file_content = 80000
-            if len(text_content) > max_file_content:
-                text_content = text_content[:max_file_content] + f'\n\n... (обрезано, всего {len(text_content)} символов)'
-            user_text = caption or ''
-            payload = f"{user_text}\n\n📎 Файл: {file_name}\n```{file_ext}\n{text_content}\n```"
-            return payload.strip(), None, True
-        return None, None, False
+        raw_b64, detected_mime = tg.download_file_base64(file_id)
+        if not raw_b64:
+            return None, None, False
+        _archive(raw_b64, detected_mime, 'incoming')
+        if not has_caption:
+            return None, None, True
+        import base64 as _b64mod
+        file_bytes = _b64mod.b64decode(raw_b64)
+        try:
+            text_content = file_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            text_content = file_bytes.decode('latin-1')
+        max_file_content = 80000
+        full_len = len(text_content)
+        if full_len > max_file_content:
+            text_content = text_content[:max_file_content] + f'\n\n... (обрезано, всего {full_len} символов)'
+        user_text = caption or ''
+        payload = f"{user_text}\n\n📎 Файл: {file_name}\n```{file_ext}\n{text_content}\n```"
+        return payload.strip(), None, True
 
     if file_ext == 'pdf' and file_id:
-        raw_b64, _ = tg.download_file_base64(file_id)
-        if raw_b64:
-            import base64 as _b64mod
-            import tempfile as _tmpmod
-            file_bytes = _b64mod.b64decode(raw_b64)
-            pdf_text = None
-            tmp_path = None
+        raw_b64, detected_mime = tg.download_file_base64(file_id)
+        if not raw_b64:
+            return None, None, False
+        _archive(raw_b64, detected_mime or 'application/pdf', 'pdf')
+        if not has_caption:
+            return None, None, True
+        import base64 as _b64mod
+        import tempfile as _tmpmod
+        file_bytes = _b64mod.b64decode(raw_b64)
+        pdf_text = None
+        tmp_path = None
+        try:
+            with _tmpmod.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
             try:
-                with _tmpmod.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                    tmp.write(file_bytes)
-                    tmp_path = tmp.name
+                import pdfplumber
+                with pdfplumber.open(tmp_path) as pdf:
+                    pdf_text = '\n\n'.join(page.extract_text() or '' for page in pdf.pages)
+            except ImportError:
                 try:
-                    import pdfplumber
-                    with pdfplumber.open(tmp_path) as pdf:
-                        pdf_text = '\n\n'.join(page.extract_text() or '' for page in pdf.pages)
+                    from PyPDF2 import PdfReader
+                    reader = PdfReader(tmp_path)
+                    pdf_text = '\n\n'.join(page.extract_text() or '' for page in reader.pages)
                 except ImportError:
-                    try:
-                        from PyPDF2 import PdfReader
-                        reader = PdfReader(tmp_path)
-                        pdf_text = '\n\n'.join(page.extract_text() or '' for page in reader.pages)
-                    except ImportError:
-                        pdf_text = None
-            finally:
-                if tmp_path:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-            if pdf_text:
-                max_file_content = 80000
-                if len(pdf_text) > max_file_content:
-                    pdf_text = pdf_text[:max_file_content] + '\n\n... (обрезано)'
-                user_text = caption or ''
-                payload = f"{user_text}\n\n📎 PDF: {file_name}\n{pdf_text}"
-                return payload.strip(), None, True
+                    pdf_text = None
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        if pdf_text:
+            max_file_content = 80000
+            if len(pdf_text) > max_file_content:
+                pdf_text = pdf_text[:max_file_content] + '\n\n... (обрезано)'
+            user_text = caption or ''
+            payload = f"{user_text}\n\n📎 PDF: {file_name}\n{pdf_text}"
+            return payload.strip(), None, True
         send_with_budget(chat_id, '⚠️ Не удалось извлечь текст из PDF. Установите pdfplumber или PyPDF2.')
         return None, None, False
 
-    send_with_budget(chat_id, f'⚠️ Формат .{file_ext or "bin"} не поддерживается. Поддерживаются: текст, PDF, картинки.')
-    return None, None, False
+    raw_b64, detected_mime = tg.download_file_base64(file_id) if file_id else (None, '')
+    if raw_b64:
+        _archive(raw_b64, detected_mime, 'binary')
+        if not has_caption:
+            return None, None, True
+    send_with_budget(chat_id, f'⚠️ Формат .{file_ext or "bin"} не поддерживается для немедленной обработки. Файл сохранён во входящий архив.')
+    return None, None, True
 # ----------------------------
 # 5) Bootstrap repo
 # ----------------------------
@@ -744,7 +787,7 @@ while True:
                     continue
         elif msg.get("document"):
             doc = msg["document"]
-            text_override, doc_image_data, handled = _document_to_text_payload(doc, caption, TG, chat_id)
+            text_override, doc_image_data, handled = _document_to_text_payload(doc, caption, TG, chat_id, DRIVE_ROOT, int(msg.get("message_id") or 0))
             if not handled:
                 continue
             if text_override:
