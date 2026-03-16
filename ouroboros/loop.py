@@ -21,7 +21,7 @@ import logging
 from ouroboros.llm import LLMClient, normalize_reasoning_effort, add_usage, model_transport, transport_model_name
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
-from ouroboros.utils import utc_now_iso, append_jsonl, truncate_for_log, sanitize_tool_args_for_log, sanitize_tool_result_for_log, estimate_tokens
+from ouroboros.utils import utc_now_iso, append_jsonl, truncate_for_log, sanitize_tool_args_for_log, sanitize_tool_result_for_log, estimate_tokens, sanitize_owner_facing_text
 from ouroboros.antistagnation import (
     build_forced_finalize_reason,
     inject_stagnation_self_check,
