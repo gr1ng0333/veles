@@ -8,24 +8,22 @@ from ouroboros.artifacts import list_incoming_artifacts, save_incoming_artifact
 BOOTSTRAP_MARKER = '# ----------------------------\n# 5) Bootstrap repo'
 
 
-def _load_document_helpers():
-    source = pathlib.Path('/opt/veles/colab_launcher.py').read_text(encoding='utf-8')
-    start = source.index('def _is_supported_image_mime')
-    end = source.index(BOOTSTRAP_MARKER)
-    snippet = source[start:end]
-    ns = {
-        'Any': Any,
-        'Dict': Dict,
-        'Optional': Optional,
-        'Tuple': Tuple,
-        'pathlib': pathlib,
-        'save_incoming_artifact': save_incoming_artifact,
-        'os': __import__('os'),
-        'send_with_budget': lambda chat_id, text: None,
-        'TelegramClient': object,
-    }
-    exec(snippet, ns)
-    return ns['_document_to_text_payload']
+source = pathlib.Path('/opt/veles/colab_launcher.py').read_text(encoding='utf-8')
+start = source.index('def _document_to_text_payload')
+end = source.index(BOOTSTRAP_MARKER)
+snippet = source[start:end]
+ns = {
+    'Any': Any,
+    'Dict': Dict,
+    'Optional': Optional,
+    'Tuple': Tuple,
+    'pathlib': pathlib,
+    'save_incoming_artifact': save_incoming_artifact,
+    'os': __import__('os'),
+    'send_with_budget': lambda chat_id, text: None,
+    'TelegramClient': object,
+}
+exec(snippet, ns)
 
 
 class DummyTG:
@@ -36,7 +34,7 @@ class DummyTG:
         return self.payload_map.get(file_id, (None, ''))
 
 
-DOCUMENT_TO_TEXT = _load_document_helpers()
+DOCUMENT_TO_TEXT = ns['_document_to_text_payload']
 
 
 def test_document_without_caption_goes_only_to_inbox():

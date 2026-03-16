@@ -6,6 +6,7 @@ import json
 import pathlib
 import re
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any, Dict, Optional
 
 
@@ -96,6 +97,7 @@ def save_artifact(
     file_base64: str = '',
     content_kind: str = 'generic',
     source: str = 'tool',
+    archive_root: str = _OUTBOX_ROOT,
     task_id: str = '',
     chat_id: Optional[int] = None,
     mime_type: str = 'application/octet-stream',
@@ -109,7 +111,7 @@ def save_artifact(
     drive_root = pathlib.Path(getattr(ctx_or_root, 'drive_root', ctx_or_root))
     return _write_artifact(
         drive_root,
-        root_dir=_OUTBOX_ROOT,
+        root_dir=archive_root,
         filename=filename,
         payload=payload,
         content_kind=content_kind,
@@ -123,40 +125,7 @@ def save_artifact(
     )
 
 
-def save_incoming_artifact(
-    ctx_or_root,
-    *,
-    filename: str,
-    data: bytes | None = None,
-    content: str = '',
-    file_base64: str = '',
-    content_kind: str = 'incoming',
-    source: str = 'telegram_inbox',
-    task_id: str = '',
-    chat_id: Optional[int] = None,
-    mime_type: str = 'application/octet-stream',
-    caption: str = '',
-    related_message: str = '',
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any] | str:
-    payload = data if data is not None else (base64.b64decode(file_base64) if file_base64 else content.encode('utf-8') if content else None)
-    if payload is None:
-        return '⚠️ save_incoming_artifact requires non-empty content.'
-    drive_root = pathlib.Path(getattr(ctx_or_root, 'drive_root', ctx_or_root))
-    return _write_artifact(
-        drive_root,
-        root_dir=_INBOX_ROOT,
-        filename=filename,
-        payload=payload,
-        content_kind=content_kind,
-        source=source,
-        task_id=task_id or getattr(ctx_or_root, 'task_id', '') or '',
-        chat_id=chat_id if chat_id is not None else getattr(ctx_or_root, 'current_chat_id', None),
-        mime_type=mime_type,
-        caption=caption,
-        related_message=related_message,
-        metadata=metadata,
-    )
+save_incoming_artifact = partial(save_artifact, source='telegram_inbox')
 
 
 def list_incoming_artifacts(
