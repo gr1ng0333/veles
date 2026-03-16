@@ -12,7 +12,7 @@ install_launcher_deps()
 from ouroboros.apply_patch import install as install_apply_patch
 from ouroboros.llm import DEFAULT_LIGHT_MODEL
 from ouroboros.model_modes import bootstrap_mode_env, get_active_mode, mode_summary_text, persist_active_mode
-from ouroboros.artifacts import save_incoming_artifact
+from ouroboros.artifacts import save_incoming_artifact, schedule_inbox_confirmation
 install_apply_patch()
 _LEGACY_CFG_WARNED: Set[str] = set()
 _userdata_get = lambda key: None
@@ -219,10 +219,6 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
         'xml', 'sql', 'log', 'env', 'gitignore', 'dockerfile',
     }
     image_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}
-    inbox_note = (
-        f"📥 Файл сохранён во входящий архив и пока не отправлен в обработку: {file_name}\n"
-        "Можешь потом сказать: посмотри 10 последних загруженных файлов."
-    )
     archive = lambda raw_b64, detected_mime, kind: save_incoming_artifact(
         drive_root, filename=file_name, file_base64=raw_b64, content_kind=kind,
         mime_type=detected_mime or mime_type or 'application/octet-stream',
@@ -239,7 +235,7 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
             return None, None, False
         meta = archive(b64, detected_mime, 'image')
         if isinstance(meta, dict) and not has_caption:
-            send_with_budget(chat_id, inbox_note)
+            schedule_inbox_confirmation(chat_id, file_name, send_with_budget)
         if has_caption:
             return None, (b64, detected_mime, caption), True
         return None, None, True
@@ -250,7 +246,7 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
             return None, None, False
         meta = archive(raw_b64, detected_mime, 'incoming')
         if isinstance(meta, dict) and not has_caption:
-            send_with_budget(chat_id, inbox_note)
+            schedule_inbox_confirmation(chat_id, file_name, send_with_budget)
         if not has_caption:
             return None, None, True
         import base64 as _b64mod
@@ -273,7 +269,7 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
             return None, None, False
         meta = archive(raw_b64, detected_mime or 'application/pdf', 'pdf')
         if isinstance(meta, dict) and not has_caption:
-            send_with_budget(chat_id, inbox_note)
+            schedule_inbox_confirmation(chat_id, file_name, send_with_budget)
         if not has_caption:
             return None, None, True
         import base64 as _b64mod
@@ -314,11 +310,13 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
 
     raw_b64, detected_mime = tg.download_file_base64(file_id) if file_id else (None, '')
     if raw_b64:
-        _archive(raw_b64, detected_mime, 'binary')
+        archive(raw_b64, detected_mime, 'binary')
         if not has_caption:
+            schedule_inbox_confirmation(chat_id, file_name, send_with_budget)
             return None, None, True
     send_with_budget(chat_id, f'⚠️ Формат .{file_ext or "bin"} не поддерживается для немедленной обработки. Файл сохранён во входящий архив.')
     return None, None, True
+
 # ----------------------------
 # 5) Bootstrap repo
 # ----------------------------
@@ -532,12 +530,6 @@ _event_ctx = types.SimpleNamespace(
     sort_pending=sort_pending,
     consciousness=_consciousness,
 )
-
-def _safe_qsize(q: Any) -> int:
-    try:
-        return int(q.qsize())
-    except Exception:
-        return -1
 
 def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
     """Handle supervisor slash-commands.
@@ -890,7 +882,7 @@ while True:
                                 if _b642 and _is_supported_image_mime(_mime2):
                                     _batched_image = (_b642, _mime2, _txt2)
                             elif _msg2.get("document"):
-                                _doc_text2, _doc_img2, _doc_handled2 = _document_to_text_payload(_msg2.get("document") or {}, _txt2, TG, _cid2)
+                                _doc_text2, _doc_img2, _doc_handled2 = _document_to_text_payload(_msg2.get("document") or {}, _txt2, TG, _cid2, DRIVE_ROOT, int(_msg2.get("message_id") or 0))
                                 if _doc_text2:
                                     _batched_texts.append(_doc_text2)
                                     _batch_deadline = max(_batch_deadline, time.time() + 0.3)
@@ -962,7 +954,7 @@ while True:
                 "workers_alive": workers_alive,
                 "pending_count": len(PENDING),
                 "running_count": len(RUNNING),
-                "event_q_size": _safe_qsize(event_q),
+                "event_q_size": (int(event_q.qsize()) if hasattr(event_q, "qsize") else -1),
                 "running_task_ids": list(RUNNING.keys())[:5],
                 "spent_usd": st.get("spent_usd"),
             },
