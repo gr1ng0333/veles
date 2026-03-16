@@ -9,7 +9,108 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
-_ARTIFACT_ROOT = "artifacts/outbox"
+_OUTBOX_ROOT = "artifacts/outbox"
+_INBOX_ROOT = "artifacts/inbox"
+
+
+def _drive_root_path(ctx_or_root) -> pathlib.Path:
+    return pathlib.Path(getattr(ctx_or_root, "drive_root", ctx_or_root))
+
+
+def _task_id_from(ctx_or_root, task_id: str = "") -> str:
+    return task_id or getattr(ctx_or_root, "task_id", "") or ""
+
+
+def _chat_id_from(ctx_or_root, chat_id: Optional[int] = None) -> Optional[int]:
+    if chat_id is not None:
+        return chat_id
+    return getattr(ctx_or_root, "current_chat_id", None)
+
+
+def _slug(value: str, fallback: str) -> str:
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9._-]+", "-", (value or "").strip().lower())).strip("-._") or fallback
+
+
+def _kind_from(filename: str, mime_type: str, content_kind: str) -> str:
+    if content_kind:
+        return _slug(content_kind, 'generic')
+    suffix = pathlib.Path(filename or '').suffix.lower()
+    if suffix == '.py':
+        return 'python'
+    if suffix in {'.html', '.htm'}:
+        return 'html'
+    if suffix in {'.json', '.yaml', '.yml', '.toml', '.ini', '.cfg'}:
+        return 'config'
+    if suffix in {'.csv', '.tsv'}:
+        return 'table'
+    if suffix in {'.txt', '.md', '.rst'} or (mime_type or '').startswith('text/'):
+        return 'text'
+    return 'generic'
+
+
+def _artifact_payload(*, data: bytes | None, content: str, file_base64: str) -> bytes | None:
+    if data is not None:
+        return data
+    if file_base64:
+        return base64.b64decode(file_base64)
+    if content:
+        return content.encode('utf-8')
+    return None
+
+
+def _write_artifact(
+    drive_root: pathlib.Path,
+    *,
+    root_dir: str,
+    filename: str,
+    payload: bytes,
+    content_kind: str,
+    source: str,
+    task_id: str,
+    chat_id: Optional[int],
+    mime_type: str,
+    caption: str,
+    related_message: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    base_dir = drive_root / root_dir / now.strftime('%Y/%m/%d')
+    task_part = _slug(task_id or 'direct-chat', 'direct-chat')
+    kind_part = _kind_from(filename, mime_type, content_kind)
+    target_dir = base_dir / task_part / kind_part
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    path = pathlib.Path((filename or '').strip())
+    stem = _slug(path.stem or kind_part, kind_part)
+    suffix = path.suffix[:20].lower()
+    if not suffix or not re.fullmatch(r"\.[A-Za-z0-9._-]{1,19}", suffix):
+        suffix = '.bin'
+    file_path = target_dir / f'{stem}{suffix}'
+    if file_path.exists():
+        digest = hashlib.sha256(payload).hexdigest()[:10]
+        file_path = target_dir / f'{stem}-{digest}{suffix}'
+
+    file_path.write_bytes(payload)
+    meta = {
+        'ts': now.isoformat(),
+        'filename': file_path.name,
+        'relative_path': str(file_path.relative_to(drive_root)),
+        'bytes': len(payload),
+        'sha256': hashlib.sha256(payload).hexdigest(),
+        'mime_type': mime_type,
+        'content_kind': content_kind,
+        'source': source,
+        'task_id': task_id or '',
+        'chat_id': int(chat_id or 0),
+        'caption': caption or '',
+        'related_message': related_message or '',
+    }
+    if metadata:
+        meta['metadata'] = metadata
+    file_path.with_suffix(file_path.suffix + '.meta.json').write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
+    return meta
 
 
 def save_artifact(
@@ -17,59 +118,106 @@ def save_artifact(
     *,
     filename: str,
     data: bytes | None = None,
-    content: str = "",
-    file_base64: str = "",
-    content_kind: str = "generic",
-    source: str = "tool",
-    task_id: str = "",
+    content: str = '',
+    file_base64: str = '',
+    content_kind: str = 'generic',
+    source: str = 'tool',
+    task_id: str = '',
     chat_id: Optional[int] = None,
-    mime_type: str = "application/octet-stream",
-    caption: str = "",
-    related_message: str = "",
+    mime_type: str = 'application/octet-stream',
+    caption: str = '',
+    related_message: str = '',
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any] | str:
-    drive_root = getattr(ctx_or_root, "drive_root", ctx_or_root)
-    task_id = task_id or getattr(ctx_or_root, "task_id", "") or ""
-    chat_id = chat_id if chat_id is not None else getattr(ctx_or_root, "current_chat_id", None)
-    if not content and data is None and not file_base64:
-        return "⚠️ save_artifact requires non-empty content."
-    payload = data if data is not None else (base64.b64decode(file_base64) if file_base64 else content.encode("utf-8"))
-    now = datetime.now(timezone.utc)
-    base_dir = pathlib.Path(drive_root) / _ARTIFACT_ROOT / now.strftime("%Y/%m/%d")
-    task_part = (re.sub(r"-+", "-", re.sub(r"[^a-z0-9._-]+", "-", (task_id or "direct-chat").strip().lower())).strip("-._") or "direct-chat")
-    kind_part = (content_kind or ("python" if pathlib.Path(filename or "").suffix.lower() == ".py" else "html" if pathlib.Path(filename or "").suffix.lower() in {".html", ".htm"} else "config" if pathlib.Path(filename or "").suffix.lower() in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"} else "table" if pathlib.Path(filename or "").suffix.lower() in {".csv", ".tsv"} else "text" if pathlib.Path(filename or "").suffix.lower() in {".txt", ".md", ".rst"} or mime_type.startswith("text/") else "generic"))
-    kind_part = re.sub(r"-+", "-", re.sub(r"[^a-z0-9._-]+", "-", kind_part.strip().lower())).strip("-._") or "generic"
-    target_dir = base_dir / task_part / kind_part
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    path = pathlib.Path((filename or "").strip())
-    stem = re.sub(r"-+", "-", re.sub(r"[^a-z0-9._-]+", "-", (path.stem or kind_part).strip().lower())).strip("-._") or kind_part
-    suffix = path.suffix[:20].lower()
-    if not suffix or not re.fullmatch(r"\.[A-Za-z0-9._-]{1,19}", suffix):
-        suffix = ".bin"
-    file_path = target_dir / f"{stem}{suffix}"
-    if file_path.exists():
-        digest = hashlib.sha256(payload).hexdigest()[:10]
-        file_path = target_dir / f"{stem}-{digest}{suffix}"
-
-    file_path.write_bytes(payload)
-    meta = {
-        "ts": now.isoformat(),
-        "filename": file_path.name,
-        "relative_path": str(file_path.relative_to(drive_root)),
-        "bytes": len(payload),
-        "sha256": hashlib.sha256(payload).hexdigest(),
-        "mime_type": mime_type,
-        "content_kind": content_kind,
-        "source": source,
-        "task_id": task_id or "",
-        "chat_id": int(chat_id or 0),
-        "caption": caption or "",
-        "related_message": related_message or "",
-    }
-    if metadata:
-        meta["metadata"] = metadata
-    file_path.with_suffix(file_path.suffix + ".meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    payload = _artifact_payload(data=data, content=content, file_base64=file_base64)
+    if payload is None:
+        return '⚠️ save_artifact requires non-empty content.'
+    drive_root = _drive_root_path(ctx_or_root)
+    return _write_artifact(
+        drive_root,
+        root_dir=_OUTBOX_ROOT,
+        filename=filename,
+        payload=payload,
+        content_kind=content_kind,
+        source=source,
+        task_id=_task_id_from(ctx_or_root, task_id),
+        chat_id=_chat_id_from(ctx_or_root, chat_id),
+        mime_type=mime_type,
+        caption=caption,
+        related_message=related_message,
+        metadata=metadata,
     )
-    return meta
+
+
+def save_incoming_artifact(
+    ctx_or_root,
+    *,
+    filename: str,
+    data: bytes | None = None,
+    content: str = '',
+    file_base64: str = '',
+    content_kind: str = 'incoming',
+    source: str = 'telegram_inbox',
+    task_id: str = '',
+    chat_id: Optional[int] = None,
+    mime_type: str = 'application/octet-stream',
+    caption: str = '',
+    related_message: str = '',
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any] | str:
+    payload = _artifact_payload(data=data, content=content, file_base64=file_base64)
+    if payload is None:
+        return '⚠️ save_incoming_artifact requires non-empty content.'
+    drive_root = _drive_root_path(ctx_or_root)
+    return _write_artifact(
+        drive_root,
+        root_dir=_INBOX_ROOT,
+        filename=filename,
+        payload=payload,
+        content_kind=content_kind,
+        source=source,
+        task_id=_task_id_from(ctx_or_root, task_id),
+        chat_id=_chat_id_from(ctx_or_root, chat_id),
+        mime_type=mime_type,
+        caption=caption,
+        related_message=related_message,
+        metadata=metadata,
+    )
+
+
+def list_incoming_artifacts(
+    ctx_or_root,
+    *,
+    limit: int = 10,
+    chat_id: Optional[int] = None,
+    content_kind: str = '',
+    filename_contains: str = '',
+) -> Dict[str, Any]:
+    drive_root = _drive_root_path(ctx_or_root)
+    inbox_root = drive_root / _INBOX_ROOT
+    target_chat = _chat_id_from(ctx_or_root, chat_id)
+    limit = max(1, min(int(limit or 10), 100))
+    kind_filter = (content_kind or '').strip().lower()
+    name_filter = (filename_contains or '').strip().lower()
+    items = []
+    if inbox_root.exists():
+        for meta_path in inbox_root.rglob('*.meta.json'):
+            try:
+                meta = json.loads(meta_path.read_text(encoding='utf-8'))
+            except Exception:
+                continue
+            if target_chat is not None and int(meta.get('chat_id') or 0) != int(target_chat):
+                continue
+            if kind_filter and str(meta.get('content_kind') or '').strip().lower() != kind_filter:
+                continue
+            if name_filter and name_filter not in str(meta.get('filename') or '').strip().lower():
+                continue
+            items.append(meta)
+    items.sort(key=lambda item: str(item.get('ts') or ''), reverse=True)
+    result = items[:limit]
+    return {
+        'status': 'ok',
+        'count': len(result),
+        'total_matches': len(items),
+        'items': result,
+    }
