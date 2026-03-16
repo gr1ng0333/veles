@@ -13,49 +13,8 @@ _OUTBOX_ROOT = "artifacts/outbox"
 _INBOX_ROOT = "artifacts/inbox"
 
 
-def _drive_root_path(ctx_or_root) -> pathlib.Path:
-    return pathlib.Path(getattr(ctx_or_root, "drive_root", ctx_or_root))
-
-
-def _task_id_from(ctx_or_root, task_id: str = "") -> str:
-    return task_id or getattr(ctx_or_root, "task_id", "") or ""
-
-
-def _chat_id_from(ctx_or_root, chat_id: Optional[int] = None) -> Optional[int]:
-    if chat_id is not None:
-        return chat_id
-    return getattr(ctx_or_root, "current_chat_id", None)
-
-
 def _slug(value: str, fallback: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9._-]+", "-", (value or "").strip().lower())).strip("-._") or fallback
-
-
-def _kind_from(filename: str, mime_type: str, content_kind: str) -> str:
-    if content_kind:
-        return _slug(content_kind, 'generic')
-    suffix = pathlib.Path(filename or '').suffix.lower()
-    if suffix == '.py':
-        return 'python'
-    if suffix in {'.html', '.htm'}:
-        return 'html'
-    if suffix in {'.json', '.yaml', '.yml', '.toml', '.ini', '.cfg'}:
-        return 'config'
-    if suffix in {'.csv', '.tsv'}:
-        return 'table'
-    if suffix in {'.txt', '.md', '.rst'} or (mime_type or '').startswith('text/'):
-        return 'text'
-    return 'generic'
-
-
-def _artifact_payload(*, data: bytes | None, content: str, file_base64: str) -> bytes | None:
-    if data is not None:
-        return data
-    if file_base64:
-        return base64.b64decode(file_base64)
-    if content:
-        return content.encode('utf-8')
-    return None
 
 
 def _write_artifact(
@@ -76,7 +35,22 @@ def _write_artifact(
     now = datetime.now(timezone.utc)
     base_dir = drive_root / root_dir / now.strftime('%Y/%m/%d')
     task_part = _slug(task_id or 'direct-chat', 'direct-chat')
-    kind_part = _kind_from(filename, mime_type, content_kind)
+    if content_kind:
+        kind_part = _slug(content_kind, 'generic')
+    else:
+        suffix_hint = pathlib.Path(filename or '').suffix.lower()
+        if suffix_hint == '.py':
+            kind_part = 'python'
+        elif suffix_hint in {'.html', '.htm'}:
+            kind_part = 'html'
+        elif suffix_hint in {'.json', '.yaml', '.yml', '.toml', '.ini', '.cfg'}:
+            kind_part = 'config'
+        elif suffix_hint in {'.csv', '.tsv'}:
+            kind_part = 'table'
+        elif suffix_hint in {'.txt', '.md', '.rst'} or (mime_type or '').startswith('text/'):
+            kind_part = 'text'
+        else:
+            kind_part = 'generic'
     target_dir = base_dir / task_part / kind_part
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -129,10 +103,10 @@ def save_artifact(
     related_message: str = '',
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any] | str:
-    payload = _artifact_payload(data=data, content=content, file_base64=file_base64)
+    payload = data if data is not None else (base64.b64decode(file_base64) if file_base64 else content.encode('utf-8') if content else None)
     if payload is None:
         return '⚠️ save_artifact requires non-empty content.'
-    drive_root = _drive_root_path(ctx_or_root)
+    drive_root = pathlib.Path(getattr(ctx_or_root, 'drive_root', ctx_or_root))
     return _write_artifact(
         drive_root,
         root_dir=_OUTBOX_ROOT,
@@ -140,8 +114,8 @@ def save_artifact(
         payload=payload,
         content_kind=content_kind,
         source=source,
-        task_id=_task_id_from(ctx_or_root, task_id),
-        chat_id=_chat_id_from(ctx_or_root, chat_id),
+        task_id=task_id or getattr(ctx_or_root, 'task_id', '') or '',
+        chat_id=chat_id if chat_id is not None else getattr(ctx_or_root, 'current_chat_id', None),
         mime_type=mime_type,
         caption=caption,
         related_message=related_message,
@@ -165,10 +139,10 @@ def save_incoming_artifact(
     related_message: str = '',
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any] | str:
-    payload = _artifact_payload(data=data, content=content, file_base64=file_base64)
+    payload = data if data is not None else (base64.b64decode(file_base64) if file_base64 else content.encode('utf-8') if content else None)
     if payload is None:
         return '⚠️ save_incoming_artifact requires non-empty content.'
-    drive_root = _drive_root_path(ctx_or_root)
+    drive_root = pathlib.Path(getattr(ctx_or_root, 'drive_root', ctx_or_root))
     return _write_artifact(
         drive_root,
         root_dir=_INBOX_ROOT,
@@ -176,8 +150,8 @@ def save_incoming_artifact(
         payload=payload,
         content_kind=content_kind,
         source=source,
-        task_id=_task_id_from(ctx_or_root, task_id),
-        chat_id=_chat_id_from(ctx_or_root, chat_id),
+        task_id=task_id or getattr(ctx_or_root, 'task_id', '') or '',
+        chat_id=chat_id if chat_id is not None else getattr(ctx_or_root, 'current_chat_id', None),
         mime_type=mime_type,
         caption=caption,
         related_message=related_message,
@@ -193,9 +167,9 @@ def list_incoming_artifacts(
     content_kind: str = '',
     filename_contains: str = '',
 ) -> Dict[str, Any]:
-    drive_root = _drive_root_path(ctx_or_root)
+    drive_root = pathlib.Path(getattr(ctx_or_root, 'drive_root', ctx_or_root))
     inbox_root = drive_root / _INBOX_ROOT
-    target_chat = _chat_id_from(ctx_or_root, chat_id)
+    target_chat = chat_id if chat_id is not None else getattr(ctx_or_root, 'current_chat_id', None)
     limit = max(1, min(int(limit or 10), 100))
     kind_filter = (content_kind or '').strip().lower()
     name_filter = (filename_contains or '').strip().lower()
