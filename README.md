@@ -577,11 +577,6 @@ python colab_launcher.py
 
 ## Changelog
 
-### 6.65.0
-- Added resilient browser page readiness stabilization with `browse_page(read_mode="quick"|"stable")`, combining `document.readyState`, meaningful text growth, DOM/text stabilization and loading-placeholder detection.
-- Added soft fallback semantics for `wait_for`: stable reads no longer fail early when the selector misses but the page already has meaningful rendered content.
-- Added stable-read diagnostics header and regression coverage for JS-heavy page reads, while keeping browser modules within repository smoke complexity limits.
-
 ### 6.56.3
 - добавлены Stage 3 contract-тесты на консистентность `repo`/`server` result-shape между project bootstrap, server, deploy и observability tools
 - README теперь описывает project contour как цельный lifecycle (`bootstrap -> GitHub -> deploy -> operate`), а не только как россыпь release-пунктов
