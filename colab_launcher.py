@@ -15,8 +15,7 @@ from ouroboros.model_modes import bootstrap_mode_env, get_active_mode, mode_summ
 from ouroboros.artifacts import save_incoming_artifact
 install_apply_patch()
 _LEGACY_CFG_WARNED: Set[str] = set()
-def _userdata_get(key: str) -> Optional[str]:
-    return None
+_userdata_get = lambda key: None
 def get_secret(name: str, default: Optional[str] = None, required: bool = False) -> Optional[str]:
     v = _userdata_get(name)
     if v is None or str(v).strip() == "":
