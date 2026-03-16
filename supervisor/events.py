@@ -17,6 +17,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 # Lazy imports to avoid circular dependencies — everything comes through ctx
+from ouroboros.artifacts import save_artifact
 
 log = logging.getLogger(__name__)
 
@@ -538,6 +539,20 @@ def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
         if not chat_id or not file_b64:
             return
         file_bytes = b64mod.b64decode(file_b64)
+        archive_path = str(evt.get("artifact_archive_path") or "").strip()
+        if not archive_path:
+            archive_meta = save_artifact(
+                ctx.DRIVE_ROOT,
+                data=file_bytes,
+                filename=filename,
+                content_kind="telegram-document",
+                source="supervisor_send_document",
+                task_id=str(evt.get("task_id") or ""),
+                chat_id=chat_id,
+                mime_type=mime_type,
+                caption=caption,
+            )
+            archive_path = archive_meta["relative_path"]
         ok, err = ctx.TG.send_document(chat_id, file_bytes, filename=filename, caption=caption, mime_type=mime_type)
         if not ok:
             ctx.append_jsonl(
@@ -545,7 +560,7 @@ def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
                 {
                     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "type": "send_document_error",
-                    "chat_id": chat_id, "error": err,
+                    "chat_id": chat_id, "error": err, "artifact_archive_path": archive_path,
                 },
             )
     except Exception as e:
@@ -585,9 +600,24 @@ def _handle_send_documents(evt: Dict[str, Any], ctx: Any) -> None:
             except Exception as decode_exc:
                 failures.append({"index": idx, "filename": filename, "error": f"decode_error: {decode_exc}"})
                 continue
+            archive_path = str(item.get("artifact_archive_path") or "").strip()
+            if not archive_path:
+                archive_meta = save_artifact(
+                    ctx.DRIVE_ROOT,
+                    data=file_bytes,
+                    filename=filename,
+                    content_kind="telegram-document",
+                    source="supervisor_send_documents",
+                    task_id=str(evt.get("task_id") or ""),
+                    chat_id=chat_id,
+                    mime_type=mime_type,
+                    caption=caption,
+                    metadata={"batch_index": idx},
+                )
+                archive_path = archive_meta["relative_path"]
             ok, err = ctx.TG.send_document(chat_id, file_bytes, filename=filename, caption=caption, mime_type=mime_type)
             if not ok:
-                failures.append({"index": idx, "filename": filename, "error": err})
+                failures.append({"index": idx, "filename": filename, "error": err, "artifact_archive_path": archive_path})
 
         if failures:
             ctx.append_jsonl(
