@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
+from operator import itemgetter
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from ouroboros.artifacts import save_artifact
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -281,6 +284,110 @@ def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
 
 
 
+
+def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
+    url = str(source.get("url") or "")
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; VelesResearch/1.0; +https://github.com/gr1ng0333/veles)",
+                "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            body = resp.read()
+            content_type = str(resp.headers.get("Content-Type") or "")
+        charset_match = re.search(r"charset=([A-Za-z0-9._-]+)", content_type, re.IGNORECASE)
+        charset = charset_match.group(1) if charset_match else "utf-8"
+        raw_text = body.decode(charset, errors="replace")
+        clean_text = str(raw_text or "")
+        if "<" in clean_text and ">" in clean_text:
+            clean_text = re.sub(r"<script\b[^>]*>.*?</script>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
+            clean_text = re.sub(r"<style\b[^>]*>.*?</style>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
+            clean_text = re.sub(r"<noscript\b[^>]*>.*?</noscript>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
+            clean_text = re.sub(r"<svg\b[^>]*>.*?</svg>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
+            clean_text = re.sub(r"<[^>]+>", " ", clean_text)
+        clean_text = html.unescape(clean_text)
+        clean_text = re.sub(r"\s+", " ", clean_text).strip()
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", clean_text)
+            if sentence.strip()
+        ]
+        query_terms = [term for term in re.findall(r"[a-zA-Zа-яА-Я0-9_+-]{3,}", str(query or "").lower()) if len(term) >= 3]
+        source_host = str(source.get("host") or urlparse(url).netloc).lower().lstrip("www.")
+        if any(token in source_host for token in ("docs.", "developer.", "platform.", "api.")):
+            source_type = "docs"
+        elif any(token in source_host for token in ("news", "blog", "press")):
+            source_type = "news"
+        else:
+            source_type = "page"
+        relevant_sections = [
+            sentence
+            for sentence in sentences
+            if any(term in sentence.lower() for term in query_terms)
+        ]
+        if len(relevant_sections) < 2:
+            informative_sentences = [
+                sentence
+                for sentence in sentences
+                if len(sentence) >= 40 and not sentence.lower().startswith(("skip to", "sign in", "cookie", "accept "))
+            ]
+            for sentence in informative_sentences:
+                if sentence not in relevant_sections:
+                    relevant_sections.append(sentence)
+                if len(relevant_sections) >= 3:
+                    break
+        relevant_sections = relevant_sections[:3]
+        findings: List[Dict[str, Any]] = []
+        seen_claims: set[str] = set()
+        observed_at_match = re.search(r"\b(2024|2025|2026)[-/.](\d{1,2})[-/.](\d{1,2})\b", clean_text)
+        observed_at = observed_at_match.group(0) if observed_at_match else ""
+        for sentence in relevant_sections:
+            lowered = sentence.lower()
+            overlap = sum(1 for term in query_terms if term in lowered)
+            score = overlap + min(1.5, len(sentence) / 240.0)
+            if any(ch.isdigit() for ch in sentence):
+                score += 0.4
+            if any(marker in lowered for marker in ("updated", "released", "supports", "limit", "version", "announced", "docs", "api", "rate", "rpm", "quota")):
+                score += 0.6
+            claim = sentence[:220].strip(" -:;,.\n\t")
+            dedupe_key = re.sub(r"\W+", " ", claim.casefold()).strip()
+            if not dedupe_key or dedupe_key in seen_claims:
+                continue
+            seen_claims.add(dedupe_key)
+            findings.append({
+                "claim": claim,
+                "evidence_snippet": sentence[:320].strip(),
+                "source_url": url,
+                "source_type": source_type,
+                "observed_at": observed_at,
+                "confidence_local": "high" if score >= 4.0 else "medium" if score >= 2.5 else "low",
+            })
+        return {
+            "url": url,
+            "status": "ok",
+            "content_type": content_type,
+            "text_preview": clean_text[:400],
+            "relevant_sections": relevant_sections,
+            "findings": findings,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "url": url,
+            "status": "error",
+            "content_type": "",
+            "text_preview": "",
+            "relevant_sections": [],
+            "findings": [],
+            "error": repr(exc),
+        }
+
+
 def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
     url = os.environ.get("SEARXNG_URL", SEARXNG_DEFAULT)
     if not url:
@@ -304,46 +411,19 @@ def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _extract_openai_output(resp_dump: Dict[str, Any]) -> tuple[str, List[Dict[str, str]]]:
-    text_parts: List[str] = []
-    sources: List[Dict[str, str]] = []
-    seen_urls: set[str] = set()
-    for item in resp_dump.get("output", []) or []:
-        if item.get("type") != "message":
-            continue
-        for block in item.get("content", []) or []:
-            if block.get("type") not in ("output_text", "text"):
-                continue
-            text = str(block.get("text") or "")
-            if text:
-                text_parts.append(text)
-            for ann in block.get("annotations") or []:
-                url = str(ann.get("url") or ann.get("source", {}).get("url") or ann.get("webpage", {}).get("url") or "").strip()
-                if not url or url in seen_urls:
-                    continue
-                sources.append({
-                    "title": str(ann.get("title") or ann.get("source", {}).get("title") or ann.get("webpage", {}).get("title") or url).strip() or url,
-                    "url": url,
-                    "snippet": str(ann.get("text") or ann.get("quote") or "").strip(),
-                })
-                seen_urls.add(url)
-    full_text = "\n\n".join(part for part in text_parts if part).strip()
-    if not sources and full_text:
-        for url in re.findall(r"https?://\S+", full_text):
-            clean_url = url.rstrip(").,;]\"'")
-            if clean_url in seen_urls:
-                continue
-            sources.append({"title": clean_url, "url": clean_url, "snippet": "Extracted from model response text."})
-            seen_urls.add(clean_url)
-            if len(sources) >= MAX_RESULTS:
-                break
-    return full_text, _clean_sources(sources)
 
 
 def _search_openai(query: str) -> Dict[str, Any]:
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
-        return {"query": query, "status": "error", "backend": "unavailable", "sources": [], "answer": "", "error": "Neither SearXNG nor OPENAI_API_KEY available."}
+        return {
+            "query": query,
+            "status": "error",
+            "backend": "unavailable",
+            "sources": [],
+            "answer": "",
+            "error": "Neither SearXNG nor OPENAI_API_KEY available.",
+        }
     try:
         from openai import OpenAI
 
@@ -354,10 +434,76 @@ def _search_openai(query: str) -> Dict[str, Any]:
             tool_choice="auto",
             input=query,
         )
-        answer, sources = _extract_openai_output(resp.model_dump())
-        return {"query": query, "status": "ok" if (answer or sources) else "no_results", "backend": "openai", "sources": sources, "answer": answer, "error": None if (answer or sources) else "OpenAI web search returned empty output."}
+        resp_dump = resp.model_dump()
+        text_parts: List[str] = []
+        sources: List[Dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for item in resp_dump.get("output", []) or []:
+            if item.get("type") != "message":
+                continue
+            for block in item.get("content", []) or []:
+                if block.get("type") not in ("output_text", "text"):
+                    continue
+                text_value = str(block.get("text") or "")
+                if text_value:
+                    text_parts.append(text_value)
+                for ann in block.get("annotations") or []:
+                    url = str(
+                        ann.get("url")
+                        or ann.get("source", {}).get("url")
+                        or ann.get("webpage", {}).get("url")
+                        or ""
+                    ).strip()
+                    if not url or url in seen_urls:
+                        continue
+                    sources.append(
+                        {
+                            "title": str(
+                                ann.get("title")
+                                or ann.get("source", {}).get("title")
+                                or ann.get("webpage", {}).get("title")
+                                or url
+                            ).strip()
+                            or url,
+                            "url": url,
+                            "snippet": str(ann.get("text") or ann.get("quote") or "").strip(),
+                        }
+                    )
+                    seen_urls.add(url)
+        answer = "\n\n".join(part for part in text_parts if part).strip()
+        if not sources and answer:
+            for url in re.findall(r"https?://\S+", answer):
+                clean_url = url.rstrip(").,;]\"'")
+                if clean_url in seen_urls:
+                    continue
+                sources.append(
+                    {
+                        "title": clean_url,
+                        "url": clean_url,
+                        "snippet": "Extracted from model response text.",
+                    }
+                )
+                seen_urls.add(clean_url)
+                if len(sources) >= MAX_RESULTS:
+                    break
+        sources = _clean_sources(sources)
+        return {
+            "query": query,
+            "status": "ok" if (answer or sources) else "no_results",
+            "backend": "openai",
+            "sources": sources,
+            "answer": answer,
+            "error": None if (answer or sources) else "OpenAI web search returned empty output.",
+        }
     except Exception as exc:
-        return {"query": query, "status": "error", "backend": "openai", "sources": [], "answer": "", "error": repr(exc)}
+        return {
+            "query": query,
+            "status": "error",
+            "backend": "openai",
+            "sources": [],
+            "answer": "",
+            "error": repr(exc),
+        }
 
 def _web_search(ctx: ToolContext, query: str) -> str:
     del ctx
@@ -415,12 +561,8 @@ def _research_run(ctx: ToolContext, query: str) -> str:
         "linkedin.com": -6,
         "facebook.com": -10,
     }
-    aggregator_domains = {
-        "news.google.com", "news.ycombinator.com", "alltop.com", "feedly.com", "ycombinator.com", "techmeme.com"
-    }
-    social_domains = {
-        "reddit.com", "x.com", "twitter.com", "facebook.com", "linkedin.com", "t.me", "discord.com"
-    }
+    aggregator_domains = {"news.google.com", "news.ycombinator.com", "alltop.com", "feedly.com", "ycombinator.com", "techmeme.com"}
+    social_domains = {"reddit.com", "x.com", "twitter.com", "facebook.com", "linkedin.com", "t.me", "discord.com"}
     seen_urls: set[str] = set()
     ranked_sources: List[Dict[str, Any]] = []
     query_terms = {term for term in re.findall(r"[a-zA-Zа-яА-Я0-9_+-]{3,}", run.user_query.lower()) if len(term) >= 3}
@@ -520,46 +662,63 @@ def _research_run(ctx: ToolContext, query: str) -> str:
             page_trace["ranked_sources"].append(entry)
             if decision == "selected":
                 ranked_sources.append(entry)
-                page_trace["selected_to_read"].append({
-                    "url": url, "score": entry["score"], "reasons": reasons
-                })
+                page_trace["selected_to_read"].append({"url": url, "score": entry["score"], "reasons": reasons})
             else:
-                page_trace["rejected"].append({
-                    "url": url, "score": entry["score"], "reasons": reasons
-                })
+                page_trace["rejected"].append({"url": url, "score": entry["score"], "reasons": reasons})
             seen_urls.add(url)
-        page_trace["ranked_sources"].sort(key=lambda item: item["score"], reverse=True)
-        page_trace["selected_to_read"].sort(key=lambda item: item["score"], reverse=True)
-        page_trace["rejected"].sort(key=lambda item: item["score"], reverse=True)
+        page_trace["ranked_sources"].sort(key=itemgetter("score"), reverse=True)
+        page_trace["selected_to_read"].sort(key=itemgetter("score"), reverse=True)
+        page_trace["rejected"].sort(key=itemgetter("score"), reverse=True)
+        page_trace["read_results"] = []
+        for selected in page_trace["selected_to_read"][:2]:
+            ranked_entry = next((item for item in page_trace["ranked_sources"] if item["url"] == selected["url"]), None)
+            if not ranked_entry:
+                continue
+            read_result = _read_page_findings(run.user_query, ranked_entry)
+            page_trace["read_results"].append(read_result)
+            run.findings.extend(read_result.get("findings") or [])
         run.visited_pages.append(page_trace)
-        if page_trace["selected_to_read"]:
-            best = page_trace["selected_to_read"][0]
-            run.findings.append(
-                {
-                    "query": subquery,
-                    "summary": result.get("answer") or f"Selected {len(page_trace['selected_to_read'])} sources after scoring.",
-                    "top_source": next(item for item in page_trace["ranked_sources"] if item["url"] == best["url"]),
-                }
-            )
-    ranked_sources.sort(key=lambda item: item["score"], reverse=True)
+    ranked_sources.sort(key=itemgetter("score"), reverse=True)
     selected_limit = max(policy["min_sources_before_synthesis"], min(6, len(ranked_sources)))
     run.candidate_sources = ranked_sources[:selected_limit]
-    run.final_answer = (
-        "Research run generated an explicit multi-branch query plan, scored candidate sources, and selected the strongest pages for later reading/synthesis."
-        if run.findings
-        else "Research run generated an explicit multi-branch query plan, but source scoring rejected all weak candidates."
-    )
-    run.confidence = "medium" if len(run.candidate_sources) >= policy["min_sources_before_synthesis"] else "low"
-    artifact = save_artifact(
-        ctx,
-        filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json",
-        content=json.dumps(asdict(run), ensure_ascii=False, indent=2),
-        content_kind="json",
-        source="research_run",
-        mime_type="application/json",
-        caption="Research run trace",
-        metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy, "query_plan": run.query_plan},
-    )
+    deduped_findings: List[Dict[str, Any]] = []
+    seen_finding_keys: set[str] = set()
+    for finding in run.findings:
+        key = re.sub(r"\W+", " ", f"{finding.get('claim', '')} {finding.get('evidence_snippet', '')}".casefold()).strip()
+        if not key or key in seen_finding_keys:
+            continue
+        seen_finding_keys.add(key)
+        deduped_findings.append(finding)
+    run.findings = deduped_findings
+
+    top_findings = sorted(run.findings, key=lambda item: {"high": 3, "medium": 2, "low": 1}.get(str(item.get("confidence_local") or "low"), 1), reverse=True)[:3]
+    if top_findings:
+        summary_parts = []
+        for finding in top_findings:
+            claim = str(finding.get("claim") or "").strip()
+            source_type = str(finding.get("source_type") or "page").strip()
+            source_url = str(finding.get("source_url") or "").strip()
+            if not claim:
+                continue
+            source_note = f" [{source_type}]" if source_type else ""
+            if source_url:
+                source_note += f" {source_url}"
+            summary_parts.append(f"- {claim}{source_note}")
+        run.final_answer = "Key findings:\n" + "\n".join(summary_parts) if summary_parts else "Research run completed, but extracted findings were too weak to summarize."
+    else:
+        run.final_answer = "Research run completed, but deep reading did not produce reliable findings."
+
+    read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
+    high_conf_findings = sum(1 for finding in run.findings if finding.get("confidence_local") == "high")
+    strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
+    if read_pages_ok >= policy["min_sources_before_synthesis"] and high_conf_findings >= 1:
+        run.confidence = "high"
+    elif read_pages_ok >= 1 and strong_findings >= policy["min_sources_before_synthesis"]:
+        run.confidence = "medium"
+    else:
+        run.confidence = "low"
+
+    artifact = save_artifact(ctx, filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json", content=json.dumps(asdict(run), ensure_ascii=False, indent=2), content_kind="json", source="research_run", mime_type="application/json", caption="Research run trace", metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy, "query_plan": run.query_plan})
     payload = asdict(run)
     payload["intent_policy"] = policy
     payload["trace"] = artifact if isinstance(artifact, dict) else {"status": "error", "message": str(artifact)}
@@ -587,3 +746,4 @@ def get_tools() -> List[ToolEntry]:
             _research_run,
         ),
     ]
+

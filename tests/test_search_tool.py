@@ -8,6 +8,7 @@ from ouroboros.tools.search import (
     _build_query_plan,
     _classify_intent,
     _clean_sources,
+    _read_page_findings,
     _research_run,
     _web_search,
 )
@@ -295,3 +296,93 @@ def test_source_scoring_rejects_duplicate_aggregator_and_social_noise(_web, _sav
     duplicate_entry = next(item for page in data['visited_pages'] for item in page['ranked_sources'] if item['url'] == 'https://platform.openai.com/docs/guides/rate-limits' and any('duplicate:' in reason for reason in item['reasons']))
     assert duplicate_entry['decision'] == 'reject'
     assert any('official-source' in reason or 'primary-source' in reason for reason in data['candidate_sources'][0]['reasons'])
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_deep_reading_extracts_findings_from_docs_news_and_blog(_web, _fetch, _save):
+    _web.side_effect = [
+        json.dumps({
+            "query": "openai api rate limit",
+            "status": "ok",
+            "backend": "searxng",
+            "sources": [
+                {"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "Updated 2026 rate limits for API usage."},
+                {"title": "News", "url": "https://example.com/news/openai-rate-limit", "snippet": "Today OpenAI updated rate limit guidance."},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": "openai api rate limit recent",
+            "status": "ok",
+            "backend": "searxng",
+            "sources": [
+                {"title": "Blog", "url": "https://blog.example.com/openai-rate-limit-analysis", "snippet": "API rate limit analysis and examples."},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": "openai api rate limit official docs",
+            "status": "no_results",
+            "backend": "searxng",
+            "sources": [],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": "openai api rate limit reference guide",
+            "status": "no_results",
+            "backend": "searxng",
+            "sources": [],
+            "answer": "",
+            "error": None,
+        }),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://platform.openai.com/docs/guides/rate-limits", "status": "ok", "content_type": "text/html", "text_preview": "Updated 2026-03-17. The API rate limit for tier 1 is 500 RPM.", "relevant_sections": ["The API rate limit for tier 1 is 500 RPM."], "findings": [{"claim": "The API rate limit for tier 1 is 500 RPM.", "evidence_snippet": "The API rate limit for tier 1 is 500 RPM.", "source_url": "https://platform.openai.com/docs/guides/rate-limits", "source_type": "docs", "observed_at": "2026-03-17", "confidence_local": "high"}], "error": None},
+        {"url": "https://example.com/news/openai-rate-limit", "status": "ok", "content_type": "text/html", "text_preview": "Today OpenAI announced revised limits.", "relevant_sections": ["Today OpenAI announced revised limits."], "findings": [{"claim": "Today OpenAI announced revised limits.", "evidence_snippet": "Today OpenAI announced revised limits.", "source_url": "https://example.com/news/openai-rate-limit", "source_type": "news", "observed_at": "", "confidence_local": "medium"}], "error": None},
+        {"url": "https://blog.example.com/openai-rate-limit-analysis", "status": "ok", "content_type": "text/html", "text_preview": "This blog explains the API rate limit for tier 1 is 500 RPM.", "relevant_sections": ["This blog explains the API rate limit for tier 1 is 500 RPM."], "findings": [{"claim": "This blog explains the API rate limit for tier 1 is 500 RPM.", "evidence_snippet": "This blog explains the API rate limit for tier 1 is 500 RPM.", "source_url": "https://blog.example.com/openai-rate-limit-analysis", "source_type": "news", "observed_at": "", "confidence_local": "medium"}], "error": None},
+    ]
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-1'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
+    assert data['findings']
+    assert any(f['source_type'] == 'docs' for f in data['findings'])
+    assert any(f['source_type'] == 'news' for f in data['findings'])
+    assert any(page['read_results'] for page in data['visited_pages'])
+    first_read = next(page['read_results'][0] for page in data['visited_pages'] if page['read_results'])
+    assert first_read['findings']
+    assert first_read['relevant_sections']
+    assert any('500 RPM' in f['claim'] or '500 RPM' in f['evidence_snippet'] for f in data['findings'])
+
+    import urllib.request
+    from unittest.mock import MagicMock
+
+    fake_response = MagicMock()
+    fake_response.read.return_value = b'<html><body><script>bad()</script><p>Updated 2026-03-17.</p><p>API rate limit is 500 RPM.</p><p>API rate limit is 500 RPM.</p></body></html>'
+    fake_response.headers = {"Content-Type": 'text/html; charset=utf-8'}
+    fake_response.__enter__.return_value = fake_response
+    fake_response.__exit__.return_value = False
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = MagicMock(return_value=fake_response)
+    try:
+        result = _read_page_findings('openai api rate limit', {'url': 'https://platform.openai.com/docs/guides/rate-limits', 'host': 'platform.openai.com'})
+    finally:
+        urllib.request.urlopen = original
+
+    assert result['status'] == 'ok'
+    assert 'script' not in result['text_preview'].lower()
+    assert result['relevant_sections']
+    assert result['findings']
+    assert result['findings'][0]['source_type'] == 'docs'
+    assert result['findings'][0]['confidence_local'] in {'low', 'medium', 'high'}
+
