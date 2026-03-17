@@ -1,6 +1,7 @@
 import json
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from ouroboros.tools.search import (
     INTENT_POLICIES,
@@ -10,7 +11,6 @@ from ouroboros.tools.search import (
     _research_run,
     _web_search,
 )
-
 
 
 @pytest.mark.parametrize(
@@ -23,7 +23,10 @@ from ouroboros.tools.search import (
                     "query": "claude research mode",
                     "status": "ok",
                     "backend": "searxng",
-                    "sources": [{"title": "Anthropic", "url": "https://example.com/a", "snippet": "one"}],
+                    "sources": [
+                        {"title": "Anthropic", "url": "https://example.com/a", "snippet": "one"},
+                        {"title": "Community thread", "url": "https://reddit.com/r/claude", "snippet": "discussion"},
+                    ],
                     "answer": "",
                     "error": None,
                 }),
@@ -36,7 +39,7 @@ from ouroboros.tools.search import (
                     "error": None,
                 }),
                 json.dumps({
-                    "query": "claude research mode official source",
+                    "query": "claude research mode common misconceptions",
                     "status": "no_results",
                     "backend": "searxng",
                     "sources": [],
@@ -61,7 +64,10 @@ from ouroboros.tools.search import (
                     "query": "openai api rate limit",
                     "status": "ok",
                     "backend": "searxng",
-                    "sources": [{"title": "Docs", "url": "https://platform.openai.com/docs", "snippet": "limits"}],
+                    "sources": [
+                        {"title": "Docs", "url": "https://platform.openai.com/docs", "snippet": "limits updated 2026"},
+                        {"title": "Roundup", "url": "https://news.google.com/articles/abc", "snippet": "aggregated summary"},
+                    ],
                     "answer": "",
                     "error": None,
                 }),
@@ -69,23 +75,23 @@ from ouroboros.tools.search import (
                     "query": "openai api rate limit recent",
                     "status": "ok",
                     "backend": "searxng",
-                    "sources": [{"title": "Reference", "url": "https://platform.openai.com/docs/api-reference", "snippet": "reference"}],
+                    "sources": [{"title": "Reference", "url": "https://platform.openai.com/docs/api-reference", "snippet": "reference updated 2026"}],
                     "answer": "",
                     "error": None,
                 }),
                 json.dumps({
                     "query": "openai api rate limit official docs",
-                    "status": "no_results",
+                    "status": "ok",
                     "backend": "searxng",
-                    "sources": [],
+                    "sources": [{"title": "Rate limits", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official guide"}],
                     "answer": "",
                     "error": None,
                 }),
                 json.dumps({
                     "query": "openai api rate limit reference guide",
-                    "status": "no_results",
+                    "status": "ok",
                     "backend": "searxng",
-                    "sources": [],
+                    "sources": [{"title": "Forum post", "url": "https://reddit.com/r/openai/comments/1", "snippet": "i think the limit is..."}],
                     "answer": "",
                     "error": None,
                 }),
@@ -98,13 +104,13 @@ from ouroboros.tools.search import (
                 'require_official_source': True,
             },
             4,
-            'https://platform.openai.com/docs',
+            'https://platform.openai.com/docs/guides/rate-limits',
         ),
     ],
 )
 @patch('ouroboros.tools.search.save_artifact')
 @patch('ouroboros.tools.search._web_search')
-def test_research_run_policy_and_trace_contract(_web, _save, query, side_effect, expected_intent, expected_policy, expected_subqueries, expected_first_url):
+def test_research_run_policy_trace_and_scored_candidates(_web, _save, query, side_effect, expected_intent, expected_policy, expected_subqueries, expected_first_url):
     with patch('ouroboros.tools.search._search_searxng', return_value={
         "query": "test",
         "status": "ok",
@@ -164,9 +170,13 @@ def test_research_run_policy_and_trace_contract(_web, _save, query, side_effect,
     assert len(data['visited_pages']) == expected_subqueries
     assert len(data['subqueries']) == expected_subqueries
     assert data['candidate_sources'][0]['url'] == expected_first_url
+    assert data['candidate_sources'][0]['decision'] == 'selected'
+    assert isinstance(data['candidate_sources'][0]['reasons'], list) and data['candidate_sources'][0]['reasons']
     assert data['intent_policy'] == expected_policy
     assert data['trace']['relative_path'].endswith('.json')
     assert data['query_plan']['branch_budget'] == expected_subqueries
+    assert any('selected_to_read' in page and 'rejected' in page for page in data['visited_pages'])
+    assert any(page['ranked_sources'] for page in data['visited_pages'] if page['source_count'])
 
 
 QUERY_CASES = [
@@ -222,3 +232,66 @@ def test_intent_policy_table_and_classification_contract(query, expected_intent)
         assert all(item.strip() for item in plan.subqueries)
         assert len({item.casefold() for item in plan.subqueries}) == len(plan.subqueries)
         assert plan.primary_query == planned_query
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._web_search')
+def test_source_scoring_rejects_duplicate_aggregator_and_social_noise(_web, _save):
+    _web.side_effect = [
+        json.dumps({
+            "query": "openai api rate limit",
+            "status": "ok",
+            "backend": "searxng",
+            "sources": [
+                {"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official updated 2026 rate limits"},
+                {"title": "HN mirror", "url": "https://news.ycombinator.com/item?id=1", "snippet": "roundup"},
+                {"title": "Reddit", "url": "https://reddit.com/r/openai/comments/xyz", "snippet": "forum guess"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": "openai api rate limit recent",
+            "status": "ok",
+            "backend": "searxng",
+            "sources": [
+                {"title": "Docs duplicate", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official updated 2026 rate limits"},
+                {"title": "API reference", "url": "https://platform.openai.com/docs/api-reference", "snippet": "reference updated 2026"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": "openai api rate limit official docs",
+            "status": "no_results",
+            "backend": "searxng",
+            "sources": [],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": "openai api rate limit reference guide",
+            "status": "no_results",
+            "backend": "searxng",
+            "sources": [],
+            "answer": "",
+            "error": None,
+        }),
+    ]
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-1'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
+    assert data['candidate_sources'][0]['url'] == 'https://platform.openai.com/docs/guides/rate-limits'
+    assert data['candidate_sources'][0]['score'] >= data['candidate_sources'][-1]['score']
+    first_page = data['visited_pages'][0]
+    rejected_urls = {item['url'] for item in first_page['rejected']}
+    assert 'https://news.ycombinator.com/item?id=1' in rejected_urls
+    assert 'https://reddit.com/r/openai/comments/xyz' in rejected_urls
+    duplicate_entry = next(item for page in data['visited_pages'] for item in page['ranked_sources'] if item['url'] == 'https://platform.openai.com/docs/guides/rate-limits' and any('duplicate:' in reason for reason in item['reasons']))
+    assert duplicate_entry['decision'] == 'reject'
+    assert any('official-source' in reason or 'primary-source' in reason for reason in data['candidate_sources'][0]['reasons'])

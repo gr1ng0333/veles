@@ -170,7 +170,7 @@ class ResearchRun:
     user_query: str
     intent_type: str = DEFAULT_INTENT
     subqueries: List[str] = field(default_factory=list)
-    candidate_sources: List[Dict[str, str]] = field(default_factory=list)
+    candidate_sources: List[Dict[str, Any]] = field(default_factory=list)
     visited_pages: List[Dict[str, Any]] = field(default_factory=list)
     findings: List[Dict[str, Any]] = field(default_factory=list)
     final_answer: str = ""
@@ -397,33 +397,157 @@ def _research_run(ctx: ToolContext, query: str) -> str:
     plan = _build_query_plan(run.user_query, run.intent_type)
     run.subqueries = list(plan.subqueries)
     run.query_plan = asdict(plan)
+    domain_scores = {
+        "docs.python.org": 26,
+        "developer.mozilla.org": 24,
+        "platform.openai.com": 24,
+        "docs.anthropic.com": 24,
+        "openai.com": 18,
+        "anthropic.com": 18,
+        "github.com": 16,
+        "wikipedia.org": 8,
+        "medium.com": -4,
+        "substack.com": -4,
+        "reddit.com": -10,
+        "news.ycombinator.com": -8,
+        "x.com": -12,
+        "twitter.com": -12,
+        "linkedin.com": -6,
+        "facebook.com": -10,
+    }
+    aggregator_domains = {
+        "news.google.com", "news.ycombinator.com", "alltop.com", "feedly.com", "ycombinator.com", "techmeme.com"
+    }
+    social_domains = {
+        "reddit.com", "x.com", "twitter.com", "facebook.com", "linkedin.com", "t.me", "discord.com"
+    }
+    seen_urls: set[str] = set()
+    ranked_sources: List[Dict[str, Any]] = []
+    query_terms = {term for term in re.findall(r"[a-zA-Zа-яА-Я0-9_+-]{3,}", run.user_query.lower()) if len(term) >= 3}
+
     for subquery in run.subqueries:
         result = json.loads(_web_search(ctx, subquery))
-        sources = _clean_sources(result.get("sources"))
-        run.candidate_sources.extend(sources)
-        run.visited_pages.append(
-            {
+        sources = _clean_sources(result.get("sources"), limit=10)
+        page_trace = {
+            "query": subquery,
+            "status": result.get("status"),
+            "backend": result.get("backend"),
+            "source_count": len(sources),
+            "intent_type": run.intent_type,
+            "policy": policy,
+            "ranked_sources": [],
+            "selected_to_read": [],
+            "rejected": [],
+        }
+        for index, source in enumerate(sources):
+            url = str(source.get("url") or "").strip()
+            lowered_url = url.lower()
+            host_match = re.match(r"https?://([^/]+)", lowered_url)
+            host = (host_match.group(1) if host_match else "").lstrip("www.")
+            title = str(source.get("title") or "").strip()
+            snippet = str(source.get("snippet") or "").strip()
+            haystack = f"{title} {snippet} {url}".lower()
+            score = 0.0
+            reasons: List[str] = []
+            official = policy["require_official_source"] and any(
+                needle in host for needle in ("docs.", "developer.", "platform.")
+            )
+            primary = any(token in host for token in ["openai.com", "anthropic.com", "github.com", "python.org", "mozilla.org"])
+            if official:
+                score += 3.0
+                reasons.append("official-source")
+            elif primary:
+                score += 2.0
+                reasons.append("primary-source")
+            domain_bonus = 0.0
+            for domain, value in domain_scores.items():
+                if host == domain or host.endswith(f".{domain}"):
+                    domain_bonus = value / 10.0
+                    break
+            if domain_bonus:
+                score += domain_bonus
+                reasons.append(f"domain-trust:{domain_bonus:+.1f}")
+            freshness_hits = len(re.findall(r"\b(2024|2025|2026|today|latest|recent|updated|новост|сегодня|обновл)\b", haystack))
+            freshness_weight = {"high": 0.8, "medium": 0.5, "low": 0.2}[policy["freshness_priority"]]
+            if freshness_hits:
+                freshness_score = min(1.5, freshness_hits * freshness_weight)
+                score += freshness_score
+                reasons.append(f"freshness:{freshness_score:+.1f}")
+            overlap = sum(1 for term in query_terms if term in haystack)
+            if overlap:
+                topical_score = min(3.0, overlap * 0.6)
+                score += topical_score
+                reasons.append(f"topical:{topical_score:+.1f}")
+            is_duplicate = url in seen_urls
+            duplicate_penalty = -2.5 if is_duplicate else 0.0
+            if duplicate_penalty:
+                score += duplicate_penalty
+                reasons.append(f"duplicate:{duplicate_penalty:.1f}")
+            aggregator_penalty = -1.7 if host in aggregator_domains else 0.0
+            if aggregator_penalty:
+                score += aggregator_penalty
+                reasons.append(f"aggregator:{aggregator_penalty:.1f}")
+            social_penalty = -1.3 if host in social_domains else 0.0
+            if social_penalty:
+                score += social_penalty
+                reasons.append(f"forum-social:{social_penalty:.1f}")
+            if index == 0:
+                score += 0.4
+                reasons.append("serp-position:+0.4")
+            if official and ("official docs" in subquery.lower() or "reference guide" in subquery.lower()):
+                score += 1.0
+                reasons.append("official-branch:+1.0")
+            decision = "selected"
+            if is_duplicate:
+                decision = "reject"
+                reasons.append("selection-policy:duplicate-url")
+            elif policy["require_official_source"] and not (official or primary) and score < 2.5:
+                decision = "reject"
+                reasons.append("selection-policy:official-needed")
+            elif score < 0.4:
+                decision = "reject"
+                reasons.append("selection-policy:low-score")
+            entry = {
+                "title": title or url,
+                "url": url,
+                "snippet": snippet,
+                "score": round(score, 3),
+                "reasons": reasons,
+                "decision": decision,
+                "host": host,
                 "query": subquery,
-                "status": result.get("status"),
-                "backend": result.get("backend"),
-                "source_count": len(sources),
-                "intent_type": run.intent_type,
-                "policy": policy,
             }
-        )
-        if sources:
+            page_trace["ranked_sources"].append(entry)
+            if decision == "selected":
+                ranked_sources.append(entry)
+                page_trace["selected_to_read"].append({
+                    "url": url, "score": entry["score"], "reasons": reasons
+                })
+            else:
+                page_trace["rejected"].append({
+                    "url": url, "score": entry["score"], "reasons": reasons
+                })
+            seen_urls.add(url)
+        page_trace["ranked_sources"].sort(key=lambda item: item["score"], reverse=True)
+        page_trace["selected_to_read"].sort(key=lambda item: item["score"], reverse=True)
+        page_trace["rejected"].sort(key=lambda item: item["score"], reverse=True)
+        run.visited_pages.append(page_trace)
+        if page_trace["selected_to_read"]:
+            best = page_trace["selected_to_read"][0]
             run.findings.append(
                 {
                     "query": subquery,
-                    "summary": result.get("answer") or f"Collected {len(sources)} candidate sources.",
-                    "top_source": sources[0],
+                    "summary": result.get("answer") or f"Selected {len(page_trace['selected_to_read'])} sources after scoring.",
+                    "top_source": next(item for item in page_trace["ranked_sources"] if item["url"] == best["url"]),
                 }
             )
-    run.candidate_sources = _clean_sources(run.candidate_sources, limit=10)
+    ranked_sources.sort(key=lambda item: item["score"], reverse=True)
+    selected_limit = max(policy["min_sources_before_synthesis"], min(6, len(ranked_sources)))
+    run.candidate_sources = ranked_sources[:selected_limit]
     run.final_answer = (
-        "Research run generated an explicit multi-branch query plan and collected candidate sources; deeper page reading and synthesis come in later commits."
+        "Research run generated an explicit multi-branch query plan, scored candidate sources, and selected the strongest pages for later reading/synthesis."
         if run.findings
-        else "Research run generated an explicit multi-branch query plan, but no usable sources were found."
+        else "Research run generated an explicit multi-branch query plan, but source scoring rejected all weak candidates."
     )
     run.confidence = "medium" if len(run.candidate_sources) >= policy["min_sources_before_synthesis"] else "low"
     artifact = save_artifact(
