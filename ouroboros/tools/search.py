@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 SEARXNG_DEFAULT = "http://localhost:8888"
 MAX_RESULTS = 5
 DEFAULT_INTENT = "background_explainer"
+MAX_SUBQUERIES = 6
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,17 @@ class IntentPolicy:
     search_branches: int
     min_sources_before_synthesis: int
     require_official_source: bool
+
+
+@dataclass(frozen=True)
+class QueryPlan:
+    primary_query: str
+    freshness_query: str
+    official_docs_query: str
+    alternative_wording_query: str
+    contradiction_check_query: str
+    subqueries: List[str]
+    branch_budget: int
 
 
 INTENT_POLICIES: Dict[str, IntentPolicy] = {
@@ -163,8 +175,7 @@ class ResearchRun:
     findings: List[Dict[str, Any]] = field(default_factory=list)
     final_answer: str = ""
     confidence: str = "low"
-
-
+    query_plan: Dict[str, Any] = field(default_factory=dict)
 
 
 def _classify_intent(query: str) -> str:
@@ -175,8 +186,6 @@ def _classify_intent(query: str) -> str:
         if any(keyword in lowered for keyword in keywords):
             return intent_type
     return "fact_lookup" if any(ch.isdigit() for ch in lowered) else DEFAULT_INTENT
-
-
 
 
 def _clean_sources(raw_sources: Optional[List[Dict[str, Any]]], limit: int = MAX_RESULTS) -> List[Dict[str, str]]:
@@ -197,6 +206,86 @@ def _clean_sources(raw_sources: Optional[List[Dict[str, Any]]], limit: int = MAX
         if len(cleaned) >= limit:
             break
     return cleaned
+
+
+def _normalize_query_text(query: str) -> str:
+    return re.sub(r"\s+", " ", str(query or "").strip())
+
+
+def _dedupe_nonempty_queries(candidates: List[str], limit: int) -> List[str]:
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        value = _normalize_query_text(candidate)
+        if not value:
+            continue
+        dedupe_key = value.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        cleaned.append(value)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
+    base = _normalize_query_text(query)
+    policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT])
+
+    freshness_suffix = {
+        "high": "latest updates",
+        "medium": "recent",
+        "low": "overview",
+    }[policy.freshness_priority]
+    official_suffix = "official docs" if policy.require_official_source else "official source"
+    alternative_suffix = {
+        "comparison_evaluation": "tradeoffs and benchmark",
+        "breaking_news": "timeline and reactions",
+        "product_docs_api_lookup": "reference guide",
+        "people_company_ecosystem_tracking": "ecosystem map",
+        "fact_lookup": "exact value reference",
+        "background_explainer": "overview",
+    }.get(intent_type, "alternative wording")
+    contradiction_suffix = {
+        "breaking_news": "conflicting reports",
+        "fact_lookup": "contradicting value",
+        "product_docs_api_lookup": "limitations exceptions",
+        "comparison_evaluation": "counterarguments",
+        "people_company_ecosystem_tracking": "controversy changes",
+        "background_explainer": "common misconceptions",
+    }.get(intent_type, "contradictions")
+
+    primary_query = base
+    freshness_query = f"{base} {freshness_suffix}" if base else freshness_suffix
+    official_docs_query = f"{base} {official_suffix}" if base else official_suffix
+    alternative_wording_query = f"{base} {alternative_suffix}" if base else alternative_suffix
+    contradiction_check_query = f"{base} {contradiction_suffix}" if base else contradiction_suffix
+
+    candidates = [primary_query]
+    if policy.freshness_priority in {"high", "medium"}:
+        candidates.append(freshness_query)
+    if policy.require_official_source:
+        candidates.append(official_docs_query)
+    candidates.append(alternative_wording_query)
+    if policy.search_branches >= 4 or policy.freshness_priority == "low":
+        candidates.append(contradiction_check_query)
+    if policy.search_branches >= 5 and not policy.require_official_source:
+        candidates.append(official_docs_query)
+
+    branch_budget = max(3, min(policy.search_branches, MAX_SUBQUERIES))
+    subqueries = _dedupe_nonempty_queries(candidates, limit=branch_budget)
+    branch_budget = len(subqueries)
+
+    return QueryPlan(
+        primary_query=primary_query,
+        freshness_query=freshness_query,
+        official_docs_query=official_docs_query,
+        alternative_wording_query=alternative_wording_query,
+        contradiction_check_query=contradiction_check_query,
+        subqueries=subqueries,
+        branch_budget=branch_budget,
+    )
 
 
 def _merge_search_results(primary: Dict[str, Any], fallback: Dict[str, Any], query: str) -> Dict[str, Any]:
@@ -300,8 +389,6 @@ def _search_openai(query: str) -> Dict[str, Any]:
         return {"query": query, "status": "error", "backend": "openai", "sources": [], "answer": "", "error": repr(exc)}
 
 
-
-
 def _web_search(ctx: ToolContext, query: str) -> str:
     del ctx
     primary = _search_searxng(query)
@@ -318,28 +405,9 @@ def _research_run(ctx: ToolContext, query: str) -> str:
     run = ResearchRun(user_query=str(query or "").strip())
     run.intent_type = _classify_intent(run.user_query)
     policy = asdict(INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]))
-    base = run.user_query.strip()
-    variants = [base]
-    if run.intent_type == "breaking_news":
-        variants.extend((f"{base} latest updates", f"{base} official announcement", f"{base} timeline"))
-    elif run.intent_type == "fact_lookup":
-        variants.extend((f"{base} exact value", f"{base} official source", f"{base} reference"))
-    elif run.intent_type == "product_docs_api_lookup":
-        variants.extend((f"{base} official docs", f"{base} api reference", f"{base} official example"))
-    elif run.intent_type == "comparison_evaluation":
-        variants.extend((f"{base} benchmark", f"{base} official documentation", f"{base} tradeoffs"))
-    elif run.intent_type == "people_company_ecosystem_tracking":
-        variants.extend((f"{base} official blog", f"{base} latest news", f"{base} company update"))
-    else:
-        variants.extend((f"{base} overview", f"{base} background", f"{base} official"))
-    seen: set[str] = set()
-    for item in variants:
-        value = item.strip()
-        if value and value not in seen:
-            run.subqueries.append(value)
-            seen.add(value)
-        if len(run.subqueries) >= INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]).search_branches:
-            break
+    plan = _build_query_plan(run.user_query, run.intent_type)
+    run.subqueries = list(plan.subqueries)
+    run.query_plan = asdict(plan)
     for subquery in run.subqueries:
         result = json.loads(_web_search(ctx, subquery))
         sources = _clean_sources(result.get("sources"))
@@ -364,9 +432,9 @@ def _research_run(ctx: ToolContext, query: str) -> str:
             )
     run.candidate_sources = _clean_sources(run.candidate_sources, limit=10)
     run.final_answer = (
-        "Research skeleton run classified the request and applied an intent policy; deeper planning and synthesis come in later commits."
+        "Research run generated an explicit multi-branch query plan and collected candidate sources; deeper page reading and synthesis come in later commits."
         if run.findings
-        else "Research skeleton run classified the request, but no usable sources were found."
+        else "Research run generated an explicit multi-branch query plan, but no usable sources were found."
     )
     run.confidence = "medium" if len(run.candidate_sources) >= policy["min_sources_before_synthesis"] else "low"
     artifact = save_artifact(
@@ -377,7 +445,7 @@ def _research_run(ctx: ToolContext, query: str) -> str:
         source="research_run",
         mime_type="application/json",
         caption="Research run trace",
-        metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy},
+        metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy, "query_plan": run.query_plan},
     )
     payload = asdict(run)
     payload["intent_policy"] = policy
@@ -400,7 +468,7 @@ def get_tools() -> List[ToolEntry]:
             "research_run",
             {
                 "name": "research_run",
-                "description": "Run a structured research skeleton: infer intent, generate subqueries, collect candidate sources, and save a readable JSON trace.",
+                "description": "Run a structured research skeleton: infer intent, generate a multi-branch query plan, collect candidate sources, and save a readable JSON trace.",
                 "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
             },
             _research_run,

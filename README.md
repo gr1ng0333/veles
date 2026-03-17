@@ -1,18 +1,23 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.69.2-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.69.3-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.69.2 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.69.3 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.69.3
+- Added an explicit query planner for `research_run`: every request now becomes a bounded multi-branch plan with primary, freshness, official-source, alternative-wording and contradiction-check queries instead of ad-hoc variants.
+- Added dedupe/non-empty query guards and a hard 3-6 branch budget, so the planner explores multiple trajectories without spawning empty or repetitive search garbage.
+- Added regression coverage for planner shape, branch budgeting and duplicate/empty suppression, turning multi-query research branching into a real contract for the next synthesis commits.
 
 ### 6.69.2
 - Added intent-aware research classification with six explicit intent types: breaking news, fact lookup, product/docs/API lookup, comparison/evaluation, background explainer, and people/company/ecosystem tracking.
