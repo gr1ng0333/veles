@@ -182,6 +182,8 @@ class ResearchRun:
     freshness_summary: Dict[str, Any] = field(default_factory=dict)
     contradictions: List[Dict[str, Any]] = field(default_factory=list)
     uncertainty_notes: List[str] = field(default_factory=list)
+    answer_mode: str = "short_factual"
+    synthesis: Dict[str, Any] = field(default_factory=dict)
 
 
 def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
@@ -380,7 +382,6 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
     }
     if freshness_unknown and policy.freshness_priority in {"high", "medium"}:
         run.uncertainty_notes.append("Часть найденных утверждений без явной даты публикации или обновления.")
-
     numeric_findings = []
     status_findings = []
     for finding in run.findings:
@@ -400,7 +401,6 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
             numeric_findings.append((topic_key, tuple(numbers[:2]), finding))
         if topic_key and any(token in lowered for token in ("available", "unavailable", "deprecated", "supported", "unsupported", "announced", "cancelled", "delayed", "released", "planned", "removed")):
             status_findings.append((topic_key, finding))
-
     contradictions: List[Dict[str, Any]] = []
     for idx, (topic_a, nums_a, finding_a) in enumerate(numeric_findings):
         for topic_b, nums_b, finding_b in numeric_findings[idx + 1:]:
@@ -446,35 +446,6 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
     run.contradictions = deduped[:5]
     if run.contradictions:
         run.uncertainty_notes.append("Источники расходятся по части утверждений; смотри contradictions в trace.")
-
-    top_findings = sorted(run.findings, key=lambda item: ({"high": 3, "medium": 2, "low": 1}.get(str(item.get("confidence_local") or "low"), 1), 1 if str(item.get("observed_at") or "").strip() else 0), reverse=True)[:3]
-    if top_findings:
-        summary_parts = []
-        for finding in top_findings:
-            claim = str(finding.get("claim") or "").strip()
-            source_type = str(finding.get("source_type") or "page").strip()
-            source_url = str(finding.get("source_url") or "").strip()
-            observed_at = str(finding.get("observed_at") or "").strip()
-            if not claim:
-                continue
-            source_note = f" [{source_type}]" if source_type else ""
-            if observed_at:
-                source_note += f" @ {observed_at}"
-            if source_url:
-                source_note += f" {source_url}"
-            summary_parts.append(f"- {claim}{source_note}")
-        answer_lines = ["Ключевые находки:", *summary_parts]
-        if run.contradictions:
-            answer_lines += ["", "Источники расходятся по части утверждений."]
-            for item in run.contradictions[:2]:
-                answer_lines.append(f"- конфликт: {item.get('claim_a')} <> {item.get('claim_b')}")
-        if run.uncertainty_notes:
-            answer_lines += ["", "Неопределённость:"]
-            answer_lines.extend(f"- {note}" for note in run.uncertainty_notes)
-        run.final_answer = "\n".join(answer_lines)
-    else:
-        run.final_answer = "Research run completed, but deep reading did not produce reliable findings."
-
     read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
     high_conf_findings = sum(1 for finding in run.findings if finding.get("confidence_local") == "high")
     strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
@@ -488,10 +459,117 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
         run.confidence = "medium"
     elif freshness_unknown and run.confidence == "medium" and policy.freshness_priority == "high":
         run.confidence = "low"
-    if run.contradictions and run.confidence == "high":
-        run.confidence = "medium"
-    elif run.contradictions and run.confidence == "medium":
-        run.confidence = "low"
+    if run.contradictions and run.confidence in {"high", "medium"}:
+        run.confidence = "medium" if run.confidence == "high" else "low"
+    mode_by_intent = {
+        "fact_lookup": "short_factual",
+        "product_docs_api_lookup": "short_factual",
+        "comparison_evaluation": "comparison_brief",
+        "breaking_news": "timeline",
+        "people_company_ecosystem_tracking": "timeline",
+        "background_explainer": "analyst_memo",
+    }
+    run.answer_mode = mode_by_intent.get(run.intent_type, "short_factual")
+    ranked_findings = sorted(
+        run.findings,
+        key=lambda item: (
+            {"high": 3, "medium": 2, "low": 1}.get(str(item.get("confidence_local") or "low"), 1),
+            1 if str(item.get("observed_at") or "").strip() else 0,
+            len(str(item.get("evidence_snippet") or "")),
+        ),
+        reverse=True,
+    )
+    top_findings, unique_source_rows = ranked_findings[:4], []
+    seen_source_urls: set[str] = set()
+    for finding in ranked_findings:
+        source_url = str(finding.get("source_url") or "").strip()
+        if not source_url or source_url in seen_source_urls:
+            continue
+        seen_source_urls.add(source_url)
+        unique_source_rows.append({
+            "url": source_url,
+            "source_type": str(finding.get("source_type") or "page").strip() or "page",
+            "observed_at": str(finding.get("observed_at") or "").strip(),
+            "claim": str(finding.get("claim") or "").strip(),
+            "evidence_snippet": str(finding.get("evidence_snippet") or "").strip(),
+        })
+    key_finding_rows = []
+    for finding in top_findings:
+        claim = str(finding.get("claim") or "").strip()
+        evidence = str(finding.get("evidence_snippet") or "").strip()
+        source_url = str(finding.get("source_url") or "").strip()
+        if not claim or not evidence or not source_url:
+            continue
+        key_finding_rows.append({
+            "claim": claim,
+            "evidence_snippet": evidence,
+            "source_url": source_url,
+            "source_type": str(finding.get("source_type") or "page").strip() or "page",
+            "observed_at": str(finding.get("observed_at") or "").strip(),
+            "confidence_local": str(finding.get("confidence_local") or "low"),
+        })
+    if key_finding_rows:
+        if run.answer_mode == "timeline":
+            ordered = sorted(key_finding_rows, key=lambda item: (item["observed_at"] or "9999-99-99", item["confidence_local"] != "high"))
+            short_answer = ordered[0]["claim"]
+        elif run.answer_mode == "comparison_brief":
+            short_answer = "Сравнение по прочитанным источникам: " + "; ".join(item["claim"] for item in key_finding_rows[:2])
+        elif run.answer_mode == "analyst_memo":
+            short_answer = "По прочитанным источникам картина такая: " + "; ".join(item["claim"] for item in key_finding_rows[:2])
+        else:
+            short_answer = key_finding_rows[0]["claim"]
+        evidence_lines = []
+        for item in key_finding_rows:
+            observed = f" @ {item['observed_at']}" if item["observed_at"] else ""
+            evidence_lines.append(
+                f"- {item['claim']}\n  evidence: {item['evidence_snippet']}\n  source: {item['source_url']} [{item['source_type']}{observed}]"
+            )
+        explanation_prefix = {
+            "short_factual": "Подтверждённые утверждения:",
+            "analyst_memo": "Что подтверждают прочитанные источники:",
+            "comparison_brief": "Сопоставление подтверждённых утверждений:",
+            "timeline": "Хронология/последовательность по прочитанным источникам:",
+        }[run.answer_mode]
+        caveats = list(dict.fromkeys(note for note in run.uncertainty_notes if note))
+        run.synthesis = {
+            "answer_mode": run.answer_mode,
+            "short_answer": short_answer,
+            "key_findings": key_finding_rows,
+            "evidence_backed_explanation": explanation_prefix + "\n" + "\n".join(evidence_lines),
+            "uncertainty_caveats": caveats,
+            "sources": unique_source_rows[:6],
+        }
+        final_blocks = [
+            f"Режим ответа: {run.answer_mode}",
+            "",
+            "Короткий ответ:",
+            short_answer,
+            "",
+            "Ключевые находки:",
+        ]
+        final_blocks.extend(
+            f"- {item['claim']}\n  evidence: {item['evidence_snippet']}\n  source: {item['source_url']}"
+            for item in key_finding_rows
+        )
+        final_blocks += ["", explanation_prefix]
+        final_blocks.extend(evidence_lines)
+        if caveats:
+            final_blocks += ["", "Неопределённость / caveats:"]
+            final_blocks.extend(f"- {note}" for note in caveats)
+        if unique_source_rows:
+            final_blocks += ["", "Sources:"]
+            final_blocks.extend(f"- {item['url']} [{item['source_type']}]" for item in unique_source_rows[:6])
+        run.final_answer = "\n".join(final_blocks)
+    else:
+        run.synthesis = {
+            "answer_mode": run.answer_mode,
+            "short_answer": "Надёжных findings после deep reading пока недостаточно.",
+            "key_findings": [],
+            "evidence_backed_explanation": "После чтения выбранных страниц не набралось утверждений с достаточной опорой на evidence.",
+            "uncertainty_caveats": list(dict.fromkeys(run.uncertainty_notes)),
+            "sources": unique_source_rows[:6],
+        }
+        run.final_answer = "Надёжных findings после deep reading пока недостаточно."
 
 
 def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
