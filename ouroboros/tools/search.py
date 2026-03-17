@@ -6,8 +6,10 @@ import json
 import logging
 import os
 import re
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ouroboros.artifacts import save_artifact
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
@@ -35,12 +37,6 @@ def _make_result(
     }
 
 
-def _normalize_source(title: Any, url: Any, snippet: Any) -> Dict[str, str]:
-    return {
-        "title": str(title or "").strip(),
-        "url": str(url or "").strip(),
-        "snippet": str(snippet or "").strip(),
-    }
 
 
 def _clean_sources(raw_sources: Optional[List[Dict[str, Any]]], limit: int = MAX_RESULTS) -> List[Dict[str, str]]:
@@ -49,16 +45,15 @@ def _clean_sources(raw_sources: Optional[List[Dict[str, Any]]], limit: int = MAX
     for item in raw_sources or []:
         if not isinstance(item, dict):
             continue
-        source = _normalize_source(item.get("title"), item.get("url"), item.get("snippet") or item.get("content"))
-        url = source["url"]
-        if not url or not (url.startswith("http://") or url.startswith("https://")):
+        url = str(item.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")) or url in seen_urls:
             continue
-        if url in seen_urls:
-            continue
-        if not source["title"]:
-            source["title"] = url
-        cleaned.append(source)
         seen_urls.add(url)
+        cleaned.append({
+            "title": str(item.get("title") or url).strip() or url,
+            "url": url,
+            "snippet": str(item.get("snippet") or item.get("content") or "").strip(),
+        })
         if len(cleaned) >= limit:
             break
     return cleaned
@@ -107,9 +102,10 @@ def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
         results = data.get("results", [])[:MAX_RESULTS]
-        sources = _clean_sources(
-            [_normalize_source(r.get("title", ""), r.get("url", ""), r.get("content", "")) for r in results]
-        )
+        sources = _clean_sources([
+            {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")}
+            for r in results
+        ])
         if not sources:
             return _make_result(
                 query=query,
@@ -225,6 +221,87 @@ def _search_openai(query: str) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class ResearchRun:
+    user_query: str
+    intent_type: str = "general"
+    subqueries: List[str] = field(default_factory=list)
+    candidate_sources: List[Dict[str, str]] = field(default_factory=list)
+    visited_pages: List[Dict[str, Any]] = field(default_factory=list)
+    findings: List[Dict[str, Any]] = field(default_factory=list)
+    final_answer: str = ""
+    confidence: str = "low"
+
+
+def _research_run(ctx: ToolContext, query: str) -> str:
+    run = ResearchRun(user_query=str(query or '').strip())
+    lowered = run.user_query.lower()
+    if any(token in lowered for token in ('compare', 'vs', 'difference', 'лучше', 'сравни')):
+        run.intent_type = 'comparison'
+    elif any(token in lowered for token in ('latest', 'news', 'recent', 'новост', 'сегодня', '2026', '2025')):
+        run.intent_type = 'freshness_sensitive'
+    elif any(token in lowered for token in ('how', 'guide', 'tutorial', 'как', 'шаг', 'setup')):
+        run.intent_type = 'how_to'
+
+    base = run.user_query
+    variants = [base]
+    if run.intent_type == 'comparison':
+        variants.extend((f'{base} benchmark', f'{base} official documentation'))
+    elif run.intent_type == 'freshness_sensitive':
+        variants.extend((f'{base} latest updates', f'{base} official announcement'))
+    elif run.intent_type == 'how_to':
+        variants.extend((f'{base} step by step', f'{base} official docs'))
+    else:
+        variants.extend((f'{base} official', f'{base} overview'))
+    seen: set[str] = set()
+    for item in variants:
+        value = item.strip()
+        if value and value not in seen:
+            run.subqueries.append(value)
+            seen.add(value)
+        if len(run.subqueries) >= 3:
+            break
+
+    for subquery in run.subqueries:
+        result = json.loads(_web_search(ctx, subquery))
+        sources = _clean_sources(result.get('sources'))
+        run.candidate_sources.extend(sources)
+        run.visited_pages.append({
+            'query': subquery,
+            'status': result.get('status'),
+            'backend': result.get('backend'),
+            'source_count': len(sources),
+        })
+        if sources:
+            run.findings.append({
+                'query': subquery,
+                'summary': result.get('answer') or f'Collected {len(sources)} candidate sources.',
+                'top_source': sources[0],
+            })
+
+    run.candidate_sources = _clean_sources(run.candidate_sources, limit=10)
+    if run.findings:
+        run.final_answer = 'Research skeleton run complete. Candidate sources collected; deeper synthesis comes in later commits.'
+        run.confidence = 'medium' if run.candidate_sources else 'low'
+    else:
+        run.final_answer = 'Research skeleton run complete, but no usable sources were found.'
+        run.confidence = 'low'
+
+    artifact = save_artifact(
+        ctx,
+        filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json",
+        content=json.dumps(asdict(run), ensure_ascii=False, indent=2),
+        content_kind='json',
+        source='research_run',
+        mime_type='application/json',
+        caption='Research run trace',
+        metadata={'tool': 'research_run', 'intent_type': run.intent_type},
+    )
+    payload = asdict(run)
+    payload['trace'] = artifact if isinstance(artifact, dict) else {'status': 'error', 'message': str(artifact)}
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 def _web_search(ctx: ToolContext, query: str) -> str:
     primary = _search_searxng(query)
     if primary is None:
@@ -252,5 +329,14 @@ def get_tools() -> List[ToolEntry]:
                 "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
             },
             _web_search,
+        ),
+        ToolEntry(
+            "research_run",
+            {
+                "name": "research_run",
+                "description": "Run a structured research skeleton: infer intent, generate subqueries, collect candidate sources, and save a readable JSON trace.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            },
+            _research_run,
         ),
     ]

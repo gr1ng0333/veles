@@ -1,18 +1,23 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.68.3-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.69.1-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.68.3 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.69.1 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.69.1
+- Added a first-class `research_run` skeleton next to `web_search`: it creates an explicit research session schema with intent, subqueries, candidate sources, visited pages, findings, final answer and confidence.
+- Added minimal orchestration for a structured research loop: infer intent, expand up to three subqueries, run existing web search, normalize candidate sources and emit a readable run trace instead of scattered tool results.
+- Research traces are now persisted as JSON artifacts in the outbox path and covered by a regression test, giving the next commits a stable substrate for deeper page reading and synthesis.
 
 ### 6.68.3
 - Added `send_local_file(path, caption, filename?, mime_type?)` as a direct owner-delivery tool for existing local files, so generated artifacts can be sent from disk without manual base64 handling.
