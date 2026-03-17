@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from ouroboros.tools.search import _clean_sources, _merge_search_results, _web_search
+from ouroboros.tools.search import _clean_sources, _merge_search_results, _research_run, _web_search
 
 
 @patch('ouroboros.tools.search._search_searxng', return_value={
@@ -21,7 +21,8 @@ def test_web_search_returns_structured_json(_searx):
     assert data['sources'][0]['url'] == 'https://example.com'
 
 
-def test_clean_sources_deduplicates_and_filters_invalid_rows():
+
+def test_search_helpers_cover_clean_and_merge_paths():
     cleaned = _clean_sources([
         {"title": "A", "url": "https://example.com/a", "snippet": "one"},
         {"title": "A-dup", "url": "https://example.com/a", "snippet": "dup"},
@@ -31,8 +32,6 @@ def test_clean_sources_deduplicates_and_filters_invalid_rows():
     ])
     assert [row['url'] for row in cleaned] == ['https://example.com/a', 'https://example.com/b']
 
-
-def test_merge_search_results_marks_degraded_when_fallback_needed():
     merged = _merge_search_results(
         {
             "query": "test",
@@ -55,3 +54,47 @@ def test_merge_search_results_marks_degraded_when_fallback_needed():
     assert merged['status'] == 'degraded'
     assert merged['backend'] == 'searxng+openai'
     assert merged['sources'][0]['url'] == 'https://example.com/b'
+
+
+@patch('ouroboros.tools.search.save_artifact', return_value={"relative_path": "artifacts/outbox/2026/03/17/task/json/research-run-test.json", "bytes": 123})
+@patch('ouroboros.tools.search._web_search')
+def test_research_run_returns_trace_and_persists_artifact(_web, _save):
+    _web.side_effect = [
+        json.dumps({
+            "query": "claude research mode",
+            "status": "ok",
+            "backend": "searxng",
+            "sources": [{"title": "Anthropic", "url": "https://example.com/a", "snippet": "one"}],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": "claude research mode official",
+            "status": "ok",
+            "backend": "searxng",
+            "sources": [{"title": "Docs", "url": "https://example.com/b", "snippet": "two"}],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": "claude research mode overview",
+            "status": "no_results",
+            "backend": "searxng",
+            "sources": [],
+            "answer": "",
+            "error": None,
+        }),
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-1'
+        current_chat_id = 1
+
+    raw = _research_run(Ctx(), 'claude research mode')
+    data = json.loads(raw)
+    assert data['user_query'] == 'claude research mode'
+    assert data['subqueries']
+    assert len(data['visited_pages']) == 3
+    assert data['candidate_sources'][0]['url'] == 'https://example.com/a'
+    assert data['trace']['relative_path'].endswith('.json')
