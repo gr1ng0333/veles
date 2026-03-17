@@ -1,18 +1,23 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.69.3-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.69.4-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.69.3 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.69.4 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Changelog
+
+### 6.69.4
+- Added an explicit query planner for `research_run`: each user request now expands into named branches (`primary`, `freshness`, `official-docs`, `alternative-wording`, `contradiction-check`) instead of ad-hoc query variants.
+- Enforced bounded planner behavior with non-empty/deduplicated subqueries and a hard 3-6 branch budget, so multi-trajectory search stops spawning garbage while staying intent-aware.
+- Added regression coverage for planner branch shape, duplicate suppression and bounded branching, and kept structural smoke at the repository limit without spilling complexity into a separate planner layer.
 
 ### 6.69.3
 - Added an explicit query planner for `research_run`: every request now becomes a bounded multi-branch plan with primary, freshness, official-source, alternative-wording and contradiction-check queries instead of ad-hoc variants.
