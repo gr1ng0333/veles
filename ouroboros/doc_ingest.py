@@ -18,72 +18,6 @@ _JSON_MIME = 'application/json'
 _DOC_MIME = 'application/msword'
 
 
-def _strip_xml_text(xml_text: str) -> str:
-    if not xml_text:
-        return ''
-    text = xml_text.replace('</w:p>', '\n').replace('</w:tr>', '\n').replace('</w:tbl>', '\n')
-    text = re.sub(r'<w:tab[^>]*/>', '\t', text)
-    text = re.sub(r'<w:br[^>]*/>', '\n', text)
-    text = re.sub(r'<[^>]+>', '', text)
-    text = (
-        text.replace('&amp;', '&')
-        .replace('&lt;', '<')
-        .replace('&gt;', '>')
-        .replace('&quot;', '"')
-        .replace('&apos;', "'")
-    )
-    text = text.replace('\r', '')
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    lines = [line.rstrip() for line in text.split('\n')]
-    return '\n'.join(lines).strip()
-
-
-def extract_text_from_docx_bytes(payload: bytes) -> str:
-    if not payload:
-        return ''
-    parts = []
-    with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as tmp:
-        tmp.write(payload)
-        tmp_path = tmp.name
-    try:
-        with zipfile.ZipFile(tmp_path) as zf:
-            for name in sorted(zf.namelist()):
-                if not (
-                    name == 'word/document.xml'
-                    or name.startswith('word/header')
-                    or name.startswith('word/footer')
-                ):
-                    continue
-                try:
-                    xml_bytes = zf.read(name)
-                except KeyError:
-                    continue
-                xml_text = xml_bytes.decode('utf-8', errors='ignore')
-                clean = _strip_xml_text(xml_text)
-                if clean:
-                    parts.append(clean)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-    return '\n\n'.join(part for part in parts if part).strip()
-
-
-def _pick_converter() -> Dict[str, str]:
-    for candidate in ('libreoffice', 'soffice'):
-        path = shutil.which(candidate)
-        if path:
-            return {'kind': 'libreoffice', 'binary': path}
-    path = shutil.which('antiword')
-    if path:
-        return {'kind': 'antiword', 'binary': path}
-    path = shutil.which('catdoc')
-    if path:
-        return {'kind': 'catdoc', 'binary': path}
-    return {'kind': '', 'binary': ''}
-
-
 def ingest_legacy_word_document(
     *,
     drive_root: pathlib.Path,
@@ -125,7 +59,18 @@ def ingest_legacy_word_document(
         'extracted_text': '',
     }
 
-    converter = _pick_converter()
+    converter = {'kind': '', 'binary': ''}
+    for candidate in ('libreoffice', 'soffice'):
+        binary = shutil.which(candidate)
+        if binary:
+            converter = {'kind': 'libreoffice', 'binary': binary}
+            break
+    if not converter['binary']:
+        for candidate in ('antiword', 'catdoc'):
+            binary = shutil.which(candidate)
+            if binary:
+                converter = {'kind': candidate, 'binary': binary}
+                break
     result['converter'] = converter.get('kind') or ''
     result['converter_binary'] = converter.get('binary') or ''
 
