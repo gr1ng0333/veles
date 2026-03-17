@@ -1,4 +1,4 @@
-"""Web search tool — SearXNG primary, OpenAI fallback."""
+"""Web search tool — structured search plus research-run skeleton."""
 
 from __future__ import annotations
 
@@ -16,25 +16,165 @@ log = logging.getLogger(__name__)
 
 SEARXNG_DEFAULT = "http://localhost:8888"
 MAX_RESULTS = 5
+DEFAULT_INTENT = "background_explainer"
 
 
-def _make_result(
-    *,
-    query: str,
-    backend: str,
-    status: str,
-    sources: Optional[List[Dict[str, str]]] = None,
-    answer: str = "",
-    error: Optional[str] = None,
-) -> Dict[str, Any]:
-    return {
-        "query": query,
-        "status": status,
-        "backend": backend,
-        "sources": sources or [],
-        "answer": answer or "",
-        "error": error,
-    }
+@dataclass(frozen=True)
+class IntentPolicy:
+    freshness_priority: str
+    search_branches: int
+    min_sources_before_synthesis: int
+    require_official_source: bool
+
+
+INTENT_POLICIES: Dict[str, IntentPolicy] = {
+    "breaking_news": IntentPolicy("high", 4, 3, False),
+    "fact_lookup": IntentPolicy("medium", 3, 2, False),
+    "product_docs_api_lookup": IntentPolicy("medium", 4, 2, True),
+    "comparison_evaluation": IntentPolicy("medium", 4, 3, False),
+    "background_explainer": IntentPolicy("low", 3, 2, False),
+    "people_company_ecosystem_tracking": IntentPolicy("high", 4, 3, False),
+}
+
+INTENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "breaking_news",
+        (
+            "breaking news",
+            "latest news",
+            "latest updates",
+            "today",
+            "сегодня",
+            "что случилось",
+            "только что",
+            "recent news",
+            "announcement today",
+            "new release today",
+        ),
+    ),
+    (
+        "comparison_evaluation",
+        (
+            "compare",
+            "comparison",
+            "vs",
+            "versus",
+            "better",
+            "best for",
+            "tradeoff",
+            "benchmark",
+            "pros and cons",
+            "сравни",
+            "разница",
+            "лучше",
+            "против",
+        ),
+    ),
+    (
+        "product_docs_api_lookup",
+        (
+            "api",
+            "sdk",
+            "documentation",
+            "docs",
+            "reference",
+            "endpoint",
+            "rate limit",
+            "oauth",
+            "quickstart",
+            "guide",
+            "install",
+            "лимит api",
+            "документац",
+            "эндпоинт",
+            "справк",
+        ),
+    ),
+    (
+        "people_company_ecosystem_tracking",
+        (
+            "founder",
+            "ceo",
+            "company",
+            "startup",
+            "funding",
+            "layoffs",
+            "hiring",
+            "team",
+            "maintainer",
+            "community",
+            "ecosystem",
+            "roadmap",
+            "компан",
+            "основател",
+            "экосистем",
+            "инвест",
+            "уволь",
+            "команда",
+        ),
+    ),
+    (
+        "background_explainer",
+        (
+            "explain",
+            "overview",
+            "background",
+            "history",
+            "why",
+            "how does",
+            "what is",
+            "что такое",
+            "объясни",
+            "история",
+            "почему",
+            "как работает",
+        ),
+    ),
+    (
+        "fact_lookup",
+        (
+            "when did",
+            "how many",
+            "exact",
+            "exactly",
+            "maximum",
+            "default",
+            "version",
+            "release date",
+            "сколько",
+            "какой",
+            "точн",
+            "максим",
+            "дефолт",
+            "версия",
+            "дата релиза",
+        ),
+    ),
+)
+
+
+@dataclass
+class ResearchRun:
+    user_query: str
+    intent_type: str = DEFAULT_INTENT
+    subqueries: List[str] = field(default_factory=list)
+    candidate_sources: List[Dict[str, str]] = field(default_factory=list)
+    visited_pages: List[Dict[str, Any]] = field(default_factory=list)
+    findings: List[Dict[str, Any]] = field(default_factory=list)
+    final_answer: str = ""
+    confidence: str = "low"
+
+
+
+
+def _classify_intent(query: str) -> str:
+    lowered = str(query or "").strip().lower()
+    if not lowered:
+        return DEFAULT_INTENT
+    for intent_type, keywords in INTENT_KEYWORDS:
+        if any(keyword in lowered for keyword in keywords):
+            return intent_type
+    return "fact_lookup" if any(ch.isdigit() for ch in lowered) else DEFAULT_INTENT
 
 
 
@@ -60,36 +200,28 @@ def _clean_sources(raw_sources: Optional[List[Dict[str, Any]]], limit: int = MAX
 
 
 def _merge_search_results(primary: Dict[str, Any], fallback: Dict[str, Any], query: str) -> Dict[str, Any]:
-    primary_sources = _clean_sources(primary.get("sources"))
-    fallback_sources = _clean_sources(fallback.get("sources"))
-
-    merged_sources = _clean_sources(primary_sources + fallback_sources)
-    answer_parts = [str(primary.get("answer") or "").strip(), str(fallback.get("answer") or "").strip()]
-    answer = "\n\n".join(part for part in answer_parts if part)
-
-    errors = [str(primary.get("error") or "").strip(), str(fallback.get("error") or "").strip()]
-    error = " | ".join(part for part in errors if part) or None
-
-    statuses = {str(primary.get("status") or ""), str(fallback.get("status") or "")}
+    merged_sources = _clean_sources(_clean_sources(primary.get("sources")) + _clean_sources(fallback.get("sources")))
+    answer = "\n\n".join(
+        part for part in (str(primary.get("answer") or "").strip(), str(fallback.get("answer") or "").strip()) if part
+    )
+    error = " | ".join(
+        part for part in (str(primary.get("error") or "").strip(), str(fallback.get("error") or "").strip()) if part
+    ) or None
     if merged_sources:
         status = "degraded" if primary.get("status") != "ok" or fallback.get("status") == "error" else "ok"
-    elif "error" in statuses:
-        status = "error"
     else:
-        status = "no_results"
-
-    return _make_result(
-        query=query,
-        backend=f"{primary.get('backend', 'unknown')}+{fallback.get('backend', 'unknown')}",
-        status=status,
-        sources=merged_sources,
-        answer=answer,
-        error=error,
-    )
+        status = "error" if "error" in {str(primary.get("status") or ""), str(fallback.get("status") or "")} else "no_results"
+    return {
+        "query": query,
+        "status": status,
+        "backend": f"{primary.get('backend', 'unknown')}+{fallback.get('backend', 'unknown')}",
+        "sources": merged_sources,
+        "answer": answer,
+        "error": error,
+    }
 
 
 def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
-    """Try SearXNG. Returns structured result or None on failure."""
     url = os.environ.get("SEARXNG_URL", SEARXNG_DEFAULT)
     if not url:
         return None
@@ -101,30 +233,14 @@ def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
         req = urllib.request.Request(f"{url}/search?{params}", headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-        results = data.get("results", [])[:MAX_RESULTS]
-        sources = _clean_sources([
-            {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")}
-            for r in results
-        ])
-        if not sources:
-            return _make_result(
-                query=query,
-                backend="searxng",
-                status="no_results",
-                sources=[],
-                answer="",
-                error="SearXNG returned no usable results.",
-            )
-        return _make_result(
-            query=query,
-            backend="searxng",
-            status="ok",
-            sources=sources,
-            answer="",
-            error=None,
+        sources = _clean_sources(
+            [{"title": row.get("title", ""), "url": row.get("url", ""), "content": row.get("content", "")} for row in data.get("results", [])[:MAX_RESULTS]]
         )
-    except Exception as e:
-        log.warning(f"SearXNG search failed: {e}")
+        if not sources:
+            return {"query": query, "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": "SearXNG returned no usable results."}
+        return {"query": query, "status": "ok", "backend": "searxng", "sources": sources, "answer": "", "error": None}
+    except Exception as exc:
+        log.warning("SearXNG search failed: %s", exc)
         return None
 
 
@@ -132,7 +248,6 @@ def _extract_openai_output(resp_dump: Dict[str, Any]) -> tuple[str, List[Dict[st
     text_parts: List[str] = []
     sources: List[Dict[str, str]] = []
     seen_urls: set[str] = set()
-
     for item in resp_dump.get("output", []) or []:
         if item.get("type") != "message":
             continue
@@ -142,54 +257,33 @@ def _extract_openai_output(resp_dump: Dict[str, Any]) -> tuple[str, List[Dict[st
             text = str(block.get("text") or "")
             if text:
                 text_parts.append(text)
-
-            annotations = block.get("annotations") or []
-            for ann in annotations:
-                url = str(
-                    ann.get("url")
-                    or ann.get("source", {}).get("url")
-                    or ann.get("webpage", {}).get("url")
-                    or ""
-                ).strip()
+            for ann in block.get("annotations") or []:
+                url = str(ann.get("url") or ann.get("source", {}).get("url") or ann.get("webpage", {}).get("url") or "").strip()
                 if not url or url in seen_urls:
                     continue
-                title = str(
-                    ann.get("title")
-                    or ann.get("source", {}).get("title")
-                    or ann.get("webpage", {}).get("title")
-                    or url
-                ).strip()
-                snippet = str(ann.get("text") or ann.get("quote") or "").strip()
-                sources.append(_normalize_source(title, url, snippet))
+                sources.append({
+                    "title": str(ann.get("title") or ann.get("source", {}).get("title") or ann.get("webpage", {}).get("title") or url).strip() or url,
+                    "url": url,
+                    "snippet": str(ann.get("text") or ann.get("quote") or "").strip(),
+                })
                 seen_urls.add(url)
-
     full_text = "\n\n".join(part for part in text_parts if part).strip()
-
     if not sources and full_text:
         for url in re.findall(r"https?://\S+", full_text):
             clean_url = url.rstrip(").,;]\"'")
             if clean_url in seen_urls:
                 continue
-            sources.append(_normalize_source(clean_url, clean_url, "Extracted from model response text."))
+            sources.append({"title": clean_url, "url": clean_url, "snippet": "Extracted from model response text."})
             seen_urls.add(clean_url)
             if len(sources) >= MAX_RESULTS:
                 break
-
     return full_text, _clean_sources(sources)
 
 
 def _search_openai(query: str) -> Dict[str, Any]:
-    """Fallback: OpenAI Responses API web search."""
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
-        return _make_result(
-            query=query,
-            backend="unavailable",
-            status="error",
-            sources=[],
-            answer="",
-            error="Neither SearXNG nor OPENAI_API_KEY available.",
-        )
+        return {"query": query, "status": "error", "backend": "unavailable", "sources": [], "answer": "", "error": "Neither SearXNG nor OPENAI_API_KEY available."}
     try:
         from openai import OpenAI
 
@@ -200,123 +294,95 @@ def _search_openai(query: str) -> Dict[str, Any]:
             tool_choice="auto",
             input=query,
         )
-        dump = resp.model_dump()
-        answer, sources = _extract_openai_output(dump)
-        return _make_result(
-            query=query,
-            backend="openai",
-            status="ok" if (answer or sources) else "no_results",
-            sources=sources,
-            answer=answer,
-            error=None if (answer or sources) else "OpenAI web search returned empty output.",
-        )
-    except Exception as e:
-        return _make_result(
-            query=query,
-            backend="openai",
-            status="error",
-            sources=[],
-            answer="",
-            error=repr(e),
-        )
+        answer, sources = _extract_openai_output(resp.model_dump())
+        return {"query": query, "status": "ok" if (answer or sources) else "no_results", "backend": "openai", "sources": sources, "answer": answer, "error": None if (answer or sources) else "OpenAI web search returned empty output."}
+    except Exception as exc:
+        return {"query": query, "status": "error", "backend": "openai", "sources": [], "answer": "", "error": repr(exc)}
 
 
-@dataclass
-class ResearchRun:
-    user_query: str
-    intent_type: str = "general"
-    subqueries: List[str] = field(default_factory=list)
-    candidate_sources: List[Dict[str, str]] = field(default_factory=list)
-    visited_pages: List[Dict[str, Any]] = field(default_factory=list)
-    findings: List[Dict[str, Any]] = field(default_factory=list)
-    final_answer: str = ""
-    confidence: str = "low"
+
+
+def _web_search(ctx: ToolContext, query: str) -> str:
+    del ctx
+    primary = _search_searxng(query)
+    if primary is None:
+        return json.dumps(_search_openai(query), ensure_ascii=False, indent=2)
+    primary_sources = _clean_sources(primary.get("sources"))
+    if primary_sources and str(primary.get("status") or "") == "ok":
+        primary["sources"] = primary_sources
+        return json.dumps(primary, ensure_ascii=False, indent=2)
+    return json.dumps(_merge_search_results(primary, _search_openai(query), query), ensure_ascii=False, indent=2)
 
 
 def _research_run(ctx: ToolContext, query: str) -> str:
-    run = ResearchRun(user_query=str(query or '').strip())
-    lowered = run.user_query.lower()
-    if any(token in lowered for token in ('compare', 'vs', 'difference', 'лучше', 'сравни')):
-        run.intent_type = 'comparison'
-    elif any(token in lowered for token in ('latest', 'news', 'recent', 'новост', 'сегодня', '2026', '2025')):
-        run.intent_type = 'freshness_sensitive'
-    elif any(token in lowered for token in ('how', 'guide', 'tutorial', 'как', 'шаг', 'setup')):
-        run.intent_type = 'how_to'
-
-    base = run.user_query
+    run = ResearchRun(user_query=str(query or "").strip())
+    run.intent_type = _classify_intent(run.user_query)
+    policy = asdict(INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]))
+    base = run.user_query.strip()
     variants = [base]
-    if run.intent_type == 'comparison':
-        variants.extend((f'{base} benchmark', f'{base} official documentation'))
-    elif run.intent_type == 'freshness_sensitive':
-        variants.extend((f'{base} latest updates', f'{base} official announcement'))
-    elif run.intent_type == 'how_to':
-        variants.extend((f'{base} step by step', f'{base} official docs'))
+    if run.intent_type == "breaking_news":
+        variants.extend((f"{base} latest updates", f"{base} official announcement", f"{base} timeline"))
+    elif run.intent_type == "fact_lookup":
+        variants.extend((f"{base} exact value", f"{base} official source", f"{base} reference"))
+    elif run.intent_type == "product_docs_api_lookup":
+        variants.extend((f"{base} official docs", f"{base} api reference", f"{base} official example"))
+    elif run.intent_type == "comparison_evaluation":
+        variants.extend((f"{base} benchmark", f"{base} official documentation", f"{base} tradeoffs"))
+    elif run.intent_type == "people_company_ecosystem_tracking":
+        variants.extend((f"{base} official blog", f"{base} latest news", f"{base} company update"))
     else:
-        variants.extend((f'{base} official', f'{base} overview'))
+        variants.extend((f"{base} overview", f"{base} background", f"{base} official"))
     seen: set[str] = set()
     for item in variants:
         value = item.strip()
         if value and value not in seen:
             run.subqueries.append(value)
             seen.add(value)
-        if len(run.subqueries) >= 3:
+        if len(run.subqueries) >= INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]).search_branches:
             break
-
     for subquery in run.subqueries:
         result = json.loads(_web_search(ctx, subquery))
-        sources = _clean_sources(result.get('sources'))
+        sources = _clean_sources(result.get("sources"))
         run.candidate_sources.extend(sources)
-        run.visited_pages.append({
-            'query': subquery,
-            'status': result.get('status'),
-            'backend': result.get('backend'),
-            'source_count': len(sources),
-        })
+        run.visited_pages.append(
+            {
+                "query": subquery,
+                "status": result.get("status"),
+                "backend": result.get("backend"),
+                "source_count": len(sources),
+                "intent_type": run.intent_type,
+                "policy": policy,
+            }
+        )
         if sources:
-            run.findings.append({
-                'query': subquery,
-                'summary': result.get('answer') or f'Collected {len(sources)} candidate sources.',
-                'top_source': sources[0],
-            })
-
+            run.findings.append(
+                {
+                    "query": subquery,
+                    "summary": result.get("answer") or f"Collected {len(sources)} candidate sources.",
+                    "top_source": sources[0],
+                }
+            )
     run.candidate_sources = _clean_sources(run.candidate_sources, limit=10)
-    if run.findings:
-        run.final_answer = 'Research skeleton run complete. Candidate sources collected; deeper synthesis comes in later commits.'
-        run.confidence = 'medium' if run.candidate_sources else 'low'
-    else:
-        run.final_answer = 'Research skeleton run complete, but no usable sources were found.'
-        run.confidence = 'low'
-
+    run.final_answer = (
+        "Research skeleton run classified the request and applied an intent policy; deeper planning and synthesis come in later commits."
+        if run.findings
+        else "Research skeleton run classified the request, but no usable sources were found."
+    )
+    run.confidence = "medium" if len(run.candidate_sources) >= policy["min_sources_before_synthesis"] else "low"
     artifact = save_artifact(
         ctx,
         filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json",
         content=json.dumps(asdict(run), ensure_ascii=False, indent=2),
-        content_kind='json',
-        source='research_run',
-        mime_type='application/json',
-        caption='Research run trace',
-        metadata={'tool': 'research_run', 'intent_type': run.intent_type},
+        content_kind="json",
+        source="research_run",
+        mime_type="application/json",
+        caption="Research run trace",
+        metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy},
     )
     payload = asdict(run)
-    payload['trace'] = artifact if isinstance(artifact, dict) else {'status': 'error', 'message': str(artifact)}
+    payload["intent_policy"] = policy
+    payload["trace"] = artifact if isinstance(artifact, dict) else {"status": "error", "message": str(artifact)}
     return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def _web_search(ctx: ToolContext, query: str) -> str:
-    primary = _search_searxng(query)
-    if primary is None:
-        result = _search_openai(query)
-        return json.dumps(result, ensure_ascii=False, indent=2)
-
-    primary_sources = _clean_sources(primary.get("sources"))
-    primary_status = str(primary.get("status") or "")
-    if primary_sources and primary_status == "ok":
-        primary["sources"] = primary_sources
-        return json.dumps(primary, ensure_ascii=False, indent=2)
-
-    fallback = _search_openai(query)
-    result = _merge_search_results(primary, fallback, query)
-    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def get_tools() -> List[ToolEntry]:
