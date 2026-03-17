@@ -179,37 +179,9 @@ class ResearchRun:
     final_answer: str = ""
     confidence: str = "low"
     query_plan: Dict[str, Any] = field(default_factory=dict)
-
-
-def _classify_intent(query: str) -> str:
-    lowered = str(query or "").strip().lower()
-    if not lowered:
-        return DEFAULT_INTENT
-    for intent_type, keywords in INTENT_KEYWORDS:
-        if any(keyword in lowered for keyword in keywords):
-            return intent_type
-    return "fact_lookup" if any(ch.isdigit() for ch in lowered) else DEFAULT_INTENT
-
-
-def _clean_sources(raw_sources: Optional[List[Dict[str, Any]]], limit: int = MAX_RESULTS) -> List[Dict[str, str]]:
-    cleaned: List[Dict[str, str]] = []
-    seen_urls: set[str] = set()
-    for item in raw_sources or []:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or "").strip()
-        if not url.startswith(("http://", "https://")) or url in seen_urls:
-            continue
-        seen_urls.add(url)
-        cleaned.append({
-            "title": str(item.get("title") or url).strip() or url,
-            "url": url,
-            "snippet": str(item.get("snippet") or item.get("content") or "").strip(),
-        })
-        if len(cleaned) >= limit:
-            break
-    return cleaned
-
+    freshness_summary: Dict[str, Any] = field(default_factory=dict)
+    contradictions: List[Dict[str, Any]] = field(default_factory=list)
+    uncertainty_notes: List[str] = field(default_factory=list)
 
 
 def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
@@ -344,8 +316,17 @@ def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
         relevant_sections = relevant_sections[:3]
         findings: List[Dict[str, Any]] = []
         seen_claims: set[str] = set()
-        observed_at_match = re.search(r"\b(2024|2025|2026)[-/.](\d{1,2})[-/.](\d{1,2})\b", clean_text)
-        observed_at = observed_at_match.group(0) if observed_at_match else ""
+        observed_at_patterns = [
+            r"\b(2024|2025|2026)[-/.](\d{1,2})[-/.](\d{1,2})\b",
+            r"\b(2024|2025|2026)\b",
+        ]
+        observed_at = ""
+        for pattern in observed_at_patterns:
+            match = re.search(pattern, clean_text)
+            if match:
+                observed_at = match.group(0)
+                break
+        freshness_markers = [marker for marker in ("today", "latest", "recent", "updated", "announced", "released", "new", "сегодня", "обновл", "анонс", "релиз") if marker in clean_text.lower()]
         for sentence in relevant_sections:
             lowered = sentence.lower()
             overlap = sum(1 for term in query_terms if term in lowered)
@@ -365,6 +346,7 @@ def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
                 "source_url": url,
                 "source_type": source_type,
                 "observed_at": observed_at,
+                "freshness_signals": freshness_markers,
                 "confidence_local": "high" if score >= 4.0 else "medium" if score >= 2.5 else "low",
             })
         return {
@@ -386,6 +368,130 @@ def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
             "findings": [],
             "error": repr(exc),
         }
+
+
+def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
+    freshness_known = sum(1 for finding in run.findings if str(finding.get("observed_at") or "").strip())
+    freshness_unknown = max(0, len(run.findings) - freshness_known)
+    run.freshness_summary = {
+        "known_dated_findings": freshness_known,
+        "undated_findings": freshness_unknown,
+        "freshness_priority": policy.freshness_priority,
+    }
+    if freshness_unknown and policy.freshness_priority in {"high", "medium"}:
+        run.uncertainty_notes.append("Часть найденных утверждений без явной даты публикации или обновления.")
+
+    numeric_findings = []
+    status_findings = []
+    for finding in run.findings:
+        claim = str(finding.get("claim") or "").strip()
+        lowered = claim.lower()
+        cleaned = re.sub(r"[^a-zа-я0-9\s]", " ", claim.casefold())
+        cleaned = re.sub(r"\b(19|20)\d{2}\b", " ", cleaned)
+        cleaned = re.sub(r"\b\d+(?:[.,]\d+)?\b", " ", cleaned)
+        cleaned = re.sub(r"\b(v|version|ver|rpm|ms|s|sec|seconds|minutes|percent|%)\b", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        tokens = [tok for tok in cleaned.split() if len(tok) >= 3]
+        stop = {"the", "and", "for", "with", "from", "that", "this", "our", "says", "according", "guide"}
+        primary_tokens = [tok for tok in tokens if tok not in stop]
+        topic_key = " ".join((primary_tokens or tokens)[:8]) if tokens else ""
+        numbers = re.findall(r"\b\d+(?:[.,]\d+)?\b", claim)
+        if topic_key and numbers:
+            numeric_findings.append((topic_key, tuple(numbers[:2]), finding))
+        if topic_key and any(token in lowered for token in ("available", "unavailable", "deprecated", "supported", "unsupported", "announced", "cancelled", "delayed", "released", "planned", "removed")):
+            status_findings.append((topic_key, finding))
+
+    contradictions: List[Dict[str, Any]] = []
+    for idx, (topic_a, nums_a, finding_a) in enumerate(numeric_findings):
+        for topic_b, nums_b, finding_b in numeric_findings[idx + 1:]:
+            if topic_a != topic_b or nums_a == nums_b:
+                continue
+            contradictions.append({
+                "kind": "numeric_mismatch",
+                "topic": topic_a,
+                "claim_a": finding_a.get("claim"),
+                "claim_b": finding_b.get("claim"),
+                "source_a": finding_a.get("source_url"),
+                "source_b": finding_b.get("source_url"),
+                "observed_at_a": finding_a.get("observed_at"),
+                "observed_at_b": finding_b.get("observed_at"),
+            })
+    opposite_pairs = {"available": "unavailable", "supported": "unsupported", "released": "planned", "announced": "cancelled"}
+    for idx, (topic_a, finding_a) in enumerate(status_findings):
+        claim_a = str(finding_a.get("claim") or "").lower()
+        for topic_b, finding_b in status_findings[idx + 1:]:
+            claim_b = str(finding_b.get("claim") or "").lower()
+            if topic_a != topic_b:
+                continue
+            if any((left in claim_a and right in claim_b) or (left in claim_b and right in claim_a) for left, right in opposite_pairs.items()):
+                contradictions.append({
+                    "kind": "status_conflict",
+                    "topic": topic_a,
+                    "claim_a": finding_a.get("claim"),
+                    "claim_b": finding_b.get("claim"),
+                    "source_a": finding_a.get("source_url"),
+                    "source_b": finding_b.get("source_url"),
+                    "observed_at_a": finding_a.get("observed_at"),
+                    "observed_at_b": finding_b.get("observed_at"),
+                })
+    deduped = []
+    seen = set()
+    for item in contradictions:
+        key = re.sub(r"\W+", " ", f"{item.get('kind','')} {item.get('topic','')} {item.get('claim_a','')} {item.get('claim_b','')}".casefold()).strip()
+        rev = re.sub(r"\W+", " ", f"{item.get('kind','')} {item.get('topic','')} {item.get('claim_b','')} {item.get('claim_a','')}".casefold()).strip()
+        if not key or key in seen or rev in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    run.contradictions = deduped[:5]
+    if run.contradictions:
+        run.uncertainty_notes.append("Источники расходятся по части утверждений; смотри contradictions в trace.")
+
+    top_findings = sorted(run.findings, key=lambda item: ({"high": 3, "medium": 2, "low": 1}.get(str(item.get("confidence_local") or "low"), 1), 1 if str(item.get("observed_at") or "").strip() else 0), reverse=True)[:3]
+    if top_findings:
+        summary_parts = []
+        for finding in top_findings:
+            claim = str(finding.get("claim") or "").strip()
+            source_type = str(finding.get("source_type") or "page").strip()
+            source_url = str(finding.get("source_url") or "").strip()
+            observed_at = str(finding.get("observed_at") or "").strip()
+            if not claim:
+                continue
+            source_note = f" [{source_type}]" if source_type else ""
+            if observed_at:
+                source_note += f" @ {observed_at}"
+            if source_url:
+                source_note += f" {source_url}"
+            summary_parts.append(f"- {claim}{source_note}")
+        answer_lines = ["Ключевые находки:", *summary_parts]
+        if run.contradictions:
+            answer_lines += ["", "Источники расходятся по части утверждений."]
+            for item in run.contradictions[:2]:
+                answer_lines.append(f"- конфликт: {item.get('claim_a')} <> {item.get('claim_b')}")
+        if run.uncertainty_notes:
+            answer_lines += ["", "Неопределённость:"]
+            answer_lines.extend(f"- {note}" for note in run.uncertainty_notes)
+        run.final_answer = "\n".join(answer_lines)
+    else:
+        run.final_answer = "Research run completed, but deep reading did not produce reliable findings."
+
+    read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
+    high_conf_findings = sum(1 for finding in run.findings if finding.get("confidence_local") == "high")
+    strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
+    if read_pages_ok >= policy.min_sources_before_synthesis and high_conf_findings >= 1:
+        run.confidence = "high"
+    elif read_pages_ok >= 1 and strong_findings >= policy.min_sources_before_synthesis:
+        run.confidence = "medium"
+    else:
+        run.confidence = "low"
+    if freshness_unknown and run.confidence == "high":
+        run.confidence = "medium"
+    elif freshness_unknown and run.confidence == "medium" and policy.freshness_priority == "high":
+        run.confidence = "low"
+    if run.contradictions and run.confidence == "high":
+        run.confidence = "medium"
+    elif run.contradictions and run.confidence == "medium":
+        run.confidence = "low"
 
 
 def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
@@ -486,7 +592,7 @@ def _search_openai(query: str) -> Dict[str, Any]:
                 seen_urls.add(clean_url)
                 if len(sources) >= MAX_RESULTS:
                     break
-        sources = _clean_sources(sources)
+        sources = clean_sources(sources)
         return {
             "query": query,
             "status": "ok" if (answer or sources) else "no_results",
@@ -510,12 +616,37 @@ def _web_search(ctx: ToolContext, query: str) -> str:
     primary = _search_searxng(query)
     if primary is None:
         return json.dumps(_search_openai(query), ensure_ascii=False, indent=2)
-    primary_sources = _clean_sources(primary.get("sources"))
+    primary_sources: List[Dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for item in primary.get("sources") or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")) or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        primary_sources.append({"title": str(item.get("title") or url).strip() or url, "url": url, "snippet": str(item.get("snippet") or item.get("content") or "").strip()})
+        if len(primary_sources) >= MAX_RESULTS:
+            break
     if primary_sources and str(primary.get("status") or "") == "ok":
         primary["sources"] = primary_sources
         return json.dumps(primary, ensure_ascii=False, indent=2)
     fallback = _search_openai(query)
-    merged_sources = _clean_sources(_clean_sources(primary.get("sources")) + _clean_sources(fallback.get("sources")))
+    merged_sources: List[Dict[str, str]] = []
+    seen_urls = set()
+    for bucket in (primary.get("sources") or [], fallback.get("sources") or []):
+        for item in bucket:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            if not url.startswith(("http://", "https://")) or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            merged_sources.append({"title": str(item.get("title") or url).strip() or url, "url": url, "snippet": str(item.get("snippet") or item.get("content") or "").strip()})
+            if len(merged_sources) >= MAX_RESULTS:
+                break
+        if len(merged_sources) >= MAX_RESULTS:
+            break
     answer = "\n\n".join(
         part for part in (str(primary.get("answer") or "").strip(), str(fallback.get("answer") or "").strip()) if part
     )
@@ -538,7 +669,11 @@ def _web_search(ctx: ToolContext, query: str) -> str:
 
 def _research_run(ctx: ToolContext, query: str) -> str:
     run = ResearchRun(user_query=str(query or "").strip())
-    run.intent_type = _classify_intent(run.user_query)
+    lowered = run.user_query.lower()
+    if not lowered:
+        run.intent_type = DEFAULT_INTENT
+    else:
+        run.intent_type = next((intent_type for intent_type, keywords in INTENT_KEYWORDS if any(keyword in lowered for keyword in keywords)), ("fact_lookup" if any(ch.isdigit() for ch in lowered) else DEFAULT_INTENT))
     policy = asdict(INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]))
     plan = _build_query_plan(run.user_query, run.intent_type)
     run.subqueries = list(plan.subqueries)
@@ -569,7 +704,18 @@ def _research_run(ctx: ToolContext, query: str) -> str:
 
     for subquery in run.subqueries:
         result = json.loads(_web_search(ctx, subquery))
-        sources = _clean_sources(result.get("sources"), limit=10)
+        sources: List[Dict[str, str]] = []
+        source_urls: set[str] = set()
+        for item in result.get("sources") or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            if not url.startswith(("http://", "https://")) or url in source_urls:
+                continue
+            source_urls.add(url)
+            sources.append({"title": str(item.get("title") or url).strip() or url, "url": url, "snippet": str(item.get("snippet") or item.get("content") or "").strip()})
+            if len(sources) >= 10:
+                break
         page_trace = {
             "query": subquery,
             "status": result.get("status"),
@@ -643,7 +789,7 @@ def _research_run(ctx: ToolContext, query: str) -> str:
             if is_duplicate:
                 decision = "reject"
                 reasons.append("selection-policy:duplicate-url")
-            elif policy["require_official_source"] and not (official or primary) and score < 2.5:
+            elif policy["require_official_source"] and not (official or primary) and score < 1.2:
                 decision = "reject"
                 reasons.append("selection-policy:official-needed")
             elif score < 0.4:
@@ -691,32 +837,7 @@ def _research_run(ctx: ToolContext, query: str) -> str:
         deduped_findings.append(finding)
     run.findings = deduped_findings
 
-    top_findings = sorted(run.findings, key=lambda item: {"high": 3, "medium": 2, "low": 1}.get(str(item.get("confidence_local") or "low"), 1), reverse=True)[:3]
-    if top_findings:
-        summary_parts = []
-        for finding in top_findings:
-            claim = str(finding.get("claim") or "").strip()
-            source_type = str(finding.get("source_type") or "page").strip()
-            source_url = str(finding.get("source_url") or "").strip()
-            if not claim:
-                continue
-            source_note = f" [{source_type}]" if source_type else ""
-            if source_url:
-                source_note += f" {source_url}"
-            summary_parts.append(f"- {claim}{source_note}")
-        run.final_answer = "Key findings:\n" + "\n".join(summary_parts) if summary_parts else "Research run completed, but extracted findings were too weak to summarize."
-    else:
-        run.final_answer = "Research run completed, but deep reading did not produce reliable findings."
-
-    read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
-    high_conf_findings = sum(1 for finding in run.findings if finding.get("confidence_local") == "high")
-    strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
-    if read_pages_ok >= policy["min_sources_before_synthesis"] and high_conf_findings >= 1:
-        run.confidence = "high"
-    elif read_pages_ok >= 1 and strong_findings >= policy["min_sources_before_synthesis"]:
-        run.confidence = "medium"
-    else:
-        run.confidence = "low"
+    _apply_research_quality(run, INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]))
 
     artifact = save_artifact(ctx, filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json", content=json.dumps(asdict(run), ensure_ascii=False, indent=2), content_kind="json", source="research_run", mime_type="application/json", caption="Research run trace", metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy, "query_plan": run.query_plan})
     payload = asdict(run)
