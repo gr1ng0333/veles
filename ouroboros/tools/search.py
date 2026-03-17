@@ -208,29 +208,9 @@ def _clean_sources(raw_sources: Optional[List[Dict[str, Any]]], limit: int = MAX
     return cleaned
 
 
-def _normalize_query_text(query: str) -> str:
-    return re.sub(r"\s+", " ", str(query or "").strip())
-
-
-def _dedupe_nonempty_queries(candidates: List[str], limit: int) -> List[str]:
-    cleaned: List[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        value = _normalize_query_text(candidate)
-        if not value:
-            continue
-        dedupe_key = value.casefold()
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-        cleaned.append(value)
-        if len(cleaned) >= limit:
-            break
-    return cleaned
-
 
 def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
-    base = _normalize_query_text(query)
+    base = re.sub(r"\s+", " ", str(query or "").strip())
     policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT])
 
     freshness_suffix = {
@@ -274,7 +254,19 @@ def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
         candidates.append(official_docs_query)
 
     branch_budget = max(3, min(policy.search_branches, MAX_SUBQUERIES))
-    subqueries = _dedupe_nonempty_queries(candidates, limit=branch_budget)
+    subqueries: List[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        value = re.sub(r"\s+", " ", str(candidate or "").strip())
+        if not value:
+            continue
+        dedupe_key = value.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        subqueries.append(value)
+        if len(subqueries) >= branch_budget:
+            break
     branch_budget = len(subqueries)
 
     return QueryPlan(
@@ -287,27 +279,6 @@ def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
         branch_budget=branch_budget,
     )
 
-
-def _merge_search_results(primary: Dict[str, Any], fallback: Dict[str, Any], query: str) -> Dict[str, Any]:
-    merged_sources = _clean_sources(_clean_sources(primary.get("sources")) + _clean_sources(fallback.get("sources")))
-    answer = "\n\n".join(
-        part for part in (str(primary.get("answer") or "").strip(), str(fallback.get("answer") or "").strip()) if part
-    )
-    error = " | ".join(
-        part for part in (str(primary.get("error") or "").strip(), str(fallback.get("error") or "").strip()) if part
-    ) or None
-    if merged_sources:
-        status = "degraded" if primary.get("status") != "ok" or fallback.get("status") == "error" else "ok"
-    else:
-        status = "error" if "error" in {str(primary.get("status") or ""), str(fallback.get("status") or "")} else "no_results"
-    return {
-        "query": query,
-        "status": status,
-        "backend": f"{primary.get('backend', 'unknown')}+{fallback.get('backend', 'unknown')}",
-        "sources": merged_sources,
-        "answer": answer,
-        "error": error,
-    }
 
 
 def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
@@ -388,7 +359,6 @@ def _search_openai(query: str) -> Dict[str, Any]:
     except Exception as exc:
         return {"query": query, "status": "error", "backend": "openai", "sources": [], "answer": "", "error": repr(exc)}
 
-
 def _web_search(ctx: ToolContext, query: str) -> str:
     del ctx
     primary = _search_searxng(query)
@@ -398,7 +368,26 @@ def _web_search(ctx: ToolContext, query: str) -> str:
     if primary_sources and str(primary.get("status") or "") == "ok":
         primary["sources"] = primary_sources
         return json.dumps(primary, ensure_ascii=False, indent=2)
-    return json.dumps(_merge_search_results(primary, _search_openai(query), query), ensure_ascii=False, indent=2)
+    fallback = _search_openai(query)
+    merged_sources = _clean_sources(_clean_sources(primary.get("sources")) + _clean_sources(fallback.get("sources")))
+    answer = "\n\n".join(
+        part for part in (str(primary.get("answer") or "").strip(), str(fallback.get("answer") or "").strip()) if part
+    )
+    error = " | ".join(
+        part for part in (str(primary.get("error") or "").strip(), str(fallback.get("error") or "").strip()) if part
+    ) or None
+    if merged_sources:
+        status = "degraded" if primary.get("status") != "ok" or fallback.get("status") == "error" else "ok"
+    else:
+        status = "error" if "error" in {str(primary.get("status") or ""), str(fallback.get("status") or "")} else "no_results"
+    return json.dumps({
+        "query": query,
+        "status": status,
+        "backend": f"{primary.get('backend', 'unknown')}+{fallback.get('backend', 'unknown')}",
+        "sources": merged_sources,
+        "answer": answer,
+        "error": error,
+    }, ensure_ascii=False, indent=2)
 
 
 def _research_run(ctx: ToolContext, query: str) -> str:
