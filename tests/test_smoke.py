@@ -98,7 +98,7 @@ EXPECTED_TOOLS = [
     "request_restart", "promote_to_stable", "request_review",
     "schedule_task", "cancel_task",
     "switch_model", "toggle_evolution", "toggle_consciousness",
-    "send_owner_message", "send_photo", "send_browser_screenshot", "save_artifact", "list_incoming_artifacts", "send_document", "send_documents",
+    "send_owner_message", "send_photo", "send_browser_screenshot", "save_artifact", "list_incoming_artifacts", "send_document", "send_local_file", "send_documents",
     "switch_codex_account",
     "codebase_digest", "codebase_health",
     "knowledge_read", "knowledge_write", "knowledge_list",
@@ -463,34 +463,20 @@ def test_function_count_reasonable():
 class TestPrePushGate:
     """Tests for pre-push test gate in git.py."""
 
-    def test_run_pre_push_tests_disabled(self):
-        """When OUROBOROS_PRE_PUSH_TESTS=0, should return None (skip)."""
+    def test_run_pre_push_tests_short_circuits(self):
+        """Disabled mode and missing tests dir should both skip cleanly."""
         import os
         from ouroboros.tools.git import _run_pre_push_tests
+
         old = os.environ.get("OUROBOROS_PRE_PUSH_TESTS")
         try:
             os.environ["OUROBOROS_PRE_PUSH_TESTS"] = "0"
-            # ctx doesn't matter since we return early
-            result = _run_pre_push_tests(None)
-            assert result is None
-        finally:
-            if old is None:
-                os.environ.pop("OUROBOROS_PRE_PUSH_TESTS", None)
-            else:
-                os.environ["OUROBOROS_PRE_PUSH_TESTS"] = old
+            assert _run_pre_push_tests(None) is None
 
-    def test_run_pre_push_tests_no_tests_dir(self):
-        """When tests/ dir doesn't exist, should return None."""
-        from ouroboros.tools.git import _run_pre_push_tests
-        import os
-        old = os.environ.get("OUROBOROS_PRE_PUSH_TESTS")
-        try:
             os.environ["OUROBOROS_PRE_PUSH_TESTS"] = "1"
-            # Create a mock ctx with non-existent repo_dir
             class FakeCtx:
                 repo_dir = "/tmp/nonexistent_repo_dir_12345"
-            result = _run_pre_push_tests(FakeCtx())
-            assert result is None
+            assert _run_pre_push_tests(FakeCtx()) is None
         finally:
             if old is None:
                 os.environ.pop("OUROBOROS_PRE_PUSH_TESTS", None)

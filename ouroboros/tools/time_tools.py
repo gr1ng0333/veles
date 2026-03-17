@@ -12,16 +12,6 @@ from ouroboros.tools.registry import ToolContext, ToolEntry
 DEFAULT_TZ = "Europe/Moscow"
 
 
-def _to_view(dt: datetime, tz_name: str) -> dict:
-    return {
-        "timezone": tz_name,
-        "iso": dt.isoformat(),
-        "weekday": dt.strftime("%A"),
-        "time": dt.strftime("%H:%M:%S"),
-        "date": dt.strftime("%Y-%m-%d"),
-    }
-
-
 def _time_status(ctx: ToolContext, timezone: str = DEFAULT_TZ) -> str:
     now_utc = datetime.now(dt_timezone.utc)
     unix_ts = int(now_utc.timestamp())
@@ -48,9 +38,27 @@ def _time_status(ctx: ToolContext, timezone: str = DEFAULT_TZ) -> str:
     payload = {
         "unix_timestamp": unix_ts,
         "summary": summary,
-        "utc": _to_view(now_utc, "UTC"),
-        "moscow": _to_view(msk_dt, DEFAULT_TZ),
-        "requested": _to_view(requested_dt, requested_name),
+        "utc": {
+            "timezone": "UTC",
+            "iso": now_utc.isoformat(),
+            "weekday": now_utc.strftime("%A"),
+            "time": now_utc.strftime("%H:%M:%S"),
+            "date": now_utc.strftime("%Y-%m-%d"),
+        },
+        "moscow": {
+            "timezone": DEFAULT_TZ,
+            "iso": msk_dt.isoformat(),
+            "weekday": msk_dt.strftime("%A"),
+            "time": msk_dt.strftime("%H:%M:%S"),
+            "date": msk_dt.strftime("%Y-%m-%d"),
+        },
+        "requested": {
+            "timezone": requested_name,
+            "iso": requested_dt.isoformat(),
+            "weekday": requested_dt.strftime("%A"),
+            "time": requested_dt.strftime("%H:%M:%S"),
+            "date": requested_dt.strftime("%Y-%m-%d"),
+        },
         "requested_timezone_input": timezone,
         "requested_timezone_valid": requested_valid,
     }

@@ -6,8 +6,10 @@ import ast
 import base64
 import json
 import logging
+import mimetypes
 import os
 import pathlib
+import tempfile
 import uuid
 from functools import partial
 from typing import Any, Dict, List, Tuple
@@ -56,6 +58,71 @@ def _drive_write(ctx: ToolContext, path: str, content: str, mode: str = "overwri
             f.write(content)
     return f"OK: wrote {mode} {path} ({len(content)} chars)"
 
+
+
+def _send_local_file(
+    ctx: ToolContext,
+    path: str,
+    caption: str = "",
+    filename: str = "",
+    mime_type: str = "",
+) -> str:
+    """Send an existing local file from repo/drive/tmp to Telegram without manual base64 handling."""
+    chat_id = int(ctx.current_chat_id or 0)
+    if not chat_id:
+        return "⚠️ No current chat available for send_local_file."
+
+    raw = str(path or "").strip()
+    if not raw:
+        return "⚠️ send_local_file requires a non-empty path."
+
+    candidate = pathlib.Path(raw).expanduser()
+    try:
+        local_path = ((ctx.repo_dir / safe_relpath(raw)).resolve() if not candidate.is_absolute() else candidate.resolve())
+    except ValueError as e:
+        return f"⚠️ {e}"
+
+    allowed_roots = [ctx.repo_dir.resolve(), ctx.drive_root.resolve(), pathlib.Path(tempfile.gettempdir()).resolve()]
+    if not any(local_path == root or root in local_path.parents for root in allowed_roots):
+        return "⚠️ path is outside allowed roots (repo, drive_root, tmp)."
+    if not local_path.exists():
+        return f"⚠️ local file not found: {local_path}"
+    if not local_path.is_file():
+        return f"⚠️ path is not a file: {local_path}"
+    if local_path.stat().st_size <= 0:
+        return f"⚠️ local file is empty: {local_path}"
+
+    payload = local_path.read_bytes()
+    safe_filename = (filename or local_path.name or "file.bin").strip() or "file.bin"
+    mime = (mime_type or mimetypes.guess_type(safe_filename)[0] or "application/octet-stream").strip()
+    payload_b64 = base64.b64encode(payload).decode("ascii")
+    archive_meta = save_artifact(
+        ctx.drive_root,
+        file_base64=payload_b64,
+        filename=safe_filename,
+        content_kind=("python" if pathlib.Path(safe_filename).suffix.lower() == ".py" else "html" if pathlib.Path(safe_filename).suffix.lower() in {".html", ".htm"} else "config" if pathlib.Path(safe_filename).suffix.lower() in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"} else "table" if pathlib.Path(safe_filename).suffix.lower() in {".csv", ".tsv"} else "text" if pathlib.Path(safe_filename).suffix.lower() in {".txt", ".md", ".rst"} or mime.startswith("text/") else "generic"),
+        source="send_local_file_tool",
+        task_id=ctx.task_id or "",
+        chat_id=chat_id,
+        mime_type=mime,
+        caption=caption or "",
+        metadata={"source_path": str(local_path)},
+    )
+
+    event = {
+        "type": "send_document",
+        "chat_id": chat_id,
+        "file_base64": payload_b64,
+        "filename": safe_filename,
+        "caption": caption or "",
+        "mime_type": mime,
+        "artifact_archive_path": archive_meta["relative_path"],
+    }
+    ctx.pending_events.append(event)
+    return (
+        f"✅ Local file queued for delivery: {safe_filename} "
+        f"from {local_path} · archived at {archive_meta['relative_path']}"
+    )
 
 
 
@@ -510,6 +577,20 @@ def get_tools() -> List[ToolEntry]:
             }, "required": []},
         }, list_incoming_artifacts),
 
+        ToolEntry("send_local_file", {
+            "name": "send_local_file",
+            "description": "Отправить существующий локальный файл владельцу в Telegram без ручного base64. Разрешены только пути внутри repo, drive_root и системного tmp.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Путь к локальному файлу"},
+                    "caption": {"type": "string", "description": "Подпись к файлу"},
+                    "filename": {"type": "string", "description": "Необязательное имя файла при отправке"},
+                    "mime_type": {"type": "string", "description": "Необязательный MIME-тип; по умолчанию определяется по имени файла"}
+                },
+                "required": ["path"],
+            },
+        }, _send_local_file),
         ToolEntry("send_document", {
             "name": "send_document",
             "description": "Отправить файл (document) владельцу в Telegram.",

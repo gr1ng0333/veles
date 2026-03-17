@@ -2,12 +2,15 @@ import pathlib
 import tempfile
 from types import SimpleNamespace
 
-from ouroboros.tools.core import _send_documents
+import pytest
+
+from ouroboros.tools.core import _send_documents, _send_local_file
 from ouroboros.tools.registry import ToolContext
 from supervisor.events import _handle_send_documents
 
 
-def test_send_documents_queues_single_bulk_event_with_default_caption():
+@pytest.mark.parametrize("files, caption, expected", [([], "", "requires a non-empty files list")])
+def test_send_documents_and_local_file_flow(tmp_path, files, caption, expected):
     tmp = pathlib.Path(tempfile.mkdtemp())
     ctx = ToolContext(repo_dir=tmp, drive_root=tmp, current_chat_id=12345)
     result = _send_documents(
@@ -29,15 +32,10 @@ def test_send_documents_queues_single_bulk_event_with_default_caption():
     assert event["files"][0]["caption"] == ""
     assert event["files"][1]["filename"] == "b.py"
 
+    empty_ctx = ToolContext(repo_dir=tmp, drive_root=tmp, current_chat_id=12345)
+    empty = _send_documents(empty_ctx, files=files, caption=caption)
+    assert expected in empty
 
-def test_send_documents_rejects_empty_files_list():
-    tmp = pathlib.Path(tempfile.mkdtemp())
-    ctx = ToolContext(repo_dir=tmp, drive_root=tmp, current_chat_id=12345)
-    result = _send_documents(ctx, files=[])
-    assert "requires a non-empty files list" in result
-
-
-def test_handle_send_documents_sends_each_file_with_caption_fallback():
     calls = []
 
     class DummyTG:
@@ -88,19 +86,15 @@ def test_handle_send_documents_sends_each_file_with_caption_fallback():
     assert calls[1]["payload"] == "beta"
     assert log_rows == []
 
+    from ouroboros.tools.core import _send_document
 
-
-def test_document_archive_paths_are_persisted(tmp_path):
-    from ouroboros.tools.registry import ToolContext
-    from ouroboros.tools.core import _send_document, _send_documents
-
-    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, current_chat_id=42, task_id="task-doc")
-    single = _send_document(ctx, content="print(\'ok\')\n", filename="solution.py", mime_type="text/x-python")
+    doc_ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, current_chat_id=42, task_id="task-doc")
+    single = _send_document(doc_ctx, content="print(\'ok\')\n", filename="solution.py", mime_type="text/x-python")
     assert "archived at artifacts/outbox" in single
-    evt = ctx.pending_events[-1]
-    archived = tmp_path / evt["artifact_archive_path"]
+    single_evt = doc_ctx.pending_events[-1]
+    archived = tmp_path / single_evt["artifact_archive_path"]
     assert archived.exists()
-    assert archived.read_text(encoding="utf-8") == "print(\'ok\')\n"
+    assert archived.read_text(encoding="utf-8") == "print('ok')\n"
     assert archived.with_suffix(archived.suffix + ".meta.json").exists()
 
     batch_ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, current_chat_id=42, task_id="task-batch")
@@ -115,3 +109,26 @@ def test_document_archive_paths_are_persisted(tmp_path):
         persisted = tmp_path / item["artifact_archive_path"]
         assert persisted.exists()
         assert persisted.with_suffix(persisted.suffix + ".meta.json").exists()
+
+    local = tmp_path / "report.txt"
+    local.write_text("ready\n", encoding="utf-8")
+    local_ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, current_chat_id=12345, task_id="task-local")
+
+    local_result = _send_local_file(local_ctx, path="report.txt", caption="done")
+    assert "Local file queued for delivery" in local_result
+    assert len(local_ctx.pending_events) == 1
+    local_event = local_ctx.pending_events[0]
+    assert local_event["type"] == "send_document"
+    assert local_event["filename"] == "report.txt"
+    assert local_event["caption"] == "done"
+    local_archived = tmp_path / local_event["artifact_archive_path"]
+    assert local_archived.exists()
+    assert local_archived.read_text(encoding="utf-8") == "ready\n"
+    meta = local_archived.with_suffix(local_archived.suffix + ".meta.json").read_text(encoding="utf-8")
+    assert "send_local_file_tool" in meta
+
+    missing = _send_local_file(local_ctx, path="missing.txt")
+    assert "local file not found" in missing
+
+    outside = _send_local_file(local_ctx, path="/etc/hosts")
+    assert "outside allowed roots" in outside
