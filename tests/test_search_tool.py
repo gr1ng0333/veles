@@ -1,13 +1,11 @@
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ouroboros.tools.search import (
     INTENT_POLICIES,
     _build_query_plan,
-    _classify_intent,
-    _clean_sources,
     _read_page_findings,
     _research_run,
     _web_search,
@@ -127,14 +125,24 @@ def test_research_run_policy_trace_and_scored_candidates(_web, _save, query, sid
         assert isinstance(data['sources'], list)
         assert data['sources'][0]['url'] == 'https://example.com'
 
-    cleaned = _clean_sources([
-        {"title": "A", "url": "https://example.com/a", "snippet": "one"},
-        {"title": "A-dup", "url": "https://example.com/a", "snippet": "dup"},
-        {"title": "No URL", "url": "", "snippet": "bad"},
-        {"title": "Bad URL", "url": "ftp://example.com/file", "snippet": "bad"},
-        {"title": "B", "url": "https://example.com/b", "snippet": "two"},
-    ])
-    assert [row['url'] for row in cleaned] == ['https://example.com/a', 'https://example.com/b']
+    with patch('ouroboros.tools.search._search_searxng', return_value={
+        "query": "test query",
+        "status": "ok",
+        "backend": "searxng",
+        "sources": [
+            {"title": "A", "url": "https://example.com/a", "snippet": "x"},
+            {"title": "A2", "url": "https://example.com/a", "snippet": "dup"},
+            {"title": "Bad", "url": "ftp://bad.example.com", "snippet": "skip"},
+            {"title": "", "url": "https://example.com/b", "snippet": "y"},
+        ],
+        "answer": "",
+        "error": None,
+    }):
+        payload = json.loads(_web_search(None, 'test query'))
+        assert payload['sources'] == [
+            {'url': 'https://example.com/a', 'title': 'A', 'snippet': 'x'},
+            {'url': 'https://example.com/b', 'title': 'https://example.com/b', 'snippet': 'y'},
+        ]
 
     with patch('ouroboros.tools.search._search_searxng', return_value={
         "query": "test",
@@ -203,7 +211,7 @@ QUERY_CASES = [
 
 
 @pytest.mark.parametrize(('query', 'expected_intent'), QUERY_CASES)
-def test_intent_policy_table_and_classification_contract(query, expected_intent):
+def test_intent_policy_and_followup_contract(query, expected_intent):
     assert set(INTENT_POLICIES) == {
         'breaking_news',
         'fact_lookup',
@@ -217,7 +225,22 @@ def test_intent_policy_table_and_classification_contract(query, expected_intent)
         assert policy.search_branches >= 3
         assert policy.min_sources_before_synthesis >= 2
         assert isinstance(policy.require_official_source, bool)
-    assert _classify_intent(query) == expected_intent
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-i'
+        current_chat_id = 1
+
+    with patch('ouroboros.tools.search._web_search', return_value=json.dumps({
+        "query": query,
+        "status": "no_results",
+        "backend": "searxng",
+        "sources": [],
+        "answer": "",
+        "error": None,
+    })), patch('ouroboros.tools.search.save_artifact', return_value={"relative_path": "artifacts/outbox/trace.json", "bytes": 1}):
+        data = json.loads(_research_run(Ctx(), query))
+    assert data['intent_type'] == expected_intent
 
     planner_cases = [
         ('openai api rate limit', 'product_docs_api_lookup', 4),
@@ -235,50 +258,9 @@ def test_intent_policy_table_and_classification_contract(query, expected_intent)
         assert plan.primary_query == planned_query
 
 
+@pytest.mark.parametrize('mode', ['source_scoring', 'deep_reading'])
 @patch('ouroboros.tools.search.save_artifact')
-@patch('ouroboros.tools.search._web_search')
-def test_source_scoring_rejects_duplicate_aggregator_and_social_noise(_web, _save):
-    _web.side_effect = [
-        json.dumps({
-            "query": "openai api rate limit",
-            "status": "ok",
-            "backend": "searxng",
-            "sources": [
-                {"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official updated 2026 rate limits"},
-                {"title": "HN mirror", "url": "https://news.ycombinator.com/item?id=1", "snippet": "roundup"},
-                {"title": "Reddit", "url": "https://reddit.com/r/openai/comments/xyz", "snippet": "forum guess"},
-            ],
-            "answer": "",
-            "error": None,
-        }),
-        json.dumps({
-            "query": "openai api rate limit recent",
-            "status": "ok",
-            "backend": "searxng",
-            "sources": [
-                {"title": "Docs duplicate", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official updated 2026 rate limits"},
-                {"title": "API reference", "url": "https://platform.openai.com/docs/api-reference", "snippet": "reference updated 2026"},
-            ],
-            "answer": "",
-            "error": None,
-        }),
-        json.dumps({
-            "query": "openai api rate limit official docs",
-            "status": "no_results",
-            "backend": "searxng",
-            "sources": [],
-            "answer": "",
-            "error": None,
-        }),
-        json.dumps({
-            "query": "openai api rate limit reference guide",
-            "status": "no_results",
-            "backend": "searxng",
-            "sources": [],
-            "answer": "",
-            "error": None,
-        }),
-    ]
+def test_source_selection_and_deep_reading_contours(_save, mode):
     _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
 
     class Ctx:
@@ -286,74 +268,79 @@ def test_source_scoring_rejects_duplicate_aggregator_and_social_noise(_web, _sav
         task_id = 'task-1'
         current_chat_id = 1
 
-    data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
-    assert data['candidate_sources'][0]['url'] == 'https://platform.openai.com/docs/guides/rate-limits'
-    assert data['candidate_sources'][0]['score'] >= data['candidate_sources'][-1]['score']
-    first_page = data['visited_pages'][0]
-    rejected_urls = {item['url'] for item in first_page['rejected']}
-    assert 'https://news.ycombinator.com/item?id=1' in rejected_urls
-    assert 'https://reddit.com/r/openai/comments/xyz' in rejected_urls
-    duplicate_entry = next(item for page in data['visited_pages'] for item in page['ranked_sources'] if item['url'] == 'https://platform.openai.com/docs/guides/rate-limits' and any('duplicate:' in reason for reason in item['reasons']))
-    assert duplicate_entry['decision'] == 'reject'
-    assert any('official-source' in reason or 'primary-source' in reason for reason in data['candidate_sources'][0]['reasons'])
+    if mode == 'source_scoring':
+        with patch('ouroboros.tools.search._web_search') as _web:
+            _web.side_effect = [
+                json.dumps({
+                    "query": "openai api rate limit",
+                    "status": "ok",
+                    "backend": "searxng",
+                    "sources": [
+                        {"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official updated 2026 rate limits"},
+                        {"title": "HN mirror", "url": "https://news.ycombinator.com/item?id=1", "snippet": "roundup"},
+                        {"title": "Reddit", "url": "https://reddit.com/r/openai/comments/xyz", "snippet": "forum guess"},
+                    ],
+                    "answer": "",
+                    "error": None,
+                }),
+                json.dumps({
+                    "query": "openai api rate limit recent",
+                    "status": "ok",
+                    "backend": "searxng",
+                    "sources": [
+                        {"title": "Docs duplicate", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official updated 2026 rate limits"},
+                        {"title": "API reference", "url": "https://platform.openai.com/docs/api-reference", "snippet": "reference updated 2026"},
+                    ],
+                    "answer": "",
+                    "error": None,
+                }),
+                json.dumps({"query": "openai api rate limit official docs", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+                json.dumps({"query": "openai api rate limit reference guide", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+            ]
+            data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
+        assert data['candidate_sources'][0]['url'] == 'https://platform.openai.com/docs/guides/rate-limits'
+        assert data['candidate_sources'][0]['score'] >= data['candidate_sources'][-1]['score']
+        first_page = data['visited_pages'][0]
+        rejected_urls = {item['url'] for item in first_page['rejected']}
+        assert 'https://news.ycombinator.com/item?id=1' in rejected_urls
+        assert 'https://reddit.com/r/openai/comments/xyz' in rejected_urls
+        duplicate_entry = next(item for page in data['visited_pages'] for item in page['ranked_sources'] if item['url'] == 'https://platform.openai.com/docs/guides/rate-limits' and any('duplicate:' in reason for reason in item['reasons']))
+        assert duplicate_entry['decision'] == 'reject'
+        assert any('official-source' in reason or 'primary-source' in reason for reason in data['candidate_sources'][0]['reasons'])
+        return
 
-
-@patch('ouroboros.tools.search.save_artifact')
-@patch('ouroboros.tools.search._read_page_findings')
-@patch('ouroboros.tools.search._web_search')
-def test_deep_reading_extracts_findings_from_docs_news_and_blog(_web, _fetch, _save):
-    _web.side_effect = [
-        json.dumps({
-            "query": "openai api rate limit",
-            "status": "ok",
-            "backend": "searxng",
-            "sources": [
-                {"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "Updated 2026 rate limits for API usage."},
-                {"title": "News", "url": "https://example.com/news/openai-rate-limit", "snippet": "Today OpenAI updated rate limit guidance."},
-            ],
-            "answer": "",
-            "error": None,
-        }),
-        json.dumps({
-            "query": "openai api rate limit recent",
-            "status": "ok",
-            "backend": "searxng",
-            "sources": [
-                {"title": "Blog", "url": "https://blog.example.com/openai-rate-limit-analysis", "snippet": "API rate limit analysis and examples."},
-            ],
-            "answer": "",
-            "error": None,
-        }),
-        json.dumps({
-            "query": "openai api rate limit official docs",
-            "status": "no_results",
-            "backend": "searxng",
-            "sources": [],
-            "answer": "",
-            "error": None,
-        }),
-        json.dumps({
-            "query": "openai api rate limit reference guide",
-            "status": "no_results",
-            "backend": "searxng",
-            "sources": [],
-            "answer": "",
-            "error": None,
-        }),
-    ]
-    _fetch.side_effect = [
-        {"url": "https://platform.openai.com/docs/guides/rate-limits", "status": "ok", "content_type": "text/html", "text_preview": "Updated 2026-03-17. The API rate limit for tier 1 is 500 RPM.", "relevant_sections": ["The API rate limit for tier 1 is 500 RPM."], "findings": [{"claim": "The API rate limit for tier 1 is 500 RPM.", "evidence_snippet": "The API rate limit for tier 1 is 500 RPM.", "source_url": "https://platform.openai.com/docs/guides/rate-limits", "source_type": "docs", "observed_at": "2026-03-17", "confidence_local": "high"}], "error": None},
-        {"url": "https://example.com/news/openai-rate-limit", "status": "ok", "content_type": "text/html", "text_preview": "Today OpenAI announced revised limits.", "relevant_sections": ["Today OpenAI announced revised limits."], "findings": [{"claim": "Today OpenAI announced revised limits.", "evidence_snippet": "Today OpenAI announced revised limits.", "source_url": "https://example.com/news/openai-rate-limit", "source_type": "news", "observed_at": "", "confidence_local": "medium"}], "error": None},
-        {"url": "https://blog.example.com/openai-rate-limit-analysis", "status": "ok", "content_type": "text/html", "text_preview": "This blog explains the API rate limit for tier 1 is 500 RPM.", "relevant_sections": ["This blog explains the API rate limit for tier 1 is 500 RPM."], "findings": [{"claim": "This blog explains the API rate limit for tier 1 is 500 RPM.", "evidence_snippet": "This blog explains the API rate limit for tier 1 is 500 RPM.", "source_url": "https://blog.example.com/openai-rate-limit-analysis", "source_type": "news", "observed_at": "", "confidence_local": "medium"}], "error": None},
-    ]
-    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
-
-    class Ctx:
-        drive_root = '/tmp'
-        task_id = 'task-1'
-        current_chat_id = 1
-
-    data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
+    with patch('ouroboros.tools.search._web_search') as _web, patch('ouroboros.tools.search._read_page_findings') as _fetch:
+        _web.side_effect = [
+            json.dumps({
+                "query": "openai api rate limit",
+                "status": "ok",
+                "backend": "searxng",
+                "sources": [
+                    {"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "Updated 2026 rate limits for API usage."},
+                    {"title": "News", "url": "https://example.com/news/openai-rate-limit", "snippet": "Today OpenAI updated rate limit guidance."},
+                ],
+                "answer": "",
+                "error": None,
+            }),
+            json.dumps({
+                "query": "openai api rate limit recent",
+                "status": "ok",
+                "backend": "searxng",
+                "sources": [
+                    {"title": "Blog", "url": "https://blog.example.com/openai-rate-limit-analysis", "snippet": "API rate limit analysis and examples."},
+                ],
+                "answer": "",
+                "error": None,
+            }),
+            json.dumps({"query": "openai api rate limit official docs", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+            json.dumps({"query": "openai api rate limit reference guide", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+        ]
+        _fetch.side_effect = [
+            {"url": "https://platform.openai.com/docs/guides/rate-limits", "status": "ok", "content_type": "text/html", "text_preview": "Updated 2026-03-17. The API rate limit for tier 1 is 500 RPM.", "relevant_sections": ["The API rate limit for tier 1 is 500 RPM."], "findings": [{"claim": "The API rate limit for tier 1 is 500 RPM.", "evidence_snippet": "The API rate limit for tier 1 is 500 RPM.", "source_url": "https://platform.openai.com/docs/guides/rate-limits", "source_type": "docs", "observed_at": "2026-03-17", "confidence_local": "high"}], "error": None},
+            {"url": "https://example.com/news/openai-rate-limit", "status": "ok", "content_type": "text/html", "text_preview": "Today OpenAI announced revised limits.", "relevant_sections": ["Today OpenAI announced revised limits."], "findings": [{"claim": "Today OpenAI announced revised limits.", "evidence_snippet": "Today OpenAI announced revised limits.", "source_url": "https://example.com/news/openai-rate-limit", "source_type": "news", "observed_at": "", "confidence_local": "medium"}], "error": None},
+            {"url": "https://blog.example.com/openai-rate-limit-analysis", "status": "ok", "content_type": "text/html", "text_preview": "This blog explains the API rate limit for tier 1 is 500 RPM.", "relevant_sections": ["This blog explains the API rate limit for tier 1 is 500 RPM."], "findings": [{"claim": "This blog explains the API rate limit for tier 1 is 500 RPM.", "evidence_snippet": "This blog explains the API rate limit for tier 1 is 500 RPM.", "source_url": "https://blog.example.com/openai-rate-limit-analysis", "source_type": "news", "observed_at": "", "confidence_local": "medium"}], "error": None},
+        ]
+        data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
     assert data['findings']
     assert any(f['source_type'] == 'docs' for f in data['findings'])
     assert any(f['source_type'] == 'news' for f in data['findings'])
@@ -364,7 +351,6 @@ def test_deep_reading_extracts_findings_from_docs_news_and_blog(_web, _fetch, _s
     assert any('500 RPM' in f['claim'] or '500 RPM' in f['evidence_snippet'] for f in data['findings'])
 
     import urllib.request
-    from unittest.mock import MagicMock
 
     fake_response = MagicMock()
     fake_response.read.return_value = b'<html><body><script>bad()</script><p>Updated 2026-03-17.</p><p>API rate limit is 500 RPM.</p><p>API rate limit is 500 RPM.</p></body></html>'
@@ -386,3 +372,82 @@ def test_deep_reading_extracts_findings_from_docs_news_and_blog(_web, _fetch, _s
     assert result['findings'][0]['source_type'] == 'docs'
     assert result['findings'][0]['confidence_local'] in {'low', 'medium', 'high'}
 
+
+@pytest.mark.parametrize(
+    ('query', 'web_side_effect', 'fetch_side_effect', 'assertion_mode'),
+    [
+        (
+            'openai api rate limit',
+            [
+                json.dumps({
+                    "query": "openai api rate limit",
+                    "status": "ok",
+                    "backend": "searxng",
+                    "sources": [
+                        {"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "Updated 2026-03-17. Tier 1 is 500 RPM."},
+                        {"title": "Blog", "url": "https://blog.example.com/openai-rate-limit", "snippet": "Tier 1 is 300 RPM according to our writeup."},
+                    ],
+                    "answer": "",
+                    "error": None,
+                }),
+                json.dumps({"query": "openai api rate limit recent", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+                json.dumps({"query": "openai api rate limit official docs", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+                json.dumps({"query": "openai api rate limit reference guide", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+            ],
+            [
+                {"url": "https://platform.openai.com/docs/guides/rate-limits", "status": "ok", "content_type": "text/html", "text_preview": "Updated 2026-03-17. The API rate limit for tier 1 is 500 RPM.", "relevant_sections": ["The API rate limit for tier 1 is 500 RPM."], "findings": [{"claim": "The API rate limit for tier 1 is 500 RPM.", "evidence_snippet": "The API rate limit for tier 1 is 500 RPM.", "source_url": "https://platform.openai.com/docs/guides/rate-limits", "source_type": "docs", "observed_at": "2026-03-17", "confidence_local": "high"}], "error": None},
+                {"url": "https://blog.example.com/openai-rate-limit", "status": "ok", "content_type": "text/html", "text_preview": "Our analysis says the API rate limit for tier 1 is 300 RPM.", "relevant_sections": ["Our analysis says the API rate limit for tier 1 is 300 RPM."], "findings": [{"claim": "The API rate limit for tier 1 is 300 RPM.", "evidence_snippet": "The API rate limit for tier 1 is 300 RPM.", "source_url": "https://blog.example.com/openai-rate-limit", "source_type": "blog", "observed_at": "", "confidence_local": "medium"}], "error": None},
+            ],
+            'contradictions',
+        ),
+        (
+            'what happened today openai release',
+            [
+                json.dumps({
+                    "query": "what happened today openai release",
+                    "status": "ok",
+                    "backend": "searxng",
+                    "sources": [
+                        {"title": "Post 1", "url": "https://example.com/post-1", "snippet": "OpenAI released something today."},
+                        {"title": "Post 2", "url": "https://example.com/post-2", "snippet": "A new release is discussed."},
+                    ],
+                    "answer": "",
+                    "error": None,
+                }),
+                json.dumps({"query": "what happened today openai release latest updates", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+                json.dumps({"query": "what happened today openai release timeline and reactions", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+                json.dumps({"query": "what happened today openai release conflicting reports", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+            ],
+            [
+                {"url": "https://example.com/post-1", "status": "ok", "content_type": "text/html", "text_preview": "OpenAI released a feature.", "relevant_sections": ["OpenAI released a feature."], "findings": [{"claim": "OpenAI released a feature.", "evidence_snippet": "OpenAI released a feature.", "source_url": "https://example.com/post-1", "source_type": "news", "observed_at": "", "confidence_local": "high"}], "error": None},
+                {"url": "https://example.com/post-2", "status": "ok", "content_type": "text/html", "text_preview": "The release is discussed by multiple users.", "relevant_sections": ["The release is discussed by multiple users."], "findings": [{"claim": "The release is discussed by multiple users.", "evidence_snippet": "The release is discussed by multiple users.", "source_url": "https://example.com/post-2", "source_type": "news", "observed_at": "", "confidence_local": "medium"}], "error": None},
+            ],
+            'freshness',
+        ),
+    ],
+)
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_research_run_uncertainty_modes(_web, _fetch, _save, query, web_side_effect, fetch_side_effect, assertion_mode):
+    _web.side_effect = web_side_effect
+    _fetch.side_effect = fetch_side_effect
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-u'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    assert data['freshness_summary']['undated_findings'] >= 1
+    assert data['uncertainty_notes']
+    if assertion_mode == 'contradictions':
+        assert data['contradictions']
+        assert any(item['kind'] == 'numeric_mismatch' for item in data['contradictions'])
+        assert 'Источники расходятся' in data['final_answer']
+        assert data['confidence'] in {'low', 'medium'}
+    else:
+        assert data['freshness_summary']['known_dated_findings'] == 0
+        assert any('даты' in note.lower() or 'дата' in note.lower() for note in data['uncertainty_notes'])
+        assert data['confidence'] == 'low'
