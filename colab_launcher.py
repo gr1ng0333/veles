@@ -13,6 +13,7 @@ from ouroboros.apply_patch import install as install_apply_patch
 from ouroboros.llm import DEFAULT_LIGHT_MODEL
 from ouroboros.model_modes import bootstrap_mode_env, get_active_mode, mode_summary_text, persist_active_mode
 from ouroboros.artifacts import save_incoming_artifact, schedule_inbox_confirmation
+from ouroboros.doc_ingest import ingest_legacy_word_document
 install_apply_patch()
 _LEGACY_CFG_WARNED: Set[str] = set()
 _userdata_get = lambda key: None
@@ -261,6 +262,37 @@ def _document_to_text_payload(doc: Dict[str, Any], caption: str, tg: TelegramCli
             text_content = text_content[:max_file_content] + f'\n\n... (обрезано, всего {full_len} символов)'
         user_text = caption or ''
         payload = f"{user_text}\n\n📎 Файл: {file_name}\n```{file_ext}\n{text_content}\n```"
+        return payload.strip(), None, True
+
+    if file_ext == 'doc' and file_id:
+        raw_b64, detected_mime = tg.download_file_base64(file_id)
+        if not raw_b64:
+            return None, None, False
+        import base64 as _b64mod
+        file_bytes = _b64mod.b64decode(raw_b64)
+        ingest_result = ingest_legacy_word_document(
+            drive_root=drive_root,
+            file_name=file_name,
+            file_bytes=file_bytes,
+            chat_id=chat_id,
+            caption=caption,
+            message_id=int(message_id or 0),
+            telegram_file_id=str(file_id or ''),
+            activation_mode='immediate' if has_caption else 'deferred',
+        )
+        if not has_caption:
+            schedule_inbox_confirmation(chat_id, file_name, send_with_budget)
+            return None, None, True
+        extracted = str(ingest_result.get('extracted_text') or '').strip()
+        status = str(ingest_result.get('status') or 'archived')
+        metadata = ingest_result.get('metadata') or {}
+        if extracted:
+            if len(extracted) > 80000:
+                extracted = extracted[:80000] + '\n\n... (обрезано)'
+            payload = f"{caption or ''}\n\n📎 DOC: {file_name}\nСтатус ingest: {status}\n\n{extracted}"
+            return payload.strip(), None, True
+        meta_path = metadata.get('relative_path') if isinstance(metadata, dict) else ''
+        payload = f"{caption or ''}\n\n📎 DOC: {file_name}\nСтатус ingest: {status}. Текст автоматически не извлечён.\nМетаданные: {meta_path or 'не сохранены'}"
         return payload.strip(), None, True
 
     if file_ext == 'pdf' and file_id:
