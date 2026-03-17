@@ -451,3 +451,56 @@ def test_research_run_uncertainty_modes(_web, _fetch, _save, query, web_side_eff
         assert data['freshness_summary']['known_dated_findings'] == 0
         assert any('даты' in note.lower() or 'дата' in note.lower() for note in data['uncertainty_notes'])
         assert data['confidence'] == 'low'
+
+
+@pytest.mark.parametrize(
+    ('query', 'expected_mode', 'expected_phrase'),
+    [
+        ('python 3.13 release date', 'short_factual', 'Короткий ответ:'),
+        ('compare fastapi vs django for internal tools', 'comparison_brief', 'Сопоставление подтверждённых утверждений:'),
+        ('what happened today with openai release', 'timeline', 'Хронология/последовательность по прочитанным источникам:'),
+        ('what is retrieval augmented generation', 'analyst_memo', 'Что подтверждают прочитанные источники:'),
+    ],
+)
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_research_run_synthesis_modes_and_evidence_trace(_web, _fetch, _save, query, expected_mode, expected_phrase):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    _web.side_effect = [
+        json.dumps({
+            "query": query,
+            "status": "ok",
+            "backend": "searxng",
+            "sources": [
+                {"title": "Primary", "url": "https://example.com/a", "snippet": "Primary evidence snippet."},
+                {"title": "Secondary", "url": "https://example.com/b", "snippet": "Secondary evidence snippet."},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({"query": f"{query} recent", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} official docs", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} overview", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} contradictions", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://example.com/a", "status": "ok", "content_type": "text/html", "text_preview": "alpha", "relevant_sections": ["alpha"], "findings": [{"claim": "Primary claim for synthesis.", "evidence_snippet": "Primary evidence snippet.", "source_url": "https://docs.python.org/3/whatsnew/3.13.html", "source_type": "docs", "observed_at": "2026-03-17", "confidence_local": "high"}], "error": None},
+        {"url": "https://example.com/b", "status": "ok", "content_type": "text/html", "text_preview": "beta", "relevant_sections": ["beta"], "findings": [{"claim": "Secondary claim for synthesis.", "evidence_snippet": "Secondary evidence snippet.", "source_url": "https://www.python.org/downloads/release/python-3130/", "source_type": "news", "observed_at": "", "confidence_local": "medium"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-s'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    assert data['answer_mode'] == expected_mode
+    assert data['synthesis']['answer_mode'] == expected_mode
+    assert data['synthesis']['short_answer']
+    assert data['synthesis']['key_findings']
+    assert all(item['evidence_snippet'] and item['source_url'] for item in data['synthesis']['key_findings'])
+    assert data['synthesis']['sources']
+    assert expected_phrase in data['final_answer']
+    assert 'evidence:' in data['final_answer']
+    assert 'source:' in data['final_answer']
