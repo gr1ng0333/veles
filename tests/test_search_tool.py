@@ -4,8 +4,10 @@ from unittest.mock import patch
 
 from ouroboros.tools.search import (
     INTENT_POLICIES,
+    _build_query_plan,
     _classify_intent,
     _clean_sources,
+    _dedupe_nonempty_queries,
     _merge_search_results,
     _research_run,
     _web_search,
@@ -84,7 +86,7 @@ def test_search_result_contract_helpers():
                     "error": None,
                 }),
                 json.dumps({
-                    "query": "claude research mode background",
+                    "query": "claude research mode official source",
                     "status": "no_results",
                     "backend": "searxng",
                     "sources": [],
@@ -114,7 +116,7 @@ def test_search_result_contract_helpers():
                     "error": None,
                 }),
                 json.dumps({
-                    "query": "openai api rate limit official docs",
+                    "query": "openai api rate limit recent",
                     "status": "ok",
                     "backend": "searxng",
                     "sources": [{"title": "Reference", "url": "https://platform.openai.com/docs/api-reference", "snippet": "reference"}],
@@ -122,7 +124,7 @@ def test_search_result_contract_helpers():
                     "error": None,
                 }),
                 json.dumps({
-                    "query": "openai api rate limit api reference",
+                    "query": "openai api rate limit official docs",
                     "status": "no_results",
                     "backend": "searxng",
                     "sources": [],
@@ -130,7 +132,7 @@ def test_search_result_contract_helpers():
                     "error": None,
                 }),
                 json.dumps({
-                    "query": "openai api rate limit official example",
+                    "query": "openai api rate limit reference guide",
                     "status": "no_results",
                     "backend": "searxng",
                     "sources": [],
@@ -170,6 +172,7 @@ def test_research_run_policy_and_trace_contract(_web, _save, query, side_effect,
     assert data['candidate_sources'][0]['url'] == expected_first_url
     assert data['intent_policy'] == expected_policy
     assert data['trace']['relative_path'].endswith('.json')
+    assert data['query_plan']['branch_budget'] == expected_subqueries
 
 
 QUERY_CASES = [
@@ -210,3 +213,34 @@ def test_intent_policy_table_and_classification_contract(query, expected_intent)
         assert policy.min_sources_before_synthesis >= 2
         assert isinstance(policy.require_official_source, bool)
     assert _classify_intent(query) == expected_intent
+
+
+@pytest.mark.parametrize(
+    ('query', 'intent_type', 'expected_budget'),
+    [
+        ('openai api rate limit', 'product_docs_api_lookup', 4),
+        ('claude vs gpt for research', 'comparison_evaluation', 4),
+        ('what happened today with xAI', 'breaking_news', 4),
+        ('what is retrieval augmented generation', 'background_explainer', 3),
+    ],
+)
+def test_query_planner_generates_bounded_nonempty_branches(query, intent_type, expected_budget):
+    plan = _build_query_plan(query, intent_type)
+    assert plan.branch_budget == expected_budget
+    assert 3 <= len(plan.subqueries) <= 6
+    assert len(plan.subqueries) == expected_budget
+    assert all(item.strip() for item in plan.subqueries)
+    assert len({item.casefold() for item in plan.subqueries}) == len(plan.subqueries)
+    assert plan.primary_query == query
+
+
+@pytest.mark.parametrize(
+    ('candidates', 'limit', 'expected'),
+    [
+        ([' test ', '', 'TEST', 'test  ', 'other query'], 5, ['test', 'other query']),
+        (['a', 'b', 'c', 'd'], 3, ['a', 'b', 'c']),
+        (['', '   '], 6, []),
+    ],
+)
+def test_query_planner_dedupes_and_drops_empty_queries(candidates, limit, expected):
+    assert _dedupe_nonempty_queries(candidates, limit=limit) == expected
