@@ -31,7 +31,7 @@ def test_bootstrap_mode_env_uses_persisted_active_mode() -> None:
         assert mode.model == "copilot/claude-sonnet-4.6"
         assert os.environ["OUROBOROS_MODEL"] == MODEL_MODES["sonnet"].model
         assert os.environ["OUROBOROS_MAX_ROUNDS"] == str(MODEL_MODES["sonnet"].max_rounds)
-        assert os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] == "0"
+        assert os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] == "1"
         assert os.environ.get("OUROBOROS_MODEL_LIGHT")
     finally:
         st2 = load_state()
@@ -108,7 +108,7 @@ def test_runtime_policy_exposes_execution_style(monkeypatch) -> None:
     monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
     policy = get_runtime_policy({"active_model_mode": "opus"})
     assert policy.mode_key == "opus"
-    assert policy.execution_style == "one_shot"
+    assert policy.execution_style == "loop"
 
 
 def test_execution_style_for_active_mode_reads_persisted_mode() -> None:
@@ -117,7 +117,7 @@ def test_execution_style_for_active_mode_reads_persisted_mode() -> None:
     try:
         st["active_model_mode"] = "sonnet"
         save_state(st)
-        assert execution_style_for_active_mode() == "one_shot"
+        assert execution_style_for_active_mode() == "loop"
     finally:
         st2 = load_state()
         if old_mode is None:
@@ -133,8 +133,8 @@ def test_runtime_policy_uses_copilot_tags_for_sonnet_and_opus(monkeypatch) -> No
     opus = get_runtime_policy({"active_model_mode": "opus"})
     assert sonnet.main_model == "copilot/claude-sonnet-4.6"
     assert opus.main_model == "copilot/claude-opus-4.6"
-    assert sonnet.execution_style == "one_shot"
-    assert opus.execution_style == "one_shot"
+    assert sonnet.execution_style == "loop"
+    assert opus.execution_style == "loop"
 
 
 def test_background_model_prefers_explicit_background_override(monkeypatch) -> None:
@@ -209,3 +209,35 @@ def test_sync_mode_env_from_state_overrides_stale_env() -> None:
             os.environ.pop("OUROBOROS_MODEL_TOOLS_ENABLED", None)
         else:
             os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] = old_tools
+
+
+def test_opus_agentic_loop_mode():
+    """Opus must run in full agentic loop with tools enabled."""
+    mode = MODEL_MODES["opus"]
+    assert mode.execution_style == "loop"
+    assert mode.tools_enabled is True
+    assert mode.max_rounds == 100
+
+
+def test_sonnet_agentic_loop_mode():
+    """Sonnet must run in full agentic loop with tools enabled."""
+    mode = MODEL_MODES["sonnet"]
+    assert mode.execution_style == "loop"
+    assert mode.tools_enabled is True
+    assert mode.max_rounds == 50
+
+
+def test_haiku_extended_rounds():
+    """Haiku must support extended round limit for medium tasks."""
+    mode = MODEL_MODES["haiku"]
+    assert mode.execution_style == "loop"
+    assert mode.tools_enabled is True
+    assert mode.max_rounds == 30
+
+
+def test_copilot_modes_all_loop():
+    """All Copilot-backed modes must use loop execution style."""
+    for key in ("haiku", "sonnet", "opus"):
+        mode = MODEL_MODES[key]
+        assert mode.execution_style == "loop", f"{key} must be loop, got {mode.execution_style}"
+        assert mode.tools_enabled is True, f"{key} must have tools enabled"
