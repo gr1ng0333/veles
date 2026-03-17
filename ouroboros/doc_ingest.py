@@ -75,7 +75,8 @@ def ingest_legacy_word_document(
     result['converter_binary'] = converter.get('binary') or ''
 
     tmpdir = tempfile.mkdtemp(prefix='legacy-doc-')
-    input_path = pathlib.Path(tmpdir) / normalized_name
+    tmpdir_path = pathlib.Path(tmpdir)
+    input_path = tmpdir_path / normalized_name
     input_path.write_bytes(file_bytes)
     stem = pathlib.Path(normalized_name).stem or 'document'
     docx_name = f'{stem}.docx'
@@ -90,10 +91,9 @@ def ingest_legacy_word_document(
                     'stage': 'convert-docx',
                     'kind': 'libreoffice_failed',
                     'returncode': proc.returncode,
-                    'stderr': (proc.stderr or '').strip()[:4000],
-                    'stdout': (proc.stdout or '').strip()[:4000],
+                    'stderr': (proc.stderr or '').strip()[:4000], 'stdout': (proc.stdout or '').strip()[:4000],
                 })
-            out_path = pathlib.Path(tmpdir) / docx_name
+            out_path = tmpdir_path / docx_name
             if out_path.exists():
                 docx_bytes = out_path.read_bytes()
                 docx_meta = save_incoming_artifact(
@@ -108,7 +108,33 @@ def ingest_legacy_word_document(
                 )
                 result['docx'] = docx_meta
                 result['status'] = 'converted'
-                extracted = extract_text_from_docx_bytes(docx_bytes)
+                extracted_parts = []
+                with zipfile.ZipFile(out_path) as zf:
+                    for name in sorted(zf.namelist()):
+                        if not (
+                            name == 'word/document.xml'
+                            or name.startswith('word/header')
+                            or name.startswith('word/footer')
+                        ):
+                            continue
+                        xml_text = zf.read(name).decode('utf-8', errors='ignore')
+                        clean = xml_text.replace('</w:p>', '\n').replace('</w:tr>', '\n').replace('</w:tbl>', '\n')
+                        clean = re.sub(r'<w:tab[^>]*/>', '\t', clean)
+                        clean = re.sub(r'<w:br[^>]*/>', '\n', clean)
+                        clean = re.sub(r'<[^>]+>', '', clean)
+                        clean = (
+                            clean.replace('&amp;', '&')
+                            .replace('&lt;', '<')
+                            .replace('&gt;', '>')
+                            .replace('&quot;', '"')
+                            .replace('&apos;', "'")
+                        )
+                        clean = clean.replace('\r', '')
+                        clean = re.sub(r'\n{3,}', '\n\n', clean)
+                        clean = '\n'.join(line.rstrip() for line in clean.split('\n')).strip()
+                        if clean:
+                            extracted_parts.append(clean)
+                extracted = '\n\n'.join(extracted_parts).strip()
                 if extracted:
                     text_meta = save_incoming_artifact(
                         drive_root,
@@ -146,8 +172,7 @@ def ingest_legacy_word_document(
                     'stage': 'extract-text',
                     'kind': f"{converter['kind']}_failed",
                     'returncode': proc.returncode,
-                    'stderr': (proc.stderr or '').strip()[:4000],
-                    'stdout': (proc.stdout or '').strip()[:4000],
+                    'stderr': (proc.stderr or '').strip()[:4000], 'stdout': (proc.stdout or '').strip()[:4000],
                 })
         else:
             result['status'] = 'converter-unavailable'
@@ -164,33 +189,22 @@ def ingest_legacy_word_document(
             'message': f'Converter exceeded {timeout_sec}s timeout.',
         })
     finally:
-        try:
-            for child in pathlib.Path(tmpdir).iterdir():
-                try:
-                    child.unlink()
-                except OSError:
-                    pass
-            pathlib.Path(tmpdir).rmdir()
-        except OSError:
-            pass
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
-    metadata_content = json.dumps(
-        {
-            'source_filename': normalized_name,
-            'activation_mode': activation_mode,
-            'status': result['status'],
-            'converter': result['converter'],
-            'converter_binary': result['converter_binary'],
-            'artifacts': {
-                'original': result['original']['relative_path'] if isinstance(result['original'], dict) else '',
-                'docx': result['docx']['relative_path'] if isinstance(result['docx'], dict) else '',
-                'text': result['text']['relative_path'] if isinstance(result['text'], dict) else '',
-            },
-            'errors': result['errors'],
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+    artifacts = {
+        'original': result['original']['relative_path'] if isinstance(result['original'], dict) else '',
+        'docx': result['docx']['relative_path'] if isinstance(result['docx'], dict) else '',
+        'text': result['text']['relative_path'] if isinstance(result['text'], dict) else '',
+    }
+    metadata_content = json.dumps({
+        'source_filename': normalized_name,
+        'activation_mode': activation_mode,
+        'status': result['status'],
+        'converter': result['converter'],
+        'converter_binary': result['converter_binary'],
+        'artifacts': artifacts,
+        'errors': result['errors'],
+    }, ensure_ascii=False, indent=2)
     metadata_meta = save_incoming_artifact(
         drive_root,
         filename=f'{stem}.doc.ingest.json',

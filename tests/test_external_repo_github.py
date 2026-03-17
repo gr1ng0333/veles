@@ -5,9 +5,6 @@ from ouroboros.tools.external_repo_github import _external_repo_memory_append_no
 from ouroboros.tools.registry import ToolContext
 
 
-def _ctx(tmp_path: pathlib.Path) -> ToolContext:
-    return ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
-
 
 def _register_repo(tmp_path: pathlib.Path, alias: str = 'demo') -> pathlib.Path:
     repo_dir = tmp_path / 'repos' / alias
@@ -29,7 +26,7 @@ def test_github_repo_slug_supports_https_and_ssh():
 
 def test_external_repo_memory_template_create_update_append(tmp_path):
     _register_repo(tmp_path)
-    ctx = _ctx(tmp_path)
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     initial = _external_repo_memory_get(ctx, 'demo')
     assert '# External Repo Memory — demo' in initial
     assert 'gr1ng0333/avito-sniper-bot' in initial

@@ -59,9 +59,6 @@ def build_session_registry_key(*, site_profile: Optional[Dict[str, Any]], site_u
 
 
 
-def _registry_path(ctx: ToolContext) -> str:
-    return str(ctx.drive_path("state/browser_session_registry.json"))
-
 
 
 def load_browser_session_registry(ctx: ToolContext) -> Dict[str, Any]:
