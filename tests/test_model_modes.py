@@ -84,11 +84,12 @@ def test_mode_summary_text_for_codex_includes_mode_details(monkeypatch) -> None:
     monkeypatch.delenv("CODEX_CONSCIOUSNESS_REFRESH", raising=False)
     monkeypatch.setattr(mm, "get_active_mode", lambda st=None: MODEL_MODES["codex"])
 
-    def _fake_statuses():
-        return [{"index": 2, "is_active": True, "usage_5h": 11, "usage_7d": 222}]
-
     import ouroboros.codex_proxy as cp
-    monkeypatch.setattr(cp, "get_accounts_status", _fake_statuses)
+    monkeypatch.setattr(
+        cp,
+        "get_accounts_status",
+        lambda: [{"index": 2, "is_active": True, "usage_5h": 11, "usage_7d": 222}],
+    )
 
     summary = mode_summary_text()
     assert "Mode: codex" in summary
