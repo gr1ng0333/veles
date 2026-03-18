@@ -679,6 +679,58 @@ def test_comparison_prefers_primary_benchmark_retrieval(_web, _fetch, _save):
     top_urls = [item['url'] for item in data['candidate_sources'][:2]]
     assert 'https://docs.anthropic.com/en/docs/build-with-claude/benchmarks' in top_urls
     assert 'https://platform.openai.com/docs/guides/evals' in top_urls
-    assert any('benchmark-signal' in reason for item in data['candidate_sources'][:2] for reason in item['reasons'])
+    assert any(('benchmark-primary:' in reason) or ('primary-benchmark-branch:+0.8' in reason) for item in data['candidate_sources'][:2] for reason in item['reasons'])
     assert any('primary-benchmark-branch:+0.8' in reason or 'official-branch:+1.0' in reason for item in data['candidate_sources'][:2] for reason in item['reasons'])
     assert 'Сопоставление подтверждённых утверждений:' in data['final_answer']
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_benchmark_domain_priors_trace_by_primary_type(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    query = 'compare claude vs gpt benchmark leaderboard methodology'
+    _web.side_effect = [
+        json.dumps({
+            "query": query,
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "HF leaderboard", "url": "https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard", "snippet": "leaderboard benchmark scores arena"},
+                {"title": "Anthropic benchmark methodology", "url": "https://docs.anthropic.com/en/docs/build-with-claude/benchmarks", "snippet": "official benchmark methodology latency evaluation"},
+                {"title": "OpenAI evals guide", "url": "https://platform.openai.com/docs/guides/evals", "snippet": "official evaluation methodology benchmark guidance"},
+                {"title": "GPT paper", "url": "https://arxiv.org/abs/2501.12345", "snippet": "paper benchmark evaluation details"},
+                {"title": "GitHub eval harness", "url": "https://github.com/openai/evals", "snippet": "evaluation harness methodology benchmark repo"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({"query": f"{query} recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} official benchmark methodology maintainers", "status": "ok", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} tradeoffs benchmark methodology independent results", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} benchmark disagreement counterarguments", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://docs.anthropic.com/en/docs/build-with-claude/benchmarks", "status": "ok", "content_type": "text/html", "text_preview": "anthropic", "relevant_sections": ["anthropic"], "findings": [{"claim": "Anthropic documents benchmark methodology and caveats.", "evidence_snippet": "The page explains methodology and caveats.", "source_url": "https://docs.anthropic.com/en/docs/build-with-claude/benchmarks", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+        {"url": "https://platform.openai.com/docs/guides/evals", "status": "ok", "content_type": "text/html", "text_preview": "openai", "relevant_sections": ["openai"], "findings": [{"claim": "OpenAI frames evals as methodology, not universal leaderboard truth.", "evidence_snippet": "The guide focuses on eval design and limitations.", "source_url": "https://platform.openai.com/docs/guides/evals", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-benchmark-priors'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    ranked = {}
+    for page in data['visited_pages']:
+        for item in page.get('ranked_sources', []):
+            ranked[item['url']] = item
+    assert ranked['https://docs.anthropic.com/en/docs/build-with-claude/benchmarks']['benchmark_primary_type'] == 'vendor_docs'
+    assert ranked['https://platform.openai.com/docs/guides/evals']['benchmark_primary_type'] == 'vendor_docs'
+    assert ranked['https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard']['benchmark_primary_type'] == 'leaderboard'
+    assert ranked['https://arxiv.org/abs/2501.12345']['benchmark_primary_type'] == 'paper'
+    assert ranked['https://github.com/openai/evals']['benchmark_primary_type'] == 'repo_methodology'
+    assert any('benchmark-primary:vendor_docs' in reason for reason in ranked['https://docs.anthropic.com/en/docs/build-with-claude/benchmarks']['reasons'])
+    assert any('benchmark-primary:leaderboard' in reason for reason in ranked['https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard']['reasons'])
+    assert any('benchmark-primary:paper' in reason for reason in ranked['https://arxiv.org/abs/2501.12345']['reasons'])
+    assert any('benchmark-primary:repo_methodology' in reason for reason in ranked['https://github.com/openai/evals']['reasons'])
