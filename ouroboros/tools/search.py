@@ -18,9 +18,11 @@ from ouroboros.tools.registry import ToolContext, ToolEntry
 log = logging.getLogger(__name__)
 
 SEARXNG_DEFAULT = "http://localhost:8888"
+SERPER_DEFAULT_URL = "https://google.serper.dev/search"
 MAX_RESULTS = 5
 DEFAULT_INTENT = "background_explainer"
 MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS = 6, 6, 2, 1
+clean_sources = lambda items: [{"title": title, "url": url, "snippet": snippet} for title, url, snippet in [(str((item or {}).get("title") or (item or {}).get("url") or "").strip(), str((item or {}).get("url") or "").strip(), str((item or {}).get("snippet") or (item or {}).get("content") or "").strip()) for item in (items or []) if isinstance(item, dict) and str(item.get("url") or "").strip().startswith(("http://", "https://"))] if url]
 
 @dataclass(frozen=True)
 class IntentPolicy:
@@ -532,7 +534,6 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_
     run.answer_mode = output_mode_override if output_mode_override in {"short_factual", "analyst_memo", "comparison_brief", "timeline"} else mode_by_intent.get(run.intent_type, "short_factual")
     _render_synthesis(run, policy)
 
-
 def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
     url = os.environ.get("SEARXNG_URL", SEARXNG_DEFAULT)
     if not url:
@@ -545,7 +546,7 @@ def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
         req = urllib.request.Request(f"{url}/search?{params}", headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-        sources = _clean_sources(
+        sources = clean_sources(
             [{"title": row.get("title", ""), "url": row.get("url", ""), "content": row.get("content", "")} for row in data.get("results", [])[:MAX_RESULTS]]
         )
         if not sources:
@@ -564,7 +565,7 @@ def _search_openai(query: str) -> Dict[str, Any]:
             "backend": "unavailable",
             "sources": [],
             "answer": "",
-            "error": "Neither SearXNG nor OPENAI_API_KEY available.",
+            "error": "Neither Serper/SearXNG nor OPENAI_API_KEY available.",
         }
     try:
         from openai import OpenAI
@@ -649,7 +650,47 @@ def _search_openai(query: str) -> Dict[str, Any]:
 
 def _web_search(ctx: ToolContext, query: str) -> str:
     del ctx
-    primary = _search_searxng(query)
+    primary = None
+    api_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if api_key:
+        try:
+            import urllib.request
+
+            payload = json.dumps({"q": query, "num": MAX_RESULTS}).encode("utf-8")
+            req = urllib.request.Request(
+                os.environ.get("SERPER_URL", SERPER_DEFAULT_URL),
+                data=payload,
+                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = json.loads(resp.read())
+            organic = data.get("organic") or []
+            answer_box = data.get("answerBox") or {}
+            knowledge_graph = data.get("knowledgeGraph") or {}
+            primary = {
+                "query": query,
+                "status": "ok",
+                "backend": "serper",
+                "sources": clean_sources([
+                    {"title": row.get("title", ""), "url": row.get("link", ""), "content": row.get("snippet", "")}
+                    for row in organic[:MAX_RESULTS] if isinstance(row, dict)
+                ]),
+                "answer": "\n\n".join(
+                    bit for bit in [
+                        str(answer_box.get("answer") or "").strip(),
+                        str(answer_box.get("snippet") or "").strip(),
+                        str(knowledge_graph.get("description") or "").strip(),
+                    ] if bit
+                ),
+                "error": None,
+            }
+            if not primary["sources"] and not primary["answer"]:
+                primary = {"query": query, "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": "Serper returned no usable results."}
+        except Exception as exc:
+            log.warning("Serper search failed: %s", exc)
+    if primary is None:
+        primary = _search_searxng(query)
     if primary is None:
         return json.dumps(_search_openai(query), ensure_ascii=False, indent=2)
     primary_sources: List[Dict[str, str]] = []

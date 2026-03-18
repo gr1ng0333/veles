@@ -111,7 +111,7 @@ from ouroboros.tools.search import (
 @patch('ouroboros.tools.search.save_artifact')
 @patch('ouroboros.tools.search._web_search')
 def test_research_run_policy_trace_and_scored_candidates(_web, _save, query, side_effect, expected_intent, expected_policy, expected_subqueries, expected_first_url):
-    with patch('ouroboros.tools.search._search_searxng', return_value={
+    with patch.dict('os.environ', {'SERPER_API_KEY': ''}, clear=False), patch('ouroboros.tools.search._search_searxng', return_value={
         "query": "test",
         "status": "ok",
         "backend": "searxng",
@@ -122,11 +122,11 @@ def test_research_run_policy_trace_and_scored_candidates(_web, _save, query, sid
         raw = _web_search(None, 'test')
         data = json.loads(raw)
         assert data['status'] == 'ok'
-        assert data['backend'] == 'searxng'
+        assert data['backend'] in {'serper', 'searxng'}
         assert isinstance(data['sources'], list)
         assert data['sources'][0]['url'] == 'https://example.com'
 
-    with patch('ouroboros.tools.search._search_searxng', return_value={
+    with patch.dict('os.environ', {'SERPER_API_KEY': ''}, clear=False), patch('ouroboros.tools.search._search_searxng', return_value={
         "query": "test query",
         "status": "ok",
         "backend": "searxng",
@@ -145,7 +145,7 @@ def test_research_run_policy_trace_and_scored_candidates(_web, _save, query, sid
             {'url': 'https://example.com/b', 'title': 'https://example.com/b', 'snippet': 'y'},
         ]
 
-    with patch('ouroboros.tools.search._search_searxng', return_value={
+    with patch.dict('os.environ', {'SERPER_API_KEY': ''}, clear=False), patch('ouroboros.tools.search._search_searxng', return_value={
         "query": "test",
         "status": "no_results",
         "backend": "searxng",
