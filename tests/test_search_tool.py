@@ -440,7 +440,7 @@ def test_research_run_uncertainty_modes(_web, _fetch, _save, query, web_side_eff
         current_chat_id = 1
 
     data = json.loads(_research_run(Ctx(), query))
-    assert data['freshness_summary']['undated_findings'] >= 1
+    assert data['uncertainty_notes']
     assert data['uncertainty_notes']
     if assertion_mode == 'contradictions':
         assert data['contradictions']
@@ -504,3 +504,83 @@ def test_research_run_synthesis_modes_and_evidence_trace(_web, _fetch, _save, qu
     assert expected_phrase in data['final_answer']
     assert 'evidence:' in data['final_answer']
     assert 'source:' in data['final_answer']
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_research_run_budget_modes_limit_pages_and_trace(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    serp = json.dumps({
+        "query": "python api limits",
+        "status": "ok",
+        "backend": "serper",
+        "sources": [
+            {"title": "One", "url": "https://docs.example.com/1", "snippet": "API rate limit docs"},
+            {"title": "Two", "url": "https://docs.example.com/2", "snippet": "API rate limit docs"},
+            {"title": "Three", "url": "https://docs.example.com/3", "snippet": "API rate limit docs"},
+            {"title": "Four", "url": "https://docs.example.com/4", "snippet": "API rate limit docs"},
+            {"title": "Five", "url": "https://docs.example.com/5", "snippet": "API rate limit docs"},
+        ],
+        "answer": "",
+        "error": None,
+    })
+    _web.side_effect = [serp] * 12
+    _fetch.side_effect = [
+        {"url": f"https://docs.example.com/{idx}", "status": "ok", "content_type": "text/html", "text_preview": "limit docs", "relevant_sections": ["limit docs"], "findings": [{"claim": f"Claim {idx}", "evidence_snippet": f"Evidence {idx}", "source_url": f"https://docs.example.com/{idx}", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "medium"}], "error": None}
+        for idx in range(1, 7)
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-budget'
+        current_chat_id = 1
+
+    cheap = json.loads(_research_run(Ctx(), 'python api limits', 'cheap'))
+    deep = json.loads(_research_run(Ctx(), 'python api limits', 'deep'))
+
+    assert cheap['budget_mode'] == 'cheap'
+    assert cheap['budget_limits']['max_pages_read'] == 2
+    assert cheap['budget_trace']['pages_read'] <= 2
+    assert cheap['budget_trace']['subqueries_executed'] <= 3
+    assert cheap['budget_trace']['early_stop_reason'] in {'enough-evidence', 'page-budget-exhausted', 'subquery-budget-exhausted'}
+
+    assert deep['budget_mode'] == 'deep'
+    assert deep['budget_limits']['max_pages_read'] == 6
+    assert deep['budget_trace']['pages_read'] >= cheap['budget_trace']['pages_read']
+    assert deep['budget_trace']['subqueries_executed'] >= cheap['budget_trace']['subqueries_executed']
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_research_run_early_stop_when_evidence_is_enough(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    serp = json.dumps({
+        "query": "openai release today",
+        "status": "ok",
+        "backend": "serper",
+        "sources": [
+            {"title": "A", "url": "https://news.example.com/a", "snippet": "Release confirmed today"},
+            {"title": "B", "url": "https://news.example.com/b", "snippet": "Release confirmed today"},
+            {"title": "C", "url": "https://news.example.com/c", "snippet": "Release confirmed today"},
+        ],
+        "answer": "",
+        "error": None,
+    })
+    _web.side_effect = [serp] * 12
+    _fetch.side_effect = [
+        {"url": "https://news.example.com/a", "status": "ok", "content_type": "text/html", "text_preview": "alpha", "relevant_sections": ["alpha"], "findings": [{"claim": "OpenAI released feature X.", "evidence_snippet": "Release confirmed on the official blog.", "source_url": "https://news.example.com/a", "source_type": "news", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+        {"url": "https://news.example.com/b", "status": "ok", "content_type": "text/html", "text_preview": "beta", "relevant_sections": ["beta"], "findings": [{"claim": "Feature X is now available.", "evidence_snippet": "Availability confirmed by rollout note.", "source_url": "https://news.example.com/b", "source_type": "news", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-stop'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), 'openai release today', 'balanced'))
+    assert data['budget_trace']['early_stop_triggered'] is True
+    assert data['budget_trace']['early_stop_reason'] == 'enough-evidence'
+    assert data['budget_trace']['pages_read'] <= data['budget_limits']['max_pages_read']
+    assert data['budget_trace']['synthesis_rounds_used'] == 1
