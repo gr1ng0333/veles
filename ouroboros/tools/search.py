@@ -20,10 +20,7 @@ log = logging.getLogger(__name__)
 SEARXNG_DEFAULT = "http://localhost:8888"
 MAX_RESULTS = 5
 DEFAULT_INTENT = "background_explainer"
-MAX_SUBQUERIES = 6
-MAX_PAGES_READ = 6
-MAX_BROWSE_DEPTH = 2
-MAX_SYNTHESIS_ROUNDS = 1
+MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS = 6, 6, 2, 1
 
 @dataclass(frozen=True)
 class IntentPolicy:
@@ -56,29 +53,13 @@ BUDGET_PROFILES: Dict[str, ResearchBudgetProfile] = {
     "balanced": ResearchBudgetProfile(4, 4, 2, 1, 2, 2),
     "deep": ResearchBudgetProfile(MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS, 3, 4),
 }
-
 DOMAIN_SCORES: Dict[str, float] = {
-    "docs.python.org": 2.6,
-    "platform.openai.com": 2.8,
-    "openai.com": 2.4,
-    "docs.anthropic.com": 2.8,
-    "anthropic.com": 2.4,
-    "developer.mozilla.org": 2.5,
-    "developers.google.com": 2.6,
-    "github.com": 1.8,
-    "techcrunch.com": 1.2,
-    "theverge.com": 1.1,
+    "docs.python.org": 2.6, "platform.openai.com": 2.8, "openai.com": 2.4, "docs.anthropic.com": 2.8,
+    "anthropic.com": 2.4, "developer.mozilla.org": 2.5, "developers.google.com": 2.6, "github.com": 1.8,
+    "techcrunch.com": 1.2, "theverge.com": 1.1,
 }
-
-AGGREGATOR_DOMAINS = {
-    "www.reddit.com", "reddit.com", "news.ycombinator.com", "hn.algolia.com",
-    "medium.com", "towardsdatascience.com", "www.linkedin.com", "linkedin.com",
-}
-
-SOCIAL_DOMAINS = {
-    "x.com", "twitter.com", "www.x.com", "www.twitter.com", "facebook.com", "www.facebook.com",
-}
-
+AGGREGATOR_DOMAINS = {"www.reddit.com", "reddit.com", "news.ycombinator.com", "hn.algolia.com", "medium.com", "towardsdatascience.com", "www.linkedin.com", "linkedin.com"}
+SOCIAL_DOMAINS = {"x.com", "twitter.com", "www.x.com", "www.twitter.com", "facebook.com", "www.facebook.com"}
 INTENT_POLICIES: Dict[str, IntentPolicy] = {
     "breaking_news": IntentPolicy("high", 4, 3, False),
     "fact_lookup": IntentPolicy("medium", 3, 2, False),
@@ -223,16 +204,16 @@ class ResearchRun:
     budget_mode: str = "balanced"
     budget_limits: Dict[str, Any] = field(default_factory=dict)
     budget_trace: Dict[str, Any] = field(default_factory=dict)
-
-def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SUBQUERIES) -> QueryPlan:
+def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SUBQUERIES, freshness_priority_override: str | None = None) -> QueryPlan:
     base = re.sub(r"\s+", " ", str(query or "").strip())
     policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT])
+    freshness_priority = freshness_priority_override if freshness_priority_override in {"low", "medium", "high"} else policy.freshness_priority
 
     freshness_suffix = {
         "high": "latest updates",
         "medium": "recent",
         "low": "overview",
-    }[policy.freshness_priority]
+    }[freshness_priority]
     official_suffix = "official docs" if policy.require_official_source else "official source"
     alternative_suffix = {
         "comparison_evaluation": "tradeoffs and benchmark",
@@ -258,12 +239,12 @@ def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SU
     contradiction_check_query = f"{base} {contradiction_suffix}" if base else contradiction_suffix
 
     candidates = [primary_query]
-    if policy.freshness_priority in {"high", "medium"}:
+    if freshness_priority in {"high", "medium"}:
         candidates.append(freshness_query)
     if policy.require_official_source:
         candidates.append(official_docs_query)
     candidates.append(alternative_wording_query)
-    if policy.search_branches >= 4 or policy.freshness_priority == "low":
+    if policy.search_branches >= 4 or freshness_priority == "low":
         candidates.append(contradiction_check_query)
     if policy.search_branches >= 5 and not policy.require_official_source:
         candidates.append(official_docs_query)
@@ -405,8 +386,7 @@ def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
             "findings": [],
             "error": repr(exc),
         }
-
-def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
+def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_override: str | None = None) -> None:
     freshness_known = sum(1 for finding in run.findings if str(finding.get("observed_at") or "").strip())
     freshness_unknown = max(0, len(run.findings) - freshness_known)
     run.freshness_summary = {
@@ -505,7 +485,7 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
         "people_company_ecosystem_tracking": "timeline",
         "background_explainer": "analyst_memo",
     }
-    run.answer_mode = mode_by_intent.get(run.intent_type, "short_factual")
+    run.answer_mode = output_mode_override if output_mode_override in {"short_factual", "analyst_memo", "comparison_brief", "timeline"} else mode_by_intent.get(run.intent_type, "short_factual")
     ranked_findings = sorted(
         run.findings,
         key=lambda item: (
@@ -769,30 +749,24 @@ def _web_search(ctx: ToolContext, query: str) -> str:
         "error": error,
     }, ensure_ascii=False, indent=2)
 
-def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced") -> str:
+def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", output_mode: str | None = None, freshness_bias: str | None = None) -> str:
     run = ResearchRun(user_query=str(query or "").strip())
     run.budget_mode = str(budget_mode or "balanced").strip().lower() or "balanced"
     budget = BUDGET_PROFILES.get(run.budget_mode, BUDGET_PROFILES["balanced"])
     if run.budget_mode not in BUDGET_PROFILES:
         run.budget_mode = "balanced"
     run.budget_limits = asdict(budget)
-    run.budget_trace = {
-        "subqueries_executed": 0,
-        "pages_read": 0,
-        "browse_depth_used": 0,
-        "synthesis_rounds_used": 0,
-        "early_stop_triggered": False,
-        "early_stop_reason": "",
-        "search_calls": 0,
-        "selected_sources_considered": 0,
-    }
+    run.budget_trace = {"subqueries_executed": 0, "pages_read": 0, "browse_depth_used": 0, "synthesis_rounds_used": 0, "early_stop_triggered": False, "early_stop_reason": "", "search_calls": 0, "selected_sources_considered": 0}
     lowered = run.user_query.lower()
     if not lowered:
         run.intent_type = DEFAULT_INTENT
     else:
         run.intent_type = next((intent_type for intent_type, keywords in INTENT_KEYWORDS if any(keyword in lowered for keyword in keywords)), ("fact_lookup" if any(ch.isdigit() for ch in lowered) else DEFAULT_INTENT))
-    policy = asdict(INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]))
-    plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries)
+    base_policy = INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT])
+    effective_freshness = str(freshness_bias or "").strip().lower() or base_policy.freshness_priority
+    policy_obj = IntentPolicy(freshness_priority=effective_freshness if effective_freshness in {"low", "medium", "high"} else base_policy.freshness_priority, search_branches=base_policy.search_branches, min_sources_before_synthesis=base_policy.min_sources_before_synthesis, require_official_source=base_policy.require_official_source)
+    policy = asdict(policy_obj)
+    plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)
     run.subqueries = list(plan.subqueries)
     run.query_plan = asdict(plan)
     seen_urls: set[str] = set()
@@ -912,9 +886,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced") -
             else:
                 page_trace["rejected"].append({"url": url, "score": entry["score"], "reasons": reasons})
             seen_urls.add(url)
-        page_trace["ranked_sources"].sort(key=itemgetter("score"), reverse=True)
-        page_trace["selected_to_read"].sort(key=itemgetter("score"), reverse=True)
-        page_trace["rejected"].sort(key=itemgetter("score"), reverse=True)
+        for key in ("ranked_sources", "selected_to_read", "rejected"): page_trace[key].sort(key=itemgetter("score"), reverse=True)
         run.visited_pages.append(page_trace)
         read_budget_remaining = max(0, budget.max_pages_read - run.budget_trace["pages_read"])
         browse_depth = min(budget.max_browse_depth, read_budget_remaining)
@@ -938,13 +910,9 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced") -
             should_stop = read_pages_ok >= budget.early_stop_min_read_pages and strong_findings >= budget.early_stop_min_findings and not has_conflict
             if policy.get("require_official_source") and not has_official: should_stop = False
             if page_trace["query"] == run.query_plan.get("contradiction_check_query"): should_stop = False
-            if should_stop:
+            if should_stop or run.budget_trace["pages_read"] >= budget.max_pages_read:
                 run.budget_trace["early_stop_triggered"] = True
-                run.budget_trace["early_stop_reason"] = "enough-evidence"
-                break
-            if run.budget_trace["pages_read"] >= budget.max_pages_read:
-                run.budget_trace["early_stop_triggered"] = True
-                run.budget_trace["early_stop_reason"] = "page-budget-exhausted"
+                run.budget_trace["early_stop_reason"] = "enough-evidence" if should_stop else "page-budget-exhausted"
                 break
     if not run.budget_trace["early_stop_reason"] and run.budget_trace["subqueries_executed"] >= budget.max_subqueries:
         run.budget_trace["early_stop_reason"] = "subquery-budget-exhausted"
@@ -962,14 +930,12 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced") -
     run.findings = deduped_findings
 
     run.budget_trace["synthesis_rounds_used"] = min(1, budget.max_synthesis_rounds)
-    _apply_research_quality(run, INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]))
-
+    output_map = {"brief": "short_factual", "memo": "analyst_memo", "timeline": "timeline", "comparison": "comparison_brief"}; _apply_research_quality(run, policy_obj, output_map.get(str(output_mode or "").strip().lower()))
     artifact = save_artifact(ctx, filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json", content=json.dumps(asdict(run), ensure_ascii=False, indent=2), content_kind="json", source="research_run", mime_type="application/json", caption="Research run trace", metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy, "query_plan": run.query_plan})
     payload = asdict(run)
     payload["intent_policy"] = policy
     payload["trace"] = artifact if isinstance(artifact, dict) else {"status": "error", "message": str(artifact)}
     return json.dumps(payload, ensure_ascii=False, indent=2)
-
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
@@ -986,9 +952,48 @@ def get_tools() -> List[ToolEntry]:
             {
                 "name": "research_run",
                 "description": "Run a structured research skeleton: infer intent, generate a multi-branch query plan, collect candidate sources, and save a readable JSON trace.",
-                "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "budget_mode": {"type": "string", "enum": ["cheap", "balanced", "deep"]}}, "required": ["query"]},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}, "budget_mode": {"type": "string", "enum": ["cheap", "balanced", "deep"]},
+                        "output_mode": {"type": "string", "enum": ["brief", "memo", "timeline", "comparison"]}, "freshness_bias": {"type": "string", "enum": ["low", "medium", "high"]},
+                    },
+                    "required": ["query"],
+                },
             },
-            lambda ctx, query, budget_mode="balanced": _research_run(ctx, query, budget_mode),
+            lambda ctx, query, budget_mode="balanced", output_mode=None, freshness_bias=None: _research_run(ctx, query, budget_mode, output_mode, freshness_bias),
+        ),
+        ToolEntry(
+            "deep_research",
+            {
+                "name": "deep_research",
+                "description": "Run research in a dialogue-friendly mode and return a compact evidence-backed answer with configurable depth, output shape, and freshness bias.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}, "depth": {"type": "string", "enum": ["cheap", "balanced", "deep"]},
+                        "output": {"type": "string", "enum": ["brief", "memo", "timeline", "comparison"]}, "freshness_bias": {"type": "string", "enum": ["low", "medium", "high"]},
+                    },
+                    "required": ["query"],
+                },
+            },
+            lambda ctx, query, depth="balanced", output="brief", freshness_bias="medium": (
+                lambda payload, synthesis, caveats, sources: "\n".join(
+                    [
+                        f"Исследование: {payload.get('user_query', '')}", f"Глубина: {payload.get('budget_mode', 'balanced')} | Формат: {payload.get('answer_mode', 'short_factual')} | Уверенность: {payload.get('confidence', 'low')}", "", str(synthesis.get("short_answer") or payload.get("final_answer") or "Надёжный вывод пока не собран."),
+                        *(["", "Оговорки:", *[f"- {note}" for note in caveats[:4]]] if caveats else []),
+                        *(["", "Источники:", *[f"- {url}" for url in sources[:5]]] if sources else []),
+                    ]
+                )
+            )(
+                (payload := json.loads(_research_run(ctx, query, depth, output, freshness_bias))),
+                (payload.get("synthesis") or {}),
+                ((payload.get("synthesis") or {}).get("uncertainty_caveats") or []),
+                [
+                    str(item.get("url") or "").strip()
+                    for item in ((payload.get("synthesis") or {}).get("sources") or [])
+                    if str(item.get("url") or "").strip()
+                ],
+            ),
         ),
     ]
-
