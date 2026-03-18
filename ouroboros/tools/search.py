@@ -63,7 +63,11 @@ DOMAIN_SCORES: Dict[str, float] = {
 AGGREGATOR_DOMAINS = {"www.reddit.com", "reddit.com", "news.ycombinator.com", "hn.algolia.com", "medium.com", "towardsdatascience.com", "www.linkedin.com", "linkedin.com"}
 SOCIAL_DOMAINS = {"x.com", "twitter.com", "www.x.com", "www.twitter.com", "facebook.com", "www.facebook.com"}
 OFFICIAL_HOST_MARKERS = ("docs.", "developer.", "developers.", "platform.", "api.")
-PRIMARY_HOST_MARKERS = ("openai.com", "anthropic.com", "github.com", "python.org", "mozilla.org", "google.com")
+PRIMARY_HOST_MARKERS = ("openai.com", "anthropic.com", "github.com", "python.org", "mozilla.org", "google.com", "huggingface.co", "arxiv.org")
+BENCHMARK_VENDOR_HOSTS = ("platform.openai.com", "openai.com", "docs.anthropic.com", "anthropic.com")
+BENCHMARK_LEADERBOARD_HOSTS = ("huggingface.co", "paperswithcode.com", "lmarena.ai", "chat.lmsys.org")
+BENCHMARK_PAPER_HOSTS = ("arxiv.org", "huggingface.co")
+BENCHMARK_REPO_HOSTS = ("github.com",)
 ANTI_SYCOPHANCY_PHRASES = (
     "отличный вопрос",
     "классный вопрос",
@@ -233,6 +237,7 @@ def _source_authority(host: str, require_official: bool) -> tuple[str, float, li
     return authority, score, reasons
 
 READING_PRIORITY = lambda entry: ({"official": 0, "primary": 1, "secondary": 2, "community": 3}.get(str(entry.get("authority") or "secondary"), 2), -float(entry.get("score") or 0.0))
+
 NEUTRALIZE_TEXT = lambda value: re.sub(r"\s+", " ", __import__("functools").reduce(lambda acc, phrase: re.sub(re.escape(phrase), "", acc, flags=re.IGNORECASE), ANTI_SYCOPHANCY_PHRASES, str(value or ""))).strip(" ,.!?:;\n\t")
 
 def _compose_uncertain_short_answer(run: ResearchRun, policy: IntentPolicy) -> str:
@@ -794,96 +799,47 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             "rejected": [],
         }
         for index, source in enumerate(sources):
-            url = str(source.get("url") or "").strip()
-            lowered_url = url.lower()
-            host_match = re.match(r"https?://([^/]+)", lowered_url)
-            host = (host_match.group(1) if host_match else "").lstrip("www.")
-            title = str(source.get("title") or "").strip()
-            snippet = str(source.get("snippet") or "").strip()
-            haystack = f"{title} {snippet} {url}".lower()
-            score = 0.0
-            reasons: List[str] = []
-            authority, authority_score, authority_reasons = _source_authority(host, policy["require_official_source"])
-            official = authority == "official"
-            primary = authority in {"official", "primary"}
-            if authority_score:
-                score += authority_score
-                reasons.extend(authority_reasons)
-            if authority == "community":
-                reasons.append("retelling-or-community")
-            domain_bonus = 0.0
-            for domain, value in DOMAIN_SCORES.items():
-                if host == domain or host.endswith(f".{domain}"):
-                    domain_bonus = value / 10.0
-                    break
-            if domain_bonus:
-                score += domain_bonus
-                reasons.append(f"domain-trust:{domain_bonus:+.1f}")
-            freshness_hits = len(re.findall(r"\b(2024|2025|2026|today|latest|recent|updated|новост|сегодня|обновл)\b", haystack))
-            freshness_weight = {"high": 0.8, "medium": 0.5, "low": 0.2}[policy["freshness_priority"]]
-            if freshness_hits:
-                freshness_score = min(1.5, freshness_hits * freshness_weight)
-                score += freshness_score
-                reasons.append(f"freshness:{freshness_score:+.1f}")
+            url = str(source.get("url") or "").strip(); lowered_url = url.lower(); host_match = re.match(r"https?://([^/]+)", lowered_url)
+            host = (host_match.group(1) if host_match else "").lstrip("www."); title = str(source.get("title") or "").strip(); snippet = str(source.get("snippet") or "").strip(); haystack = f"{title} {snippet} {url}".lower(); score = 0.0; reasons: List[str] = []
+            authority, authority_score, authority_reasons = _source_authority(host, policy["require_official_source"]); official = authority == "official"; primary = authority in {"official", "primary"}
+            if authority_score: score += authority_score; reasons.extend(authority_reasons)
+            if authority == "community": reasons.append("retelling-or-community")
+            domain_bonus = next((value / 10.0 for domain, value in DOMAIN_SCORES.items() if host == domain or host.endswith(f".{domain}")), 0.0)
+            if domain_bonus: score += domain_bonus; reasons.append(f"domain-trust:{domain_bonus:+.1f}")
+            freshness_hits = len(re.findall(r"\b(2024|2025|2026|today|latest|recent|updated|новост|сегодня|обновл)\b", haystack)); freshness_weight = {"high": 0.8, "medium": 0.5, "low": 0.2}[policy["freshness_priority"]]
+            if freshness_hits: freshness_score = min(1.5, freshness_hits * freshness_weight); score += freshness_score; reasons.append(f"freshness:{freshness_score:+.1f}")
             overlap = sum(1 for term in query_terms if term in haystack)
-            if overlap:
-                topical_score = min(3.0, overlap * 0.6)
-                score += topical_score
-                reasons.append(f"topical:{topical_score:+.1f}")
+            if overlap: topical_score = min(3.0, overlap * 0.6); score += topical_score; reasons.append(f"topical:{topical_score:+.1f}")
             is_duplicate = url in seen_urls
-            duplicate_penalty = -2.5 if is_duplicate else 0.0
-            if duplicate_penalty:
-                score += duplicate_penalty
-                reasons.append(f"duplicate:{duplicate_penalty:.1f}")
-            aggregator_penalty = -1.7 if host in AGGREGATOR_DOMAINS else 0.0
-            if aggregator_penalty:
-                score += aggregator_penalty
-                reasons.append(f"aggregator:{aggregator_penalty:.1f}")
-            social_penalty = -1.3 if host in SOCIAL_DOMAINS else 0.0
-            if social_penalty:
-                score += social_penalty
-                reasons.append(f"forum-social:{social_penalty:.1f}")
-            if index == 0:
-                score += 0.4
-                reasons.append("serp-position:+0.4")
-            benchmark_hits = len(re.findall(r"\b(benchmark|benchmarks|methodology|throughput|latency|eval|evaluation|head[- ]to[- ]head|comparison)\b", haystack))
-            benchmark_score = min(1.8, benchmark_hits * 0.45)
-            if benchmark_score:
-                score += benchmark_score
-                reasons.append(f"benchmark-signal:{benchmark_score:+.1f}")
+            if is_duplicate: score += -2.5; reasons.append("duplicate:-2.5")
+            if host in AGGREGATOR_DOMAINS: score += -1.7; reasons.append("aggregator:-1.7")
+            if host in SOCIAL_DOMAINS: score += -1.3; reasons.append("forum-social:-1.3")
+            if index == 0: score += 0.4; reasons.append("serp-position:+0.4")
+            benchmark_hits = len(re.findall(r"\b(benchmark|benchmarks|methodology|throughput|latency|eval|evaluation|head[- ]to[- ]head|comparison|leaderboard|arena)\b", haystack))
+            if benchmark_hits: benchmark_score = min(1.8, benchmark_hits * 0.45); score += benchmark_score; reasons.append(f"benchmark-signal:{benchmark_score:+.1f}")
             benchmark_branch = any(token in subquery.lower() for token in ("benchmark", "methodology", "maintainers", "official benchmark"))
-            if official and ("official docs" in subquery.lower() or "reference guide" in subquery.lower() or benchmark_branch):
-                score += 1.0
-                reasons.append("official-branch:+1.0")
+            benchmark_primary_type = ""
+            if benchmark_branch or benchmark_hits:
+                if any(host == domain or host.endswith(f".{domain}") for domain in BENCHMARK_VENDOR_HOSTS) and ("docs" in lowered_url or "/guides/" in lowered_url or "/reference" in lowered_url or "benchmark" in lowered_url or "eval" in lowered_url): benchmark_primary_type = "vendor_docs"
+                elif any(host == domain or host.endswith(f".{domain}") for domain in BENCHMARK_LEADERBOARD_HOSTS) and ("leaderboard" in lowered_url or "arena" in lowered_url or "leaderboard" in haystack): benchmark_primary_type = "leaderboard"
+                elif any(host == domain or host.endswith(f".{domain}") for domain in BENCHMARK_PAPER_HOSTS) and ("/papers/" in lowered_url or host == "arxiv.org" or "/abs/" in lowered_url or "paper" in haystack): benchmark_primary_type = "paper"
+                elif any(host == domain or host.endswith(f".{domain}") for domain in BENCHMARK_REPO_HOSTS): benchmark_primary_type = "repo_methodology"
+            benchmark_primary_bonus = {"vendor_docs": 1.3, "leaderboard": 1.0, "paper": 0.9, "repo_methodology": 0.8}.get(benchmark_primary_type, 0.0)
+            if benchmark_primary_bonus: score += benchmark_primary_bonus; reasons.append(f"benchmark-primary:{benchmark_primary_type}:{benchmark_primary_bonus:+.1f}")
+            if official and ("official docs" in subquery.lower() or "reference guide" in subquery.lower() or benchmark_branch): score += 1.0; reasons.append("official-branch:+1.0")
             if benchmark_branch and primary: score += 0.8; reasons.append("primary-benchmark-branch:+0.8")
-            elif benchmark_branch and not primary and benchmark_hits == 0: score -= 0.6; reasons.append("benchmark-branch-without-signal:-0.6")
-            decision = "selected"
-            if is_duplicate:
-                decision = "reject"
-                reasons.append("selection-policy:duplicate-url")
-            elif policy["require_official_source"] and not (official or primary) and score < 1.2:
-                decision = "reject"
-                reasons.append("selection-policy:official-needed")
-            elif score < 0.4:
-                decision = "reject"
-                reasons.append("selection-policy:low-score")
-            entry = {
-                "title": title or url,
-                "url": url,
-                "snippet": snippet,
-                "score": round(score, 3),
-                "reasons": reasons,
-                "decision": decision,
-                "host": host,
-                "query": subquery,
-                "authority": authority,
-            }
+            elif benchmark_branch and not primary and benchmark_hits == 0 and not benchmark_primary_type: score -= 0.6; reasons.append("benchmark-branch-without-signal:-0.6")
+            decision = "reject" if is_duplicate else ("reject" if policy["require_official_source"] and not (official or primary) and score < 1.2 else ("reject" if score < 0.4 else "selected"))
+            if is_duplicate: reasons.append("selection-policy:duplicate-url")
+            elif policy["require_official_source"] and not (official or primary) and score < 1.2: reasons.append("selection-policy:official-needed")
+            elif score < 0.4: reasons.append("selection-policy:low-score")
+            entry = {"title": title or url, "url": url, "snippet": snippet, "score": round(score, 3), "reasons": reasons, "decision": decision, "host": host, "query": subquery, "authority": authority, "benchmark_primary_type": benchmark_primary_type}
             page_trace["ranked_sources"].append(entry)
-            if decision == "selected":
+            if entry["decision"] == "selected":
                 ranked_sources.append(entry)
-                page_trace["selected_to_read"].append({"url": url, "score": entry["score"], "reasons": reasons})
+                page_trace["selected_to_read"].append({"url": url, "score": entry["score"], "reasons": entry["reasons"]})
             else:
-                page_trace["rejected"].append({"url": url, "score": entry["score"], "reasons": reasons})
+                page_trace["rejected"].append({"url": url, "score": entry["score"], "reasons": entry["reasons"]})
             seen_urls.add(url)
         page_trace["ranked_sources"].sort(key=lambda item: (READING_PRIORITY(item),), reverse=False)
         page_trace["selected_to_read"].sort(key=lambda item: READING_PRIORITY(next((row for row in page_trace["ranked_sources"] if row["url"] == item["url"]), item)))

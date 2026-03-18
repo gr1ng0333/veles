@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.69.13-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.69.15-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.69.13 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.69.15 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -41,6 +41,11 @@
 Слабее всего пока ведут себя **fresh timeline** и **comparison**, если SERP переполнен вторичными обзорами и не отдаёт первичку наверх.
 
 ## Changelog
+
+### 6.69.15
+- Added benchmark-specific domain priors for comparison-heavy research: source scoring now distinguishes vendor docs, leaderboards, papers, and repository methodology pages instead of flattening them into one vague “primary” bucket.
+- Tightened comparison benchmark retrieval without regressing the rest of the research contour: benchmark branches now boost real primary artifacts and penalize generic roundup noise while keeping the structural smoke budget green.
+- Closed the release-state drift by syncing VERSION, pyproject, and README after the benchmark-retrieval fix; `tests/test_smoke.py`, `tests/test_search_tool.py`, and `tests/test_research_eval.py` are green together.
 
 ### 6.69.14
 - Improved comparison research by preferring primary / official benchmark methodology sources for benchmark-heavy comparisons.
