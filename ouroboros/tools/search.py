@@ -21,7 +21,9 @@ SEARXNG_DEFAULT = "http://localhost:8888"
 MAX_RESULTS = 5
 DEFAULT_INTENT = "background_explainer"
 MAX_SUBQUERIES = 6
-
+MAX_PAGES_READ = 6
+MAX_BROWSE_DEPTH = 2
+MAX_SYNTHESIS_ROUNDS = 1
 
 @dataclass(frozen=True)
 class IntentPolicy:
@@ -30,6 +32,14 @@ class IntentPolicy:
     min_sources_before_synthesis: int
     require_official_source: bool
 
+@dataclass(frozen=True)
+class ResearchBudgetProfile:
+    max_subqueries: int
+    max_pages_read: int
+    max_browse_depth: int
+    max_synthesis_rounds: int
+    early_stop_min_read_pages: int
+    early_stop_min_findings: int
 
 @dataclass(frozen=True)
 class QueryPlan:
@@ -41,6 +51,33 @@ class QueryPlan:
     subqueries: List[str]
     branch_budget: int
 
+BUDGET_PROFILES: Dict[str, ResearchBudgetProfile] = {
+    "cheap": ResearchBudgetProfile(3, 2, 1, 1, 1, 2),
+    "balanced": ResearchBudgetProfile(4, 4, 2, 1, 2, 2),
+    "deep": ResearchBudgetProfile(MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS, 3, 4),
+}
+
+DOMAIN_SCORES: Dict[str, float] = {
+    "docs.python.org": 2.6,
+    "platform.openai.com": 2.8,
+    "openai.com": 2.4,
+    "docs.anthropic.com": 2.8,
+    "anthropic.com": 2.4,
+    "developer.mozilla.org": 2.5,
+    "developers.google.com": 2.6,
+    "github.com": 1.8,
+    "techcrunch.com": 1.2,
+    "theverge.com": 1.1,
+}
+
+AGGREGATOR_DOMAINS = {
+    "www.reddit.com", "reddit.com", "news.ycombinator.com", "hn.algolia.com",
+    "medium.com", "towardsdatascience.com", "www.linkedin.com", "linkedin.com",
+}
+
+SOCIAL_DOMAINS = {
+    "x.com", "twitter.com", "www.x.com", "www.twitter.com", "facebook.com", "www.facebook.com",
+}
 
 INTENT_POLICIES: Dict[str, IntentPolicy] = {
     "breaking_news": IntentPolicy("high", 4, 3, False),
@@ -167,7 +204,6 @@ INTENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
-
 @dataclass
 class ResearchRun:
     user_query: str
@@ -184,9 +220,11 @@ class ResearchRun:
     uncertainty_notes: List[str] = field(default_factory=list)
     answer_mode: str = "short_factual"
     synthesis: Dict[str, Any] = field(default_factory=dict)
+    budget_mode: str = "balanced"
+    budget_limits: Dict[str, Any] = field(default_factory=dict)
+    budget_trace: Dict[str, Any] = field(default_factory=dict)
 
-
-def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
+def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SUBQUERIES) -> QueryPlan:
     base = re.sub(r"\s+", " ", str(query or "").strip())
     policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT])
 
@@ -230,7 +268,7 @@ def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
     if policy.search_branches >= 5 and not policy.require_official_source:
         candidates.append(official_docs_query)
 
-    branch_budget = max(3, min(policy.search_branches, MAX_SUBQUERIES))
+    branch_budget = max(1, min(policy.search_branches, max_subqueries, MAX_SUBQUERIES))
     subqueries: List[str] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -255,9 +293,6 @@ def _build_query_plan(query: str, intent_type: str) -> QueryPlan:
         subqueries=subqueries,
         branch_budget=branch_budget,
     )
-
-
-
 
 def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
     url = str(source.get("url") or "")
@@ -371,7 +406,6 @@ def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
             "error": repr(exc),
         }
 
-
 def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
     freshness_known = sum(1 for finding in run.findings if str(finding.get("observed_at") or "").strip())
     freshness_unknown = max(0, len(run.findings) - freshness_known)
@@ -446,6 +480,8 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
     run.contradictions = deduped[:5]
     if run.contradictions:
         run.uncertainty_notes.append("Источники расходятся по части утверждений; смотри contradictions в trace.")
+    elif len({n for _, nums, _ in numeric_findings for n in nums}) > 1 and len(numeric_findings) > 1:
+        run.uncertainty_notes.append("Есть числовые расхождения между прочитанными утверждениями; нужна осторожность в интерпретации.")
     read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
     high_conf_findings = sum(1 for finding in run.findings if finding.get("confidence_local") == "high")
     strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
@@ -539,14 +575,7 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
             "uncertainty_caveats": caveats,
             "sources": unique_source_rows[:6],
         }
-        final_blocks = [
-            f"Режим ответа: {run.answer_mode}",
-            "",
-            "Короткий ответ:",
-            short_answer,
-            "",
-            "Ключевые находки:",
-        ]
+        final_blocks = [f"Режим ответа: {run.answer_mode}", "", "Короткий ответ:", short_answer, "", "Ключевые находки:"]
         final_blocks.extend(
             f"- {item['claim']}\n  evidence: {item['evidence_snippet']}\n  source: {item['source_url']}"
             for item in key_finding_rows
@@ -571,7 +600,6 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy) -> None:
         }
         run.final_answer = "Надёжных findings после deep reading пока недостаточно."
 
-
 def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
     url = os.environ.get("SEARXNG_URL", SEARXNG_DEFAULT)
     if not url:
@@ -593,9 +621,6 @@ def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:
         log.warning("SearXNG search failed: %s", exc)
         return None
-
-
-
 
 def _search_openai(query: str) -> Dict[str, Any]:
     api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -744,44 +769,41 @@ def _web_search(ctx: ToolContext, query: str) -> str:
         "error": error,
     }, ensure_ascii=False, indent=2)
 
-
-def _research_run(ctx: ToolContext, query: str) -> str:
+def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced") -> str:
     run = ResearchRun(user_query=str(query or "").strip())
+    run.budget_mode = str(budget_mode or "balanced").strip().lower() or "balanced"
+    budget = BUDGET_PROFILES.get(run.budget_mode, BUDGET_PROFILES["balanced"])
+    if run.budget_mode not in BUDGET_PROFILES:
+        run.budget_mode = "balanced"
+    run.budget_limits = asdict(budget)
+    run.budget_trace = {
+        "subqueries_executed": 0,
+        "pages_read": 0,
+        "browse_depth_used": 0,
+        "synthesis_rounds_used": 0,
+        "early_stop_triggered": False,
+        "early_stop_reason": "",
+        "search_calls": 0,
+        "selected_sources_considered": 0,
+    }
     lowered = run.user_query.lower()
     if not lowered:
         run.intent_type = DEFAULT_INTENT
     else:
         run.intent_type = next((intent_type for intent_type, keywords in INTENT_KEYWORDS if any(keyword in lowered for keyword in keywords)), ("fact_lookup" if any(ch.isdigit() for ch in lowered) else DEFAULT_INTENT))
     policy = asdict(INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]))
-    plan = _build_query_plan(run.user_query, run.intent_type)
+    plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries)
     run.subqueries = list(plan.subqueries)
     run.query_plan = asdict(plan)
-    domain_scores = {
-        "docs.python.org": 26,
-        "developer.mozilla.org": 24,
-        "platform.openai.com": 24,
-        "docs.anthropic.com": 24,
-        "openai.com": 18,
-        "anthropic.com": 18,
-        "github.com": 16,
-        "wikipedia.org": 8,
-        "medium.com": -4,
-        "substack.com": -4,
-        "reddit.com": -10,
-        "news.ycombinator.com": -8,
-        "x.com": -12,
-        "twitter.com": -12,
-        "linkedin.com": -6,
-        "facebook.com": -10,
-    }
-    aggregator_domains = {"news.google.com", "news.ycombinator.com", "alltop.com", "feedly.com", "ycombinator.com", "techmeme.com"}
-    social_domains = {"reddit.com", "x.com", "twitter.com", "facebook.com", "linkedin.com", "t.me", "discord.com"}
     seen_urls: set[str] = set()
     ranked_sources: List[Dict[str, Any]] = []
     query_terms = {term for term in re.findall(r"[a-zA-Zа-яА-Я0-9_+-]{3,}", run.user_query.lower()) if len(term) >= 3}
 
     for subquery in run.subqueries:
+        if run.budget_trace["early_stop_triggered"]: break
         result = json.loads(_web_search(ctx, subquery))
+        run.budget_trace["search_calls"] += 1
+        run.budget_trace["subqueries_executed"] += 1
         sources: List[Dict[str, str]] = []
         source_urls: set[str] = set()
         for item in result.get("sources") or []:
@@ -826,7 +848,7 @@ def _research_run(ctx: ToolContext, query: str) -> str:
                 score += 2.0
                 reasons.append("primary-source")
             domain_bonus = 0.0
-            for domain, value in domain_scores.items():
+            for domain, value in DOMAIN_SCORES.items():
                 if host == domain or host.endswith(f".{domain}"):
                     domain_bonus = value / 10.0
                     break
@@ -849,11 +871,11 @@ def _research_run(ctx: ToolContext, query: str) -> str:
             if duplicate_penalty:
                 score += duplicate_penalty
                 reasons.append(f"duplicate:{duplicate_penalty:.1f}")
-            aggregator_penalty = -1.7 if host in aggregator_domains else 0.0
+            aggregator_penalty = -1.7 if host in AGGREGATOR_DOMAINS else 0.0
             if aggregator_penalty:
                 score += aggregator_penalty
                 reasons.append(f"aggregator:{aggregator_penalty:.1f}")
-            social_penalty = -1.3 if host in social_domains else 0.0
+            social_penalty = -1.3 if host in SOCIAL_DOMAINS else 0.0
             if social_penalty:
                 score += social_penalty
                 reasons.append(f"forum-social:{social_penalty:.1f}")
@@ -893,17 +915,41 @@ def _research_run(ctx: ToolContext, query: str) -> str:
         page_trace["ranked_sources"].sort(key=itemgetter("score"), reverse=True)
         page_trace["selected_to_read"].sort(key=itemgetter("score"), reverse=True)
         page_trace["rejected"].sort(key=itemgetter("score"), reverse=True)
+        run.visited_pages.append(page_trace)
+        read_budget_remaining = max(0, budget.max_pages_read - run.budget_trace["pages_read"])
+        browse_depth = min(budget.max_browse_depth, read_budget_remaining)
         page_trace["read_results"] = []
-        for selected in page_trace["selected_to_read"][:2]:
+        page_trace["budget"] = {"max_browse_depth": budget.max_browse_depth, "browse_depth_used": 0, "pages_read_before_branch": run.budget_trace["pages_read"], "pages_read_remaining": read_budget_remaining}
+        run.budget_trace["selected_sources_considered"] += len(page_trace["selected_to_read"])
+        for selected in page_trace["selected_to_read"][:browse_depth]:
             ranked_entry = next((item for item in page_trace["ranked_sources"] if item["url"] == selected["url"]), None)
             if not ranked_entry:
                 continue
             read_result = _read_page_findings(run.user_query, ranked_entry)
             page_trace["read_results"].append(read_result)
+            page_trace["budget"]["browse_depth_used"] += 1
+            run.budget_trace["pages_read"] += 1
+            run.budget_trace["browse_depth_used"] = max(run.budget_trace["browse_depth_used"], page_trace["budget"]["browse_depth_used"])
             run.findings.extend(read_result.get("findings") or [])
-        run.visited_pages.append(page_trace)
+            read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
+            strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
+            has_conflict = bool(getattr(run, "contradictions", []))
+            has_official = any("official-source" in reason for source in run.candidate_sources for reason in source.get("reasons", []))
+            should_stop = read_pages_ok >= budget.early_stop_min_read_pages and strong_findings >= budget.early_stop_min_findings and not has_conflict
+            if policy.get("require_official_source") and not has_official: should_stop = False
+            if page_trace["query"] == run.query_plan.get("contradiction_check_query"): should_stop = False
+            if should_stop:
+                run.budget_trace["early_stop_triggered"] = True
+                run.budget_trace["early_stop_reason"] = "enough-evidence"
+                break
+            if run.budget_trace["pages_read"] >= budget.max_pages_read:
+                run.budget_trace["early_stop_triggered"] = True
+                run.budget_trace["early_stop_reason"] = "page-budget-exhausted"
+                break
+    if not run.budget_trace["early_stop_reason"] and run.budget_trace["subqueries_executed"] >= budget.max_subqueries:
+        run.budget_trace["early_stop_reason"] = "subquery-budget-exhausted"
     ranked_sources.sort(key=itemgetter("score"), reverse=True)
-    selected_limit = max(policy["min_sources_before_synthesis"], min(6, len(ranked_sources)))
+    selected_limit = max(policy["min_sources_before_synthesis"], min(budget.max_pages_read, len(ranked_sources)))
     run.candidate_sources = ranked_sources[:selected_limit]
     deduped_findings: List[Dict[str, Any]] = []
     seen_finding_keys: set[str] = set()
@@ -915,6 +961,7 @@ def _research_run(ctx: ToolContext, query: str) -> str:
         deduped_findings.append(finding)
     run.findings = deduped_findings
 
+    run.budget_trace["synthesis_rounds_used"] = min(1, budget.max_synthesis_rounds)
     _apply_research_quality(run, INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT]))
 
     artifact = save_artifact(ctx, filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json", content=json.dumps(asdict(run), ensure_ascii=False, indent=2), content_kind="json", source="research_run", mime_type="application/json", caption="Research run trace", metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy, "query_plan": run.query_plan})
@@ -922,7 +969,6 @@ def _research_run(ctx: ToolContext, query: str) -> str:
     payload["intent_policy"] = policy
     payload["trace"] = artifact if isinstance(artifact, dict) else {"status": "error", "message": str(artifact)}
     return json.dumps(payload, ensure_ascii=False, indent=2)
-
 
 def get_tools() -> List[ToolEntry]:
     return [
@@ -940,9 +986,9 @@ def get_tools() -> List[ToolEntry]:
             {
                 "name": "research_run",
                 "description": "Run a structured research skeleton: infer intent, generate a multi-branch query plan, collect candidate sources, and save a readable JSON trace.",
-                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "budget_mode": {"type": "string", "enum": ["cheap", "balanced", "deep"]}}, "required": ["query"]},
             },
-            _research_run,
+            lambda ctx, query, budget_mode="balanced": _research_run(ctx, query, budget_mode),
         ),
     ]
 
