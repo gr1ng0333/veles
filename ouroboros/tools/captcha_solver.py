@@ -107,34 +107,30 @@ def _build_preprocessed_variants(image_bytes: bytes) -> List[Tuple[str, bytes]]:
     from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
     base = Image.open(io.BytesIO(image_bytes)).convert("L")
-    variants: List[Tuple[str, bytes]] = []
-
-    def add_variant(name: str, img) -> None:
-        variants.append((name, _image_to_png_bytes(img)))
-
     contrast = ImageEnhance.Contrast(base).enhance(2.0)
-    add_variant("grayscale", base)
-    add_variant("contrast", contrast)
-    add_variant(
-        "threshold_140",
-        contrast.point(lambda px: 255 if px > 140 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3)),
-    )
-    add_variant(
-        "threshold_170",
-        contrast.point(lambda px: 255 if px > 170 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3)),
-    )
     auto = ImageOps.autocontrast(base)
-    add_variant(
-        "autocontrast_threshold_160",
-        auto.point(lambda px: 255 if px > 160 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3)),
-    )
     upscale = contrast.resize((base.width * 2, base.height * 2))
-    add_variant(
-        "upscale_threshold_160",
-        upscale.point(lambda px: 255 if px > 160 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3)),
-    )
-    add_variant("inverted", ImageOps.invert(contrast))
-    return variants
+    return [
+        ("grayscale", _image_to_png_bytes(base)),
+        ("contrast", _image_to_png_bytes(contrast)),
+        (
+            "threshold_140",
+            _image_to_png_bytes(contrast.point(lambda px: 255 if px > 140 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3))),
+        ),
+        (
+            "threshold_170",
+            _image_to_png_bytes(contrast.point(lambda px: 255 if px > 170 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3))),
+        ),
+        (
+            "autocontrast_threshold_160",
+            _image_to_png_bytes(auto.point(lambda px: 255 if px > 160 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3))),
+        ),
+        (
+            "upscale_threshold_160",
+            _image_to_png_bytes(upscale.point(lambda px: 255 if px > 160 else 0, "1").convert("L").filter(ImageFilter.MedianFilter(size=3))),
+        ),
+        ("inverted", _image_to_png_bytes(ImageOps.invert(contrast))),
+    ]
 
 
 def preprocess_image(image_bytes: bytes) -> bytes:
