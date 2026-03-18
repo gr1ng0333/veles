@@ -235,11 +235,7 @@ def test_browser_run_actions_waits_for_url(monkeypatch):
     page = DummyPage()
     ctx = make_ctx(page)
 
-    def advance_url(timeout):
-        page.calls.append(("wait_for_timeout", timeout))
-        page.url = "https://example.com/dashboard?tab=home"
-
-    page.wait_for_timeout = advance_url
+    page.wait_for_timeout = lambda timeout: (page.calls.append(("wait_for_timeout", timeout)), setattr(page, "url", "https://example.com/dashboard?tab=home"))[-1]
 
     monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
 
@@ -276,12 +272,7 @@ def test_browser_run_actions_wait_for_text_absence_survives_selector_disappearan
     page.texts["#status"] = "Saving changes"
     ctx = make_ctx(page)
 
-    def vanish_after_wait(timeout):
-        page.calls.append(("wait_for_timeout", timeout))
-        page.visible.discard("#status")
-        page.texts.pop("#status", None)
-
-    page.wait_for_timeout = vanish_after_wait
+    page.wait_for_timeout = lambda timeout: (page.calls.append(("wait_for_timeout", timeout)), page.visible.discard("#status"), page.texts.pop("#status", None))[-1]
 
     monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
 
@@ -302,9 +293,7 @@ def test_browser_run_actions_wait_for_supports_hidden_state(monkeypatch):
     page.visible.add("#toast")
     ctx = make_ctx(page)
 
-    def hide_after_wait(timeout):
-        page.calls.append(("wait_for_timeout", timeout))
-        page.visible.discard("#toast")
+    hide_after_wait = lambda timeout: (page.calls.append(("wait_for_timeout", timeout)), page.visible.discard("#toast"))[-1]
 
     original_wait_for_selector = page.wait_for_selector
 
@@ -470,11 +459,7 @@ def test_browser_run_actions_waits_for_url_absence_with_explicit_flag(monkeypatc
     page.url = "https://example.com/dashboard/loading"
     ctx = make_ctx(page)
 
-    def advance_url(timeout):
-        page.calls.append(("wait_for_timeout", timeout))
-        page.url = "https://example.com/dashboard"
-
-    page.wait_for_timeout = advance_url
+    page.wait_for_timeout = lambda timeout: (page.calls.append(("wait_for_timeout", timeout)), setattr(page, "url", "https://example.com/dashboard"))[-1]
 
     monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
 
@@ -495,11 +480,7 @@ def test_browser_run_actions_supports_absent_expect_url_substring(monkeypatch):
     page.url = "https://example.com/logout"
     ctx = make_ctx(page)
 
-    def click_logout(selector, timeout=0):
-        page.calls.append(("click", selector, timeout))
-        page.url = "https://example.com/login"
-
-    page.click = click_logout
+    page.click = lambda selector, timeout=0: (page.calls.append(("click", selector, timeout)), setattr(page, "url", "https://example.com/login"))[-1]
 
     monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
 
