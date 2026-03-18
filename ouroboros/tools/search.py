@@ -330,17 +330,16 @@ def _render_synthesis(run: ResearchRun, policy: IntentPolicy) -> None:
 
 def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SUBQUERIES, freshness_priority_override: str | None = None) -> QueryPlan:
     base = re.sub(r"\s+", " ", str(query or "").strip())
-    policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT])
+    policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT]); comparison_benchmark = bool(intent_type == "comparison_evaluation" and re.search(r"\b(benchmark|latency|throughput|eval|evaluation|head[- ]?to[- ]?head)\b", base.lower()))
     freshness_priority = freshness_priority_override if freshness_priority_override in {"low", "medium", "high"} else policy.freshness_priority
-
     freshness_suffix = {
         "high": "latest updates",
         "medium": "recent",
         "low": "overview",
     }[freshness_priority]
-    official_suffix = "official docs" if policy.require_official_source else "official source"
+    official_suffix = "official benchmark methodology maintainers" if comparison_benchmark else ("official docs" if policy.require_official_source else "official source")
     alternative_suffix = {
-        "comparison_evaluation": "tradeoffs and benchmark",
+        "comparison_evaluation": "tradeoffs benchmark methodology independent results",
         "breaking_news": "timeline and reactions",
         "product_docs_api_lookup": "reference guide",
         "people_company_ecosystem_tracking": "ecosystem map",
@@ -351,7 +350,7 @@ def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SU
         "breaking_news": "conflicting reports",
         "fact_lookup": "contradicting value",
         "product_docs_api_lookup": "limitations exceptions",
-        "comparison_evaluation": "counterarguments",
+        "comparison_evaluation": "benchmark disagreement counterarguments",
         "people_company_ecosystem_tracking": "controversy changes",
         "background_explainer": "common misconceptions",
     }.get(intent_type, "contradictions")
@@ -365,12 +364,12 @@ def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SU
     candidates = [primary_query]
     if freshness_priority in {"high", "medium"}:
         candidates.append(freshness_query)
-    if policy.require_official_source:
+    if policy.require_official_source or comparison_benchmark:
         candidates.append(official_docs_query)
     candidates.append(alternative_wording_query)
     if policy.search_branches >= 4 or freshness_priority == "low":
         candidates.append(contradiction_check_query)
-    if policy.search_branches >= 5 and not policy.require_official_source:
+    if policy.search_branches >= 5 and not policy.require_official_source and not comparison_benchmark:
         candidates.append(official_docs_query)
 
     branch_budget = max(1, min(policy.search_branches, max_subqueries, MAX_SUBQUERIES))
@@ -847,9 +846,17 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             if index == 0:
                 score += 0.4
                 reasons.append("serp-position:+0.4")
-            if official and ("official docs" in subquery.lower() or "reference guide" in subquery.lower()):
+            benchmark_hits = len(re.findall(r"\b(benchmark|benchmarks|methodology|throughput|latency|eval|evaluation|head[- ]to[- ]head|comparison)\b", haystack))
+            benchmark_score = min(1.8, benchmark_hits * 0.45)
+            if benchmark_score:
+                score += benchmark_score
+                reasons.append(f"benchmark-signal:{benchmark_score:+.1f}")
+            benchmark_branch = any(token in subquery.lower() for token in ("benchmark", "methodology", "maintainers", "official benchmark"))
+            if official and ("official docs" in subquery.lower() or "reference guide" in subquery.lower() or benchmark_branch):
                 score += 1.0
                 reasons.append("official-branch:+1.0")
+            if benchmark_branch and primary: score += 0.8; reasons.append("primary-benchmark-branch:+0.8")
+            elif benchmark_branch and not primary and benchmark_hits == 0: score -= 0.6; reasons.append("benchmark-branch-without-signal:-0.6")
             decision = "selected"
             if is_duplicate:
                 decision = "reject"
@@ -900,7 +907,6 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
             strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
             has_conflict = bool(getattr(run, "contradictions", []))
-            has_official = any("official-source" in reason for source in run.candidate_sources for reason in source.get("reasons", []))
             should_stop = read_pages_ok >= budget.early_stop_min_read_pages and strong_findings >= budget.early_stop_min_findings and not has_conflict
             if policy.get("require_official_source"):
                 should_stop = False
@@ -966,10 +972,7 @@ def get_tools() -> List[ToolEntry]:
                 "description": "Run research in a dialogue-friendly mode and return a compact evidence-backed answer with configurable depth, output shape, and freshness bias.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "query": {"type": "string"}, "depth": {"type": "string", "enum": ["cheap", "balanced", "deep"]},
-                        "output": {"type": "string", "enum": ["brief", "memo", "timeline", "comparison"]}, "freshness_bias": {"type": "string", "enum": ["low", "medium", "high"]},
-                    },
+                    "properties": {"query": {"type": "string"}, "depth": {"type": "string", "enum": ["cheap", "balanced", "deep"]}, "output": {"type": "string", "enum": ["brief", "memo", "timeline", "comparison"]}, "freshness_bias": {"type": "string", "enum": ["low", "medium", "high"]}},
                     "required": ["query"],
                 },
             },

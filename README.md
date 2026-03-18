@@ -42,6 +42,11 @@
 
 ## Changelog
 
+### 6.69.14
+- Improved comparison research by preferring primary / official benchmark methodology sources for benchmark-heavy comparisons.
+- Tightened comparison query planning and source scoring so benchmark retrieval no longer over-trusts generic roundup pages.
+- Added regression coverage for comparison / primary benchmark retrieval while keeping search structural smoke green.
+
 ### 6.69.13
 - Completed the first field-hardening pass for the deep research contour: switched discovery to a Serper-first path, validated live runs against real docs/pricing/release/comparison queries, and fixed the resulting live-path bugs instead of relying only on mocked tests.
 - Added practical usage guidance and limitations to README, including where the contour is already strong (official docs / pricing / primary-source lookup), where it still needs caution (fresh timelines, comparison-heavy SERPs), and known failure modes from the field run.
