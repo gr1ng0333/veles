@@ -594,3 +594,91 @@ def test_research_run_budget_and_early_stop_behaviour(_web, _fetch, _save, query
         assert data['budget_trace']['pages_read'] <= data['budget_limits']['max_pages_read']
         assert data['budget_trace']['synthesis_rounds_used'] == 1
 
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_comparison_prefers_primary_benchmark_retrieval(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    query = 'compare claude vs gpt benchmark latency'
+    _web.side_effect = [
+        json.dumps({
+            "query": query,
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "Big roundup", "url": "https://medium.com/@bench/review", "snippet": "comparison overview opinions"},
+                {"title": "Anthropic benchmark methodology", "url": "https://docs.anthropic.com/en/docs/build-with-claude/benchmarks", "snippet": "benchmark methodology latency evaluation"},
+                {"title": "OpenAI evals guide", "url": "https://platform.openai.com/docs/guides/evals", "snippet": "evaluation methodology benchmark guidance"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": f"{query} recent",
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "News recap", "url": "https://example.com/news/benchmarks", "snippet": "latest benchmark recap"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": f"{query} official benchmark methodology maintainers",
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "Anthropic benchmark methodology", "url": "https://docs.anthropic.com/en/docs/build-with-claude/benchmarks", "snippet": "official benchmark methodology latency evaluation"},
+                {"title": "OpenAI evals guide", "url": "https://platform.openai.com/docs/guides/evals", "snippet": "official evaluation methodology benchmark guidance"},
+                {"title": "Forum summary", "url": "https://reddit.com/r/LocalLLaMA/comments/bench", "snippet": "community benchmark discussion"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": f"{query} tradeoffs benchmark methodology independent results",
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "Independent lab", "url": "https://example.com/lab/benchmarks", "snippet": "independent benchmark methodology throughput latency"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": f"{query} benchmark disagreement counterarguments",
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "Counterpoint", "url": "https://example.com/counterpoint", "snippet": "benchmark disagreement methodology critique"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://docs.anthropic.com/en/docs/build-with-claude/benchmarks", "status": "ok", "content_type": "text/html", "text_preview": "anthropic", "relevant_sections": ["anthropic"], "findings": [{"claim": "Anthropic publishes benchmark methodology for Claude evaluations.", "evidence_snippet": "The benchmarks page explains methodology and caveats.", "source_url": "https://docs.anthropic.com/en/docs/build-with-claude/benchmarks", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+        {"url": "https://platform.openai.com/docs/guides/evals", "status": "ok", "content_type": "text/html", "text_preview": "openai", "relevant_sections": ["openai"], "findings": [{"claim": "OpenAI documents eval methodology rather than promising a universal benchmark winner.", "evidence_snippet": "The evals guide focuses on evaluation design and limits.", "source_url": "https://platform.openai.com/docs/guides/evals", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+        {"url": "https://example.com/lab/benchmarks", "status": "ok", "content_type": "text/html", "text_preview": "lab", "relevant_sections": ["lab"], "findings": [{"claim": "Independent latency results depend heavily on prompt design and serving setup.", "evidence_snippet": "The lab notes prompt shape and hardware strongly affect results.", "source_url": "https://example.com/lab/benchmarks", "source_type": "blog", "observed_at": "2026-03-18", "confidence_local": "medium"}], "error": None},
+        {"url": "https://example.com/counterpoint", "status": "ok", "content_type": "text/html", "text_preview": "counter", "relevant_sections": ["counter"], "findings": [{"claim": "Cross-vendor benchmark comparisons are not directly apples-to-apples.", "evidence_snippet": "The critique argues methodology differences can invert conclusions.", "source_url": "https://example.com/counterpoint", "source_type": "analysis", "observed_at": "2026-03-18", "confidence_local": "medium"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-comparison-primary'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    assert data['intent_type'] == 'comparison_evaluation'
+    assert data['intent_policy']['require_official_source'] is False
+    assert data['query_plan']['branch_budget'] == 4
+    assert data['query_plan']['official_docs_query'].endswith('official benchmark methodology maintainers')
+    assert any(item['authority'] in {'official', 'primary'} for item in data['candidate_sources'][:2])
+    top_urls = [item['url'] for item in data['candidate_sources'][:2]]
+    assert 'https://docs.anthropic.com/en/docs/build-with-claude/benchmarks' in top_urls
+    assert 'https://platform.openai.com/docs/guides/evals' in top_urls
+    assert any('benchmark-signal' in reason for item in data['candidate_sources'][:2] for reason in item['reasons'])
+    assert any('primary-benchmark-branch:+0.8' in reason or 'official-branch:+1.0' in reason for item in data['candidate_sources'][:2] for reason in item['reasons'])
+    assert 'Сопоставление подтверждённых утверждений:' in data['final_answer']
