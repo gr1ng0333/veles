@@ -1,0 +1,695 @@
+[
+  {
+    "id": "news-openai-latest-model",
+    "query": "What is the latest OpenAI model announcement today?",
+    "category": "fresh_news",
+    "must_include_any": [
+      "openai",
+      "model",
+      "announcement"
+    ],
+    "preferred_domains": [
+      "openai.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "news-anthropic-release",
+    "query": "Latest Anthropic Claude release news",
+    "category": "fresh_news",
+    "must_include_any": [
+      "anthropic",
+      "claude",
+      "release"
+    ],
+    "preferred_domains": [
+      "anthropic.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "news-google-ai-update",
+    "query": "Latest Google AI model update",
+    "category": "fresh_news",
+    "must_include_any": [
+      "google",
+      "ai",
+      "update"
+    ],
+    "preferred_domains": [
+      "blog.google",
+      "deepmind.google"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "news-llama-release",
+    "query": "Latest Meta Llama release news",
+    "category": "fresh_news",
+    "must_include_any": [
+      "meta",
+      "llama",
+      "release"
+    ],
+    "preferred_domains": [
+      "ai.meta.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "news-github-copilot-update",
+    "query": "Latest GitHub Copilot announcement",
+    "category": "fresh_news",
+    "must_include_any": [
+      "github",
+      "copilot"
+    ],
+    "preferred_domains": [
+      "github.blog",
+      "github.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "docs-openai-rate-limits",
+    "query": "Find the official OpenAI API rate limits documentation",
+    "category": "api_docs_lookup",
+    "must_include_any": [
+      "rate limit",
+      "openai"
+    ],
+    "preferred_domains": [
+      "platform.openai.com",
+      "openai.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "docs-anthropic-rate-limits",
+    "query": "Find the official Anthropic API rate limits documentation",
+    "category": "api_docs_lookup",
+    "must_include_any": [
+      "rate limit",
+      "anthropic"
+    ],
+    "preferred_domains": [
+      "docs.anthropic.com",
+      "anthropic.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "docs-github-actions-matrix",
+    "query": "Find official GitHub Actions matrix strategy docs",
+    "category": "api_docs_lookup",
+    "must_include_any": [
+      "matrix",
+      "github actions"
+    ],
+    "preferred_domains": [
+      "docs.github.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "docs-go-http-timeout",
+    "query": "Find official Go net/http timeout documentation",
+    "category": "api_docs_lookup",
+    "must_include_any": [
+      "timeout",
+      "net/http",
+      "go"
+    ],
+    "preferred_domains": [
+      "pkg.go.dev",
+      "go.dev"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "docs-python-asyncio-taskgroup",
+    "query": "Find official Python asyncio.TaskGroup docs",
+    "category": "api_docs_lookup",
+    "must_include_any": [
+      "taskgroup",
+      "asyncio",
+      "python"
+    ],
+    "preferred_domains": [
+      "docs.python.org"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "compare-claude-vs-gpt-coding",
+    "query": "Compare Claude vs GPT for coding workflows",
+    "category": "ecosystem_comparison",
+    "must_include_any": [
+      "claude",
+      "gpt",
+      "coding"
+    ],
+    "preferred_domains": [
+      "anthropic.com",
+      "openai.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 2
+  },
+  {
+    "id": "compare-go-vs-rust-services",
+    "query": "Go vs Rust for backend services comparison",
+    "category": "ecosystem_comparison",
+    "must_include_any": [
+      "go",
+      "rust",
+      "backend"
+    ],
+    "preferred_domains": [
+      "go.dev",
+      "rust-lang.org"
+    ],
+    "requires_freshness": false,
+    "min_citations": 2
+  },
+  {
+    "id": "compare-postgres-vs-clickhouse-analytics",
+    "query": "Postgres vs ClickHouse for analytics workloads",
+    "category": "ecosystem_comparison",
+    "must_include_any": [
+      "postgres",
+      "clickhouse",
+      "analytics"
+    ],
+    "preferred_domains": [
+      "postgresql.org",
+      "clickhouse.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 2
+  },
+  {
+    "id": "compare-fastapi-vs-django-api",
+    "query": "FastAPI vs Django REST API comparison",
+    "category": "ecosystem_comparison",
+    "must_include_any": [
+      "fastapi",
+      "django"
+    ],
+    "preferred_domains": [
+      "fastapi.tiangolo.com",
+      "djangoproject.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 2
+  },
+  {
+    "id": "compare-react-vs-svelte",
+    "query": "React vs Svelte comparison for modern web apps",
+    "category": "ecosystem_comparison",
+    "must_include_any": [
+      "react",
+      "svelte"
+    ],
+    "preferred_domains": [
+      "react.dev",
+      "svelte.dev"
+    ],
+    "requires_freshness": false,
+    "min_citations": 2
+  },
+  {
+    "id": "pricing-openai-api",
+    "query": "Current OpenAI API pricing official page",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "pricing",
+      "openai"
+    ],
+    "preferred_domains": [
+      "openai.com",
+      "platform.openai.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "pricing-anthropic-api",
+    "query": "Current Anthropic API pricing official page",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "pricing",
+      "anthropic"
+    ],
+    "preferred_domains": [
+      "anthropic.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "pricing-github-actions",
+    "query": "GitHub Actions pricing official docs",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "pricing",
+      "github actions"
+    ],
+    "preferred_domains": [
+      "github.com",
+      "docs.github.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "pricing-cloudflare-workers",
+    "query": "Cloudflare Workers pricing official docs",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "pricing",
+      "workers",
+      "cloudflare"
+    ],
+    "preferred_domains": [
+      "cloudflare.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "pricing-vercel",
+    "query": "Vercel pricing official docs",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "pricing",
+      "vercel"
+    ],
+    "preferred_domains": [
+      "vercel.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "policy-openai-data-usage",
+    "query": "OpenAI API data usage policy official source",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "data",
+      "usage",
+      "policy",
+      "openai"
+    ],
+    "preferred_domains": [
+      "openai.com",
+      "platform.openai.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "policy-anthropic-data-retention",
+    "query": "Anthropic API data retention policy official source",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "data retention",
+      "anthropic"
+    ],
+    "preferred_domains": [
+      "anthropic.com",
+      "docs.anthropic.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "policy-github-actions-retention",
+    "query": "GitHub Actions artifact retention official docs",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "artifact retention",
+      "github actions"
+    ],
+    "preferred_domains": [
+      "docs.github.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "primary-kubernetes-release-notes",
+    "query": "Find the primary source for the latest Kubernetes release notes",
+    "category": "find_primary_source",
+    "must_include_any": [
+      "kubernetes",
+      "release notes"
+    ],
+    "preferred_domains": [
+      "kubernetes.io",
+      "github.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "primary-python-release-notes",
+    "query": "Find the primary source for the latest Python release notes",
+    "category": "find_primary_source",
+    "must_include_any": [
+      "python",
+      "release notes"
+    ],
+    "preferred_domains": [
+      "python.org"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "primary-node-release-notes",
+    "query": "Find the primary source for the latest Node.js release notes",
+    "category": "find_primary_source",
+    "must_include_any": [
+      "node",
+      "release notes"
+    ],
+    "preferred_domains": [
+      "nodejs.org",
+      "github.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "primary-postgres-release-notes",
+    "query": "Find the primary source for the latest PostgreSQL release notes",
+    "category": "find_primary_source",
+    "must_include_any": [
+      "postgresql",
+      "release notes"
+    ],
+    "preferred_domains": [
+      "postgresql.org"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "primary-docker-release-notes",
+    "query": "Find the primary source for the latest Docker release notes",
+    "category": "find_primary_source",
+    "must_include_any": [
+      "docker",
+      "release notes"
+    ],
+    "preferred_domains": [
+      "docker.com",
+      "github.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "fact-openai-headquarters",
+    "query": "Where is OpenAI headquartered?",
+    "category": "exact_fact",
+    "must_include_any": [
+      "openai"
+    ],
+    "preferred_domains": [
+      "openai.com",
+      "wikipedia.org"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "fact-golang-latest-version",
+    "query": "What is the latest stable Go version?",
+    "category": "exact_fact",
+    "must_include_any": [
+      "go",
+      "version"
+    ],
+    "preferred_domains": [
+      "go.dev"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "fact-python-latest-version",
+    "query": "What is the latest stable Python version?",
+    "category": "exact_fact",
+    "must_include_any": [
+      "python",
+      "version"
+    ],
+    "preferred_domains": [
+      "python.org"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "fact-node-latest-version",
+    "query": "What is the latest stable Node.js version?",
+    "category": "exact_fact",
+    "must_include_any": [
+      "node",
+      "version"
+    ],
+    "preferred_domains": [
+      "nodejs.org"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "fact-docker-compose-plugin",
+    "query": "Is Docker Compose part of the Docker CLI plugin system?",
+    "category": "exact_fact",
+    "must_include_any": [
+      "docker compose",
+      "plugin"
+    ],
+    "preferred_domains": [
+      "docs.docker.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "ecosystem-redis-license-history",
+    "query": "Redis license change timeline and primary sources",
+    "category": "ecosystem_comparison",
+    "must_include_any": [
+      "redis",
+      "license"
+    ],
+    "preferred_domains": [
+      "redis.io",
+      "github.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 2
+  },
+  {
+    "id": "ecosystem-elasticsearch-license-history",
+    "query": "Elasticsearch license change timeline and primary sources",
+    "category": "ecosystem_comparison",
+    "must_include_any": [
+      "elasticsearch",
+      "license"
+    ],
+    "preferred_domains": [
+      "elastic.co"
+    ],
+    "requires_freshness": true,
+    "min_citations": 2
+  },
+  {
+    "id": "ecosystem-github-copilot-vs-cursor",
+    "query": "Compare GitHub Copilot vs Cursor for developer workflows",
+    "category": "ecosystem_comparison",
+    "must_include_any": [
+      "copilot",
+      "cursor"
+    ],
+    "preferred_domains": [
+      "github.com",
+      "cursor.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 2
+  },
+  {
+    "id": "ecosystem-openrouter-pricing",
+    "query": "OpenRouter pricing and model routing official information",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "openrouter",
+      "pricing"
+    ],
+    "preferred_domains": [
+      "openrouter.ai"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "source-first-prisma-rate-limits",
+    "query": "Find the primary source for Prisma Data Proxy limits",
+    "category": "find_primary_source",
+    "must_include_any": [
+      "prisma",
+      "limits"
+    ],
+    "preferred_domains": [
+      "prisma.io"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "source-first-cloudflare-d1-limits",
+    "query": "Find the primary source for Cloudflare D1 limits",
+    "category": "find_primary_source",
+    "must_include_any": [
+      "cloudflare",
+      "d1",
+      "limits"
+    ],
+    "preferred_domains": [
+      "developers.cloudflare.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "source-first-supabase-pricing",
+    "query": "Find the primary source for current Supabase pricing",
+    "category": "find_primary_source",
+    "must_include_any": [
+      "supabase",
+      "pricing"
+    ],
+    "preferred_domains": [
+      "supabase.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "docs-telegram-bot-api-senddocument",
+    "query": "Find official Telegram Bot API sendDocument docs",
+    "category": "api_docs_lookup",
+    "must_include_any": [
+      "senddocument",
+      "telegram bot api"
+    ],
+    "preferred_domains": [
+      "core.telegram.org"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "docs-git-push-follow-tags",
+    "query": "Find official git push --follow-tags documentation",
+    "category": "api_docs_lookup",
+    "must_include_any": [
+      "follow-tags",
+      "git push"
+    ],
+    "preferred_domains": [
+      "git-scm.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "docs-systemd-restart-policy",
+    "query": "Find official systemd restart policy docs",
+    "category": "api_docs_lookup",
+    "must_include_any": [
+      "systemd",
+      "restart"
+    ],
+    "preferred_domains": [
+      "freedesktop.org",
+      "man7.org"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "policy-docker-hub-rate-limits",
+    "query": "Docker Hub pull rate limits official source",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "docker hub",
+      "rate limit"
+    ],
+    "preferred_domains": [
+      "docs.docker.com",
+      "docker.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  },
+  {
+    "id": "policy-github-api-rate-limits",
+    "query": "GitHub API rate limits official docs",
+    "category": "pricing_release_policy",
+    "must_include_any": [
+      "github api",
+      "rate limit"
+    ],
+    "preferred_domains": [
+      "docs.github.com",
+      "github.com"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "docs-openrouter-api-keys",
+    "query": "Find official OpenRouter API key documentation",
+    "category": "api_docs_lookup",
+    "must_include_any": [
+      "openrouter",
+      "api key"
+    ],
+    "preferred_domains": [
+      "openrouter.ai"
+    ],
+    "requires_freshness": false,
+    "min_citations": 1
+  },
+  {
+    "id": "timeline-openai-operator",
+    "query": "OpenAI Operator release timeline primary sources",
+    "category": "find_primary_source",
+    "must_include_any": [
+      "operator",
+      "openai"
+    ],
+    "preferred_domains": [
+      "openai.com"
+    ],
+    "requires_freshness": true,
+    "min_citations": 1
+  }
+]
