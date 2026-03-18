@@ -804,7 +804,7 @@ def test_policy_data_usage_prefers_official_policy_paths(_web, _fetch, _save):
     assert data['query_plan']['official_docs_query'].endswith('official policy data usage retention privacy docs')
     assert data['candidate_sources'][0]['url'].startswith('https://openai.com/policies/')
     assert data['candidate_sources'][0]['authority'] == 'official'
-    assert any('official-policy-path' in reason or 'policy-primary-path:+1.5' in reason for reason in data['candidate_sources'][0]['reasons'])
+    assert any('official-policy-path' in reason or 'policy-primary-path:+1.8' in reason for reason in data['candidate_sources'][0]['reasons'])
     assert all(item['authority'] == 'official' for item in data['candidate_sources'])
 
 
@@ -892,6 +892,47 @@ def test_comparison_preferred_source_upgrade_rewards_vendor_compare_pages(_web, 
     assert 'https://docs.github.com/en/copilot/get-started/what-is-github-copilot' in top_urls
     assert 'https://docs.cursor.com/get-started/overview' in top_urls or 'https://www.cursor.com/pricing' in top_urls
     preferred_reasons = [reason for item in data['candidate_sources'][:3] for reason in item['reasons']]
-    assert any('comparison-preferred-source:+0.8' in reason for reason in preferred_reasons)
+    assert any('comparison-preferred-source:vendor_docs_pricing_matrix' in reason for reason in preferred_reasons)
     medium_entry = next(item for item in data['visited_pages'][0]['ranked_sources'] if item['url'] == 'https://medium.com/@dev/copilot-vs-cursor')
-    assert 'comparison-aggregator:-0.6' in medium_entry['reasons']
+    assert 'comparison-roundup-noise:-0.9' in medium_entry['reasons']
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_policy_vendor_marketing_page_gets_penalized_against_policy_path(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    query = 'Anthropic data retention policy official source'
+    _web.side_effect = [
+        json.dumps({
+            "query": query,
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "Anthropic blog", "url": "https://www.anthropic.com/news/model-updates", "snippet": "policy retention overview"},
+                {"title": "Anthropic policy", "url": "https://www.anthropic.com/legal/privacy", "snippet": "official privacy retention policy"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({"query": f"{query} recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} official policy data usage retention privacy docs", "status": "ok", "backend": "serper", "sources": [{"title": "Anthropic policy", "url": "https://www.anthropic.com/legal/privacy", "snippet": "official privacy retention policy"}], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} privacy policy data retention help center official guidance", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://www.anthropic.com/legal/privacy", "status": "ok", "content_type": "text/html", "text_preview": "policy", "relevant_sections": ["policy"], "findings": [{"claim": "Anthropic publishes policy details on privacy and retention.", "evidence_snippet": "The legal privacy page describes retention-related details.", "source_url": "https://www.anthropic.com/legal/privacy", "source_type": "policy", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-policy-marketing-penalty'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    ranked = {}
+    for page in data['visited_pages']:
+        for item in page.get('ranked_sources', []):
+            ranked[item['url']] = item
+    assert 'policy-marketing-penalty:-1.0' in ranked['https://www.anthropic.com/news/model-updates']['reasons'] or 'vendor-marketing-penalty:-0.7' in ranked['https://www.anthropic.com/news/model-updates']['reasons']
+    assert ranked['https://www.anthropic.com/legal/privacy']['authority'] == 'official'
+    assert data['candidate_sources'][0]['url'] == 'https://www.anthropic.com/legal/privacy'
