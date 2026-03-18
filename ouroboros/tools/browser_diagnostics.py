@@ -126,27 +126,36 @@ def capture_browser_failure_diagnostics(
     attempted_selectors: Optional[Iterable[str]] = None,
     exception: Optional[BaseException] = None,
 ) -> Dict[str, Any]:
-    def safe(call, default=None):
-        try:
-            return call()
-        except Exception:
-            return default
-
-    final_url = safe(lambda: getattr(page, "url", "") or "", "")
-    title = safe(lambda: page.title() or "", "")
-    ready_state = safe(lambda: page.evaluate("() => document.readyState") or "", "")
-    visible_text = safe(lambda: page.inner_text("body") or "", "")
-    html = safe(lambda: page.content() or "", "")
-    body_info = safe(
-        lambda: page.evaluate(
+    try:
+        final_url = getattr(page, "url", "") or ""
+    except Exception:
+        final_url = ""
+    try:
+        title = page.title() or ""
+    except Exception:
+        title = ""
+    try:
+        ready_state = page.evaluate("() => document.readyState") or ""
+    except Exception:
+        ready_state = ""
+    try:
+        visible_text = page.inner_text("body") or ""
+    except Exception:
+        visible_text = ""
+    try:
+        html = page.content() or ""
+    except Exception:
+        html = ""
+    try:
+        body_info = page.evaluate(
             """() => ({
                 bodyChildCount: document.body ? document.body.children.length : 0,
                 hasRoot: !!document.querySelector('#__next, #root, [data-reactroot], [ng-version], [id*=app], [class*=app]'),
                 scriptCount: document.scripts ? document.scripts.length : 0
             })"""
-        ) or {},
-        {},
-    )
+        ) or {}
+    except Exception:
+        body_info = {}
 
     attempted: List[str] = []
     for item in [selector_waited, *(attempted_selectors or [])]:

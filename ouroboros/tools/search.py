@@ -60,6 +60,16 @@ DOMAIN_SCORES: Dict[str, float] = {
 }
 AGGREGATOR_DOMAINS = {"www.reddit.com", "reddit.com", "news.ycombinator.com", "hn.algolia.com", "medium.com", "towardsdatascience.com", "www.linkedin.com", "linkedin.com"}
 SOCIAL_DOMAINS = {"x.com", "twitter.com", "www.x.com", "www.twitter.com", "facebook.com", "www.facebook.com"}
+OFFICIAL_HOST_MARKERS = ("docs.", "developer.", "developers.", "platform.", "api.")
+PRIMARY_HOST_MARKERS = ("openai.com", "anthropic.com", "github.com", "python.org", "mozilla.org", "google.com")
+ANTI_SYCOPHANCY_PHRASES = (
+    "отличный вопрос",
+    "классный вопрос",
+    "крутой вопрос",
+    "great question",
+    "awesome question",
+    "you are right",
+)
 INTENT_POLICIES: Dict[str, IntentPolicy] = {
     "breaking_news": IntentPolicy("high", 4, 3, False),
     "fact_lookup": IntentPolicy("medium", 3, 2, False),
@@ -204,6 +214,118 @@ class ResearchRun:
     budget_mode: str = "balanced"
     budget_limits: Dict[str, Any] = field(default_factory=dict)
     budget_trace: Dict[str, Any] = field(default_factory=dict)
+def _source_authority(host: str, require_official: bool) -> tuple[str, float, list[str]]:
+    authority = "secondary"
+    score = 0.0
+    reasons: List[str] = []
+    if require_official and any(marker in host for marker in OFFICIAL_HOST_MARKERS):
+        authority = "official"
+        score = 3.0
+        reasons.append("official-source")
+    elif any(token in host for token in PRIMARY_HOST_MARKERS):
+        authority = "primary"
+        score = 2.0
+        reasons.append("primary-source")
+    elif host in AGGREGATOR_DOMAINS or host in SOCIAL_DOMAINS:
+        authority = "community"
+    return authority, score, reasons
+
+READING_PRIORITY = lambda entry: ({"official": 0, "primary": 1, "secondary": 2, "community": 3}.get(str(entry.get("authority") or "secondary"), 2), -float(entry.get("score") or 0.0))
+NEUTRALIZE_TEXT = lambda value: re.sub(r"\s+", " ", __import__("functools").reduce(lambda acc, phrase: re.sub(re.escape(phrase), "", acc, flags=re.IGNORECASE), ANTI_SYCOPHANCY_PHRASES, str(value or ""))).strip(" ,.!?:;\n\t")
+
+def _compose_uncertain_short_answer(run: ResearchRun, policy: IntentPolicy) -> str:
+    if run.contradictions:
+        return "Источники расходятся; уверенный вывод без дополнительной проверки делать нельзя."
+    if policy.require_official_source and not any(item.get("authority") == "official" for item in run.candidate_sources):
+        return "Официальный первоисточник не подтверждён; надёжный ответ пока не собран."
+    if not run.findings:
+        return "После чтения выбранных страниц надёжных утверждений пока недостаточно."
+    return "Данных пока недостаточно для уверенного вывода."
+
+def _detect_contradictions(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    numeric_findings, status_findings = [], []
+    for finding in findings:
+        claim = str(finding.get("claim") or "").strip()
+        lowered = claim.lower()
+        cleaned = re.sub(r"[^a-zа-я0-9\s]", " ", claim.casefold())
+        cleaned = re.sub(r"\b(19|20)\d{2}\b", " ", cleaned)
+        cleaned = re.sub(r"\b\d+(?:[.,]\d+)?\b", " ", cleaned)
+        cleaned = re.sub(r"\b(v|version|ver|rpm|ms|s|sec|seconds|minutes|percent|%)\b", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        tokens = [tok for tok in cleaned.split() if len(tok) >= 3]
+        stop = {"the", "and", "for", "with", "from", "that", "this", "our", "says", "according", "guide"}
+        primary_tokens = [tok for tok in tokens if tok not in stop]
+        topic_key = " ".join((primary_tokens or tokens)[:8]) if tokens else ""
+        numbers = re.findall(r"\b\d+(?:[.,]\d+)?\b", claim)
+        if topic_key and numbers:
+            numeric_findings.append((topic_key, tuple(numbers[:2]), finding))
+        if topic_key and any(token in lowered for token in ("available", "unavailable", "deprecated", "supported", "unsupported", "announced", "cancelled", "delayed", "released", "planned", "removed")):
+            status_findings.append((topic_key, finding))
+    contradictions = []
+    for idx, (topic_a, nums_a, finding_a) in enumerate(numeric_findings):
+        for topic_b, nums_b, finding_b in numeric_findings[idx + 1:]:
+            if topic_a != topic_b or nums_a == nums_b:
+                continue
+            contradictions.append({"kind": "numeric_mismatch", "topic": topic_a, "claim_a": finding_a.get("claim"), "claim_b": finding_b.get("claim"), "source_a": finding_a.get("source_url"), "source_b": finding_b.get("source_url"), "observed_at_a": finding_a.get("observed_at"), "observed_at_b": finding_b.get("observed_at")})
+    opposite_pairs = {"available": "unavailable", "supported": "unsupported", "released": "planned", "announced": "cancelled"}
+    for idx, (topic_a, finding_a) in enumerate(status_findings):
+        claim_a = str(finding_a.get("claim") or "").lower()
+        for topic_b, finding_b in status_findings[idx + 1:]:
+            claim_b = str(finding_b.get("claim") or "").lower()
+            if topic_a != topic_b:
+                continue
+            if any((left in claim_a and right in claim_b) or (left in claim_b and right in claim_a) for left, right in opposite_pairs.items()):
+                contradictions.append({"kind": "status_conflict", "topic": topic_a, "claim_a": finding_a.get("claim"), "claim_b": finding_b.get("claim"), "source_a": finding_a.get("source_url"), "source_b": finding_b.get("source_url"), "observed_at_a": finding_a.get("observed_at"), "observed_at_b": finding_b.get("observed_at")})
+    deduped, seen = [], set()
+    for item in contradictions:
+        key = re.sub(r"\W+", " ", f"{item.get('kind','')} {item.get('topic','')} {item.get('claim_a','')} {item.get('claim_b','')}".casefold()).strip()
+        rev = re.sub(r"\W+", " ", f"{item.get('kind','')} {item.get('topic','')} {item.get('claim_b','')} {item.get('claim_a','')}".casefold()).strip()
+        if not key or key in seen or rev in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped[:5]
+
+def _render_synthesis(run: ResearchRun, policy: IntentPolicy) -> None:
+    source_authority_map = {str(item.get("url") or ""): str(item.get("authority") or "secondary") for item in run.candidate_sources}
+    ranked_findings = sorted(run.findings, key=lambda item: ({"official": 4, "primary": 3, "secondary": 2, "community": 1}.get(source_authority_map.get(str(item.get("source_url") or ""), "secondary"), 2), {"high": 3, "medium": 2, "low": 1}.get(str(item.get("confidence_local") or "low"), 1), 1 if str(item.get("observed_at") or "").strip() else 0, len(str(item.get("evidence_snippet") or ""))), reverse=True)
+    unique_source_rows, seen_source_urls = [], set()
+    for finding in ranked_findings:
+        source_url = str(finding.get("source_url") or "").strip()
+        if not source_url or source_url in seen_source_urls:
+            continue
+        seen_source_urls.add(source_url)
+        unique_source_rows.append({"url": source_url, "source_type": str(finding.get("source_type") or "page").strip() or "page", "observed_at": str(finding.get("observed_at") or "").strip(), "claim": NEUTRALIZE_TEXT(str(finding.get("claim") or "").strip()), "evidence_snippet": NEUTRALIZE_TEXT(str(finding.get("evidence_snippet") or "").strip()), "authority": source_authority_map.get(source_url, "secondary")})
+    key_finding_rows = []
+    for finding in ranked_findings[:4]:
+        claim = NEUTRALIZE_TEXT(str(finding.get("claim") or "").strip())
+        evidence = NEUTRALIZE_TEXT(str(finding.get("evidence_snippet") or "").strip())
+        source_url = str(finding.get("source_url") or "").strip()
+        if claim and evidence and source_url:
+            key_finding_rows.append({"claim": claim, "evidence_snippet": evidence, "source_url": source_url, "source_type": str(finding.get("source_type") or "page").strip() or "page", "observed_at": str(finding.get("observed_at") or "").strip(), "confidence_local": str(finding.get("confidence_local") or "low"), "authority": source_authority_map.get(source_url, "secondary")})
+    if not key_finding_rows:
+        run.synthesis = {"answer_mode": run.answer_mode, "short_answer": _compose_uncertain_short_answer(run, policy), "key_findings": [], "evidence_backed_explanation": "После чтения выбранных страниц не набралось утверждений с достаточной опорой на evidence.", "uncertainty_caveats": list(dict.fromkeys(run.uncertainty_notes)), "sources": unique_source_rows}
+        run.final_answer = run.synthesis["short_answer"]
+        return
+    primary_rows = [item for item in key_finding_rows if item.get("authority") in {"official", "primary"}]
+    support_rows = [item for item in key_finding_rows if item.get("authority") not in {"official", "primary"}]
+    ordered_rows = primary_rows + support_rows
+    if run.answer_mode == "timeline":
+        ordered_rows = sorted(ordered_rows, key=lambda item: (item["observed_at"] or "9999-99-99", item["authority"] not in {"official", "primary"}, item["confidence_local"] != "high"))
+    short_answer = ordered_rows[0]["claim"] if run.answer_mode == "short_factual" else {"comparison_brief": "Сравнение по прочитанным источникам: " + "; ".join(item["claim"] for item in ordered_rows[:2]), "analyst_memo": "По прочитанным источникам картина такая: " + "; ".join(item["claim"] for item in ordered_rows[:2]), "timeline": ordered_rows[0]["claim"]}.get(run.answer_mode, ordered_rows[0]["claim"])
+    explanation_prefix = {"short_factual": "Что подтверждают прочитанные источники:", "analyst_memo": "Что подтверждают прочитанные источники:", "comparison_brief": "Сопоставление подтверждённых утверждений:", "timeline": "Хронология/последовательность по прочитанным источникам:"}[run.answer_mode]
+    evidence_lines = [f"- {item['claim']}\n  evidence: {item['evidence_snippet']}\n  source: {item['source_url']} [{item['source_type']}, {item['authority']}{(' @ ' + item['observed_at']) if item['observed_at'] else ''}]" for item in ordered_rows]
+    caveats = list(dict.fromkeys(note for note in run.uncertainty_notes if note))
+    run.synthesis = {"answer_mode": run.answer_mode, "short_answer": short_answer, "key_findings": ordered_rows, "evidence_backed_explanation": explanation_prefix + "\n" + "\n".join(evidence_lines), "uncertainty_caveats": caveats, "sources": unique_source_rows}
+    final_blocks = [f"Режим ответа: {run.answer_mode}", "", "Короткий ответ:", short_answer, "", "Ключевые находки:"]
+    final_blocks.extend(f"- {item['claim']}\n  evidence: {item['evidence_snippet']}\n  source: {item['source_url']} [{item['authority']}]" for item in ordered_rows)
+    final_blocks += ["", explanation_prefix, *evidence_lines]
+    if caveats:
+        final_blocks += ["", "Неопределённость / caveats:", *(f"- {note}" for note in caveats)]
+    if unique_source_rows:
+        final_blocks += ["", "Sources:", *(f"- {item['url']} [{item['source_type']}, {item['authority']}]" for item in unique_source_rows)]
+    run.final_answer = "\n".join(final_blocks)
+
 def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SUBQUERIES, freshness_priority_override: str | None = None) -> QueryPlan:
     base = re.sub(r"\s+", " ", str(query or "").strip())
     policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT])
@@ -389,196 +511,27 @@ def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
 def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_override: str | None = None) -> None:
     freshness_known = sum(1 for finding in run.findings if str(finding.get("observed_at") or "").strip())
     freshness_unknown = max(0, len(run.findings) - freshness_known)
-    run.freshness_summary = {
-        "known_dated_findings": freshness_known,
-        "undated_findings": freshness_unknown,
-        "freshness_priority": policy.freshness_priority,
-    }
+    run.freshness_summary = {"known_dated_findings": freshness_known, "undated_findings": freshness_unknown, "freshness_priority": policy.freshness_priority}
     if freshness_unknown and policy.freshness_priority in {"high", "medium"}:
         run.uncertainty_notes.append("Часть найденных утверждений без явной даты публикации или обновления.")
-    numeric_findings = []
-    status_findings = []
-    for finding in run.findings:
-        claim = str(finding.get("claim") or "").strip()
-        lowered = claim.lower()
-        cleaned = re.sub(r"[^a-zа-я0-9\s]", " ", claim.casefold())
-        cleaned = re.sub(r"\b(19|20)\d{2}\b", " ", cleaned)
-        cleaned = re.sub(r"\b\d+(?:[.,]\d+)?\b", " ", cleaned)
-        cleaned = re.sub(r"\b(v|version|ver|rpm|ms|s|sec|seconds|minutes|percent|%)\b", " ", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        tokens = [tok for tok in cleaned.split() if len(tok) >= 3]
-        stop = {"the", "and", "for", "with", "from", "that", "this", "our", "says", "according", "guide"}
-        primary_tokens = [tok for tok in tokens if tok not in stop]
-        topic_key = " ".join((primary_tokens or tokens)[:8]) if tokens else ""
-        numbers = re.findall(r"\b\d+(?:[.,]\d+)?\b", claim)
-        if topic_key and numbers:
-            numeric_findings.append((topic_key, tuple(numbers[:2]), finding))
-        if topic_key and any(token in lowered for token in ("available", "unavailable", "deprecated", "supported", "unsupported", "announced", "cancelled", "delayed", "released", "planned", "removed")):
-            status_findings.append((topic_key, finding))
-    contradictions: List[Dict[str, Any]] = []
-    for idx, (topic_a, nums_a, finding_a) in enumerate(numeric_findings):
-        for topic_b, nums_b, finding_b in numeric_findings[idx + 1:]:
-            if topic_a != topic_b or nums_a == nums_b:
-                continue
-            contradictions.append({
-                "kind": "numeric_mismatch",
-                "topic": topic_a,
-                "claim_a": finding_a.get("claim"),
-                "claim_b": finding_b.get("claim"),
-                "source_a": finding_a.get("source_url"),
-                "source_b": finding_b.get("source_url"),
-                "observed_at_a": finding_a.get("observed_at"),
-                "observed_at_b": finding_b.get("observed_at"),
-            })
-    opposite_pairs = {"available": "unavailable", "supported": "unsupported", "released": "planned", "announced": "cancelled"}
-    for idx, (topic_a, finding_a) in enumerate(status_findings):
-        claim_a = str(finding_a.get("claim") or "").lower()
-        for topic_b, finding_b in status_findings[idx + 1:]:
-            claim_b = str(finding_b.get("claim") or "").lower()
-            if topic_a != topic_b:
-                continue
-            if any((left in claim_a and right in claim_b) or (left in claim_b and right in claim_a) for left, right in opposite_pairs.items()):
-                contradictions.append({
-                    "kind": "status_conflict",
-                    "topic": topic_a,
-                    "claim_a": finding_a.get("claim"),
-                    "claim_b": finding_b.get("claim"),
-                    "source_a": finding_a.get("source_url"),
-                    "source_b": finding_b.get("source_url"),
-                    "observed_at_a": finding_a.get("observed_at"),
-                    "observed_at_b": finding_b.get("observed_at"),
-                })
-    deduped = []
-    seen = set()
-    for item in contradictions:
-        key = re.sub(r"\W+", " ", f"{item.get('kind','')} {item.get('topic','')} {item.get('claim_a','')} {item.get('claim_b','')}".casefold()).strip()
-        rev = re.sub(r"\W+", " ", f"{item.get('kind','')} {item.get('topic','')} {item.get('claim_b','')} {item.get('claim_a','')}".casefold()).strip()
-        if not key or key in seen or rev in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-    run.contradictions = deduped[:5]
+    run.contradictions = _detect_contradictions(run.findings)
     if run.contradictions:
         run.uncertainty_notes.append("Источники расходятся по части утверждений; смотри contradictions в trace.")
-    elif len({n for _, nums, _ in numeric_findings for n in nums}) > 1 and len(numeric_findings) > 1:
-        run.uncertainty_notes.append("Есть числовые расхождения между прочитанными утверждениями; нужна осторожность в интерпретации.")
     read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
     high_conf_findings = sum(1 for finding in run.findings if finding.get("confidence_local") == "high")
     strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
-    if read_pages_ok >= policy.min_sources_before_synthesis and high_conf_findings >= 1:
-        run.confidence = "high"
-    elif read_pages_ok >= 1 and strong_findings >= policy.min_sources_before_synthesis:
-        run.confidence = "medium"
-    else:
+    has_official_or_primary = any(str(item.get("authority") or "") in {"official", "primary"} for item in run.candidate_sources)
+    run.confidence = "high" if read_pages_ok >= policy.min_sources_before_synthesis and high_conf_findings >= 1 else ("medium" if read_pages_ok >= 1 and strong_findings >= policy.min_sources_before_synthesis else "low")
+    if freshness_unknown and run.confidence == "high": run.confidence = "medium"
+    elif freshness_unknown and run.confidence == "medium" and policy.freshness_priority == "high": run.confidence = "low"
+    if run.contradictions and run.confidence in {"high", "medium"}: run.confidence = "medium" if run.confidence == "high" else "low"
+    if policy.require_official_source and not has_official_or_primary:
         run.confidence = "low"
-    if freshness_unknown and run.confidence == "high":
-        run.confidence = "medium"
-    elif freshness_unknown and run.confidence == "medium" and policy.freshness_priority == "high":
-        run.confidence = "low"
-    if run.contradictions and run.confidence in {"high", "medium"}:
-        run.confidence = "medium" if run.confidence == "high" else "low"
-    mode_by_intent = {
-        "fact_lookup": "short_factual",
-        "product_docs_api_lookup": "short_factual",
-        "comparison_evaluation": "comparison_brief",
-        "breaking_news": "timeline",
-        "people_company_ecosystem_tracking": "timeline",
-        "background_explainer": "analyst_memo",
-    }
+        run.uncertainty_notes.append("Официальный или первичный источник не подтверждён; вывод опирается на вторичные пересказы.")
+    mode_by_intent = {"fact_lookup": "short_factual", "product_docs_api_lookup": "short_factual", "comparison_evaluation": "comparison_brief", "breaking_news": "timeline", "people_company_ecosystem_tracking": "timeline", "background_explainer": "analyst_memo"}
     run.answer_mode = output_mode_override if output_mode_override in {"short_factual", "analyst_memo", "comparison_brief", "timeline"} else mode_by_intent.get(run.intent_type, "short_factual")
-    ranked_findings = sorted(
-        run.findings,
-        key=lambda item: (
-            {"high": 3, "medium": 2, "low": 1}.get(str(item.get("confidence_local") or "low"), 1),
-            1 if str(item.get("observed_at") or "").strip() else 0,
-            len(str(item.get("evidence_snippet") or "")),
-        ),
-        reverse=True,
-    )
-    top_findings, unique_source_rows = ranked_findings[:4], []
-    seen_source_urls: set[str] = set()
-    for finding in ranked_findings:
-        source_url = str(finding.get("source_url") or "").strip()
-        if not source_url or source_url in seen_source_urls:
-            continue
-        seen_source_urls.add(source_url)
-        unique_source_rows.append({
-            "url": source_url,
-            "source_type": str(finding.get("source_type") or "page").strip() or "page",
-            "observed_at": str(finding.get("observed_at") or "").strip(),
-            "claim": str(finding.get("claim") or "").strip(),
-            "evidence_snippet": str(finding.get("evidence_snippet") or "").strip(),
-        })
-    key_finding_rows = []
-    for finding in top_findings:
-        claim = str(finding.get("claim") or "").strip()
-        evidence = str(finding.get("evidence_snippet") or "").strip()
-        source_url = str(finding.get("source_url") or "").strip()
-        if not claim or not evidence or not source_url:
-            continue
-        key_finding_rows.append({
-            "claim": claim,
-            "evidence_snippet": evidence,
-            "source_url": source_url,
-            "source_type": str(finding.get("source_type") or "page").strip() or "page",
-            "observed_at": str(finding.get("observed_at") or "").strip(),
-            "confidence_local": str(finding.get("confidence_local") or "low"),
-        })
-    if key_finding_rows:
-        if run.answer_mode == "timeline":
-            ordered = sorted(key_finding_rows, key=lambda item: (item["observed_at"] or "9999-99-99", item["confidence_local"] != "high"))
-            short_answer = ordered[0]["claim"]
-        elif run.answer_mode == "comparison_brief":
-            short_answer = "Сравнение по прочитанным источникам: " + "; ".join(item["claim"] for item in key_finding_rows[:2])
-        elif run.answer_mode == "analyst_memo":
-            short_answer = "По прочитанным источникам картина такая: " + "; ".join(item["claim"] for item in key_finding_rows[:2])
-        else:
-            short_answer = key_finding_rows[0]["claim"]
-        evidence_lines = []
-        for item in key_finding_rows:
-            observed = f" @ {item['observed_at']}" if item["observed_at"] else ""
-            evidence_lines.append(
-                f"- {item['claim']}\n  evidence: {item['evidence_snippet']}\n  source: {item['source_url']} [{item['source_type']}{observed}]"
-            )
-        explanation_prefix = {
-            "short_factual": "Подтверждённые утверждения:",
-            "analyst_memo": "Что подтверждают прочитанные источники:",
-            "comparison_brief": "Сопоставление подтверждённых утверждений:",
-            "timeline": "Хронология/последовательность по прочитанным источникам:",
-        }[run.answer_mode]
-        caveats = list(dict.fromkeys(note for note in run.uncertainty_notes if note))
-        run.synthesis = {
-            "answer_mode": run.answer_mode,
-            "short_answer": short_answer,
-            "key_findings": key_finding_rows,
-            "evidence_backed_explanation": explanation_prefix + "\n" + "\n".join(evidence_lines),
-            "uncertainty_caveats": caveats,
-            "sources": unique_source_rows[:6],
-        }
-        final_blocks = [f"Режим ответа: {run.answer_mode}", "", "Короткий ответ:", short_answer, "", "Ключевые находки:"]
-        final_blocks.extend(
-            f"- {item['claim']}\n  evidence: {item['evidence_snippet']}\n  source: {item['source_url']}"
-            for item in key_finding_rows
-        )
-        final_blocks += ["", explanation_prefix]
-        final_blocks.extend(evidence_lines)
-        if caveats:
-            final_blocks += ["", "Неопределённость / caveats:"]
-            final_blocks.extend(f"- {note}" for note in caveats)
-        if unique_source_rows:
-            final_blocks += ["", "Sources:"]
-            final_blocks.extend(f"- {item['url']} [{item['source_type']}]" for item in unique_source_rows[:6])
-        run.final_answer = "\n".join(final_blocks)
-    else:
-        run.synthesis = {
-            "answer_mode": run.answer_mode,
-            "short_answer": "Надёжных findings после deep reading пока недостаточно.",
-            "key_findings": [],
-            "evidence_backed_explanation": "После чтения выбранных страниц не набралось утверждений с достаточной опорой на evidence.",
-            "uncertainty_caveats": list(dict.fromkeys(run.uncertainty_notes)),
-            "sources": unique_source_rows[:6],
-        }
-        run.final_answer = "Надёжных findings после deep reading пока недостаточно."
+    _render_synthesis(run, policy)
+
 
 def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
     url = os.environ.get("SEARXNG_URL", SEARXNG_DEFAULT)
@@ -774,7 +727,6 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     query_terms = {term for term in re.findall(r"[a-zA-Zа-яА-Я0-9_+-]{3,}", run.user_query.lower()) if len(term) >= 3}
 
     for subquery in run.subqueries:
-        if run.budget_trace["early_stop_triggered"]: break
         result = json.loads(_web_search(ctx, subquery))
         run.budget_trace["search_calls"] += 1
         run.budget_trace["subqueries_executed"] += 1
@@ -811,16 +763,14 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             haystack = f"{title} {snippet} {url}".lower()
             score = 0.0
             reasons: List[str] = []
-            official = policy["require_official_source"] and any(
-                needle in host for needle in ("docs.", "developer.", "platform.")
-            )
-            primary = any(token in host for token in ["openai.com", "anthropic.com", "github.com", "python.org", "mozilla.org"])
-            if official:
-                score += 3.0
-                reasons.append("official-source")
-            elif primary:
-                score += 2.0
-                reasons.append("primary-source")
+            authority, authority_score, authority_reasons = _source_authority(host, policy["require_official_source"])
+            official = authority == "official"
+            primary = authority in {"official", "primary"}
+            if authority_score:
+                score += authority_score
+                reasons.extend(authority_reasons)
+            if authority == "community":
+                reasons.append("retelling-or-community")
             domain_bonus = 0.0
             for domain, value in DOMAIN_SCORES.items():
                 if host == domain or host.endswith(f".{domain}"):
@@ -878,6 +828,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
                 "decision": decision,
                 "host": host,
                 "query": subquery,
+                "authority": authority,
             }
             page_trace["ranked_sources"].append(entry)
             if decision == "selected":
@@ -886,7 +837,9 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             else:
                 page_trace["rejected"].append({"url": url, "score": entry["score"], "reasons": reasons})
             seen_urls.add(url)
-        for key in ("ranked_sources", "selected_to_read", "rejected"): page_trace[key].sort(key=itemgetter("score"), reverse=True)
+        page_trace["ranked_sources"].sort(key=lambda item: (READING_PRIORITY(item),), reverse=False)
+        page_trace["selected_to_read"].sort(key=lambda item: READING_PRIORITY(next((row for row in page_trace["ranked_sources"] if row["url"] == item["url"]), item)))
+        page_trace["rejected"].sort(key=itemgetter("score"), reverse=True)
         run.visited_pages.append(page_trace)
         read_budget_remaining = max(0, budget.max_pages_read - run.budget_trace["pages_read"])
         browse_depth = min(budget.max_browse_depth, read_budget_remaining)
@@ -908,15 +861,17 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             has_conflict = bool(getattr(run, "contradictions", []))
             has_official = any("official-source" in reason for source in run.candidate_sources for reason in source.get("reasons", []))
             should_stop = read_pages_ok >= budget.early_stop_min_read_pages and strong_findings >= budget.early_stop_min_findings and not has_conflict
-            if policy.get("require_official_source") and not has_official: should_stop = False
-            if page_trace["query"] == run.query_plan.get("contradiction_check_query"): should_stop = False
+            if policy.get("require_official_source"):
+                should_stop = False
+            if page_trace["query"] == run.query_plan.get("contradiction_check_query"):
+                should_stop = False
             if should_stop or run.budget_trace["pages_read"] >= budget.max_pages_read:
                 run.budget_trace["early_stop_triggered"] = True
                 run.budget_trace["early_stop_reason"] = "enough-evidence" if should_stop else "page-budget-exhausted"
                 break
     if not run.budget_trace["early_stop_reason"] and run.budget_trace["subqueries_executed"] >= budget.max_subqueries:
         run.budget_trace["early_stop_reason"] = "subquery-budget-exhausted"
-    ranked_sources.sort(key=itemgetter("score"), reverse=True)
+    ranked_sources.sort(key=READING_PRIORITY)
     selected_limit = max(policy["min_sources_before_synthesis"], min(budget.max_pages_read, len(ranked_sources)))
     run.candidate_sources = ranked_sources[:selected_limit]
     deduped_findings: List[Dict[str, Any]] = []

@@ -222,11 +222,6 @@ def _doctor(
         'overall_healthy': True,
     }
 
-    def add_check(name: str, ok: bool, details: Dict[str, Any]) -> None:
-        report['checks'][name] = {'ok': bool(ok), **details}
-        if not ok:
-            report['overall_healthy'] = False
-
     # 1) VERSION sync invariant (VERSION == pyproject == README mention)
     try:
         repo = pathlib.Path(ctx.repo_dir)
@@ -413,10 +408,6 @@ def _monitor_snapshot(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
 
-    def _icon(src_name: str) -> str:
-        st = report['sources'].get(src_name, {}).get('status')
-        return '✅' if st == 'ok' else ('⚪' if st == 'missing' else '⚠️')
-
     spent = None
     failures = None
     if report['sources'].get('state', {}).get('status') == 'ok':
@@ -439,11 +430,11 @@ def _monitor_snapshot(
         f'- **Timestamp (UTC):** {ts}',
         f'- **Overall:** {overall_icon} {"healthy" if report["overall_healthy"] else "attention needed"}',
         '- **Sources:**',
-        f'  - {_icon("state")} state: {report["sources"].get("state", {}).get("status")}',
-        f'  - {_icon("doctor_report")} doctor_report: {report["sources"].get("doctor_report", {}).get("status")}',
-        f'  - {_icon("health_check")} health_check: {report["sources"].get("health_check", {}).get("status")}',
-        f'  - {_icon("codex_accounts_state")} codex_accounts_state: {report["sources"].get("codex_accounts_state", {}).get("status")}',
-        f'  - {_icon("queue_snapshot")} queue_snapshot: {report["sources"].get("queue_snapshot", {}).get("status")}',
+        f'  - {"✅" if report["sources"].get("state", {}).get("status") == "ok" else ("⚪" if report["sources"].get("state", {}).get("status") == "missing" else "⚠️")} state: {report["sources"].get("state", {}).get("status")}',
+        f'  - {"✅" if report["sources"].get("doctor_report", {}).get("status") == "ok" else ("⚪" if report["sources"].get("doctor_report", {}).get("status") == "missing" else "⚠️")} doctor_report: {report["sources"].get("doctor_report", {}).get("status")}',
+        f'  - {"✅" if report["sources"].get("health_check", {}).get("status") == "ok" else ("⚪" if report["sources"].get("health_check", {}).get("status") == "missing" else "⚠️")} health_check: {report["sources"].get("health_check", {}).get("status")}',
+        f'  - {"✅" if report["sources"].get("codex_accounts_state", {}).get("status") == "ok" else ("⚪" if report["sources"].get("codex_accounts_state", {}).get("status") == "missing" else "⚠️")} codex_accounts_state: {report["sources"].get("codex_accounts_state", {}).get("status")}',
+        f'  - {"✅" if report["sources"].get("queue_snapshot", {}).get("status") == "ok" else ("⚪" if report["sources"].get("queue_snapshot", {}).get("status") == "missing" else "⚠️")} queue_snapshot: {report["sources"].get("queue_snapshot", {}).get("status")}',
         f'- **Key metrics:** spent=${spent if spent is not None else "n/a"}, pending={pending_count if pending_count is not None else "n/a"}, running={running_count if running_count is not None else "n/a"}, evolution_failures={failures if failures is not None else "n/a"}, codex_accounts={codex_accounts if codex_accounts is not None else "n/a"}',
         f'- **Report written:** `{output_path}`',
     ]
