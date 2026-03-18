@@ -9,6 +9,7 @@ from ouroboros.tools.search import (
     _read_page_findings,
     _research_run,
     _web_search,
+    get_tools,
 )
 
 
@@ -509,10 +510,48 @@ def test_research_run_synthesis_modes_and_evidence_trace(_web, _fetch, _save, qu
 @patch('ouroboros.tools.search.save_artifact')
 @patch('ouroboros.tools.search._read_page_findings')
 @patch('ouroboros.tools.search._web_search')
-def test_research_run_budget_modes_limit_pages_and_trace(_web, _fetch, _save):
+@pytest.mark.parametrize(
+    ('query', 'budget_mode', 'task_id', 'serp_query', 'fetch_side_effect', 'assertion_mode'),
+    [
+        (
+            'python api limits',
+            'cheap',
+            'task-budget-cheap',
+            'python api limits',
+            [
+                {"url": f"https://docs.example.com/{idx}", "status": "ok", "content_type": "text/html", "text_preview": "limit docs", "relevant_sections": ["limit docs"], "findings": [{"claim": f"Claim {idx}", "evidence_snippet": f"Evidence {idx}", "source_url": f"https://docs.example.com/{idx}", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "medium"}], "error": None}
+                for idx in range(1, 7)
+            ],
+            'budget-cheap',
+        ),
+        (
+            'python api limits',
+            'deep',
+            'task-budget-deep',
+            'python api limits',
+            [
+                {"url": f"https://docs.example.com/{idx}", "status": "ok", "content_type": "text/html", "text_preview": "limit docs", "relevant_sections": ["limit docs"], "findings": [{"claim": f"Claim {idx}", "evidence_snippet": f"Evidence {idx}", "source_url": f"https://docs.example.com/{idx}", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "medium"}], "error": None}
+                for idx in range(1, 7)
+            ],
+            'budget-deep',
+        ),
+        (
+            'openai release today',
+            'balanced',
+            'task-stop',
+            'openai release today',
+            [
+                {"url": "https://news.example.com/a", "status": "ok", "content_type": "text/html", "text_preview": "alpha", "relevant_sections": ["alpha"], "findings": [{"claim": "OpenAI released feature X.", "evidence_snippet": "Release confirmed on the official blog.", "source_url": "https://news.example.com/a", "source_type": "news", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+                {"url": "https://news.example.com/b", "status": "ok", "content_type": "text/html", "text_preview": "beta", "relevant_sections": ["beta"], "findings": [{"claim": "Feature X is now available.", "evidence_snippet": "Availability confirmed by rollout note.", "source_url": "https://news.example.com/b", "source_type": "news", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+            ],
+            'early-stop',
+        ),
+    ],
+)
+def test_research_run_budget_and_early_stop_behaviour(_web, _fetch, _save, query, budget_mode, task_id, serp_query, fetch_side_effect, assertion_mode):
     _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
     serp = json.dumps({
-        "query": "python api limits",
+        "query": serp_query,
         "status": "ok",
         "backend": "serper",
         "sources": [
@@ -521,46 +560,7 @@ def test_research_run_budget_modes_limit_pages_and_trace(_web, _fetch, _save):
             {"title": "Three", "url": "https://docs.example.com/3", "snippet": "API rate limit docs"},
             {"title": "Four", "url": "https://docs.example.com/4", "snippet": "API rate limit docs"},
             {"title": "Five", "url": "https://docs.example.com/5", "snippet": "API rate limit docs"},
-        ],
-        "answer": "",
-        "error": None,
-    })
-    _web.side_effect = [serp] * 12
-    _fetch.side_effect = [
-        {"url": f"https://docs.example.com/{idx}", "status": "ok", "content_type": "text/html", "text_preview": "limit docs", "relevant_sections": ["limit docs"], "findings": [{"claim": f"Claim {idx}", "evidence_snippet": f"Evidence {idx}", "source_url": f"https://docs.example.com/{idx}", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "medium"}], "error": None}
-        for idx in range(1, 7)
-    ]
-
-    class Ctx:
-        drive_root = '/tmp'
-        task_id = 'task-budget'
-        current_chat_id = 1
-
-    cheap = json.loads(_research_run(Ctx(), 'python api limits', 'cheap'))
-    deep = json.loads(_research_run(Ctx(), 'python api limits', 'deep'))
-
-    assert cheap['budget_mode'] == 'cheap'
-    assert cheap['budget_limits']['max_pages_read'] == 2
-    assert cheap['budget_trace']['pages_read'] <= 2
-    assert cheap['budget_trace']['subqueries_executed'] <= 3
-    assert cheap['budget_trace']['early_stop_reason'] in {'enough-evidence', 'page-budget-exhausted', 'subquery-budget-exhausted'}
-
-    assert deep['budget_mode'] == 'deep'
-    assert deep['budget_limits']['max_pages_read'] == 6
-    assert deep['budget_trace']['pages_read'] >= cheap['budget_trace']['pages_read']
-    assert deep['budget_trace']['subqueries_executed'] >= cheap['budget_trace']['subqueries_executed']
-
-
-@patch('ouroboros.tools.search.save_artifact')
-@patch('ouroboros.tools.search._read_page_findings')
-@patch('ouroboros.tools.search._web_search')
-def test_research_run_early_stop_when_evidence_is_enough(_web, _fetch, _save):
-    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
-    serp = json.dumps({
-        "query": "openai release today",
-        "status": "ok",
-        "backend": "serper",
-        "sources": [
+        ] if 'python api limits' in serp_query else [
             {"title": "A", "url": "https://news.example.com/a", "snippet": "Release confirmed today"},
             {"title": "B", "url": "https://news.example.com/b", "snippet": "Release confirmed today"},
             {"title": "C", "url": "https://news.example.com/c", "snippet": "Release confirmed today"},
@@ -569,18 +569,28 @@ def test_research_run_early_stop_when_evidence_is_enough(_web, _fetch, _save):
         "error": None,
     })
     _web.side_effect = [serp] * 12
-    _fetch.side_effect = [
-        {"url": "https://news.example.com/a", "status": "ok", "content_type": "text/html", "text_preview": "alpha", "relevant_sections": ["alpha"], "findings": [{"claim": "OpenAI released feature X.", "evidence_snippet": "Release confirmed on the official blog.", "source_url": "https://news.example.com/a", "source_type": "news", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
-        {"url": "https://news.example.com/b", "status": "ok", "content_type": "text/html", "text_preview": "beta", "relevant_sections": ["beta"], "findings": [{"claim": "Feature X is now available.", "evidence_snippet": "Availability confirmed by rollout note.", "source_url": "https://news.example.com/b", "source_type": "news", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
-    ]
+    _fetch.side_effect = fetch_side_effect
 
     class Ctx:
         drive_root = '/tmp'
-        task_id = 'task-stop'
         current_chat_id = 1
 
-    data = json.loads(_research_run(Ctx(), 'openai release today', 'balanced'))
-    assert data['budget_trace']['early_stop_triggered'] is True
-    assert data['budget_trace']['early_stop_reason'] == 'enough-evidence'
-    assert data['budget_trace']['pages_read'] <= data['budget_limits']['max_pages_read']
-    assert data['budget_trace']['synthesis_rounds_used'] == 1
+    Ctx.task_id = task_id
+    data = json.loads(_research_run(Ctx(), query, budget_mode))
+    if assertion_mode == 'budget-cheap':
+        assert data['budget_mode'] == 'cheap'
+        assert data['budget_limits']['max_pages_read'] == 2
+        assert data['budget_trace']['pages_read'] <= 2
+        assert data['budget_trace']['subqueries_executed'] <= 3
+        assert data['budget_trace']['early_stop_reason'] in {'enough-evidence', 'page-budget-exhausted', 'subquery-budget-exhausted'}
+    elif assertion_mode == 'budget-deep':
+        assert data['budget_mode'] == 'deep'
+        assert data['budget_limits']['max_pages_read'] == 6
+        assert data['budget_trace']['pages_read'] <= 6
+        assert data['budget_trace']['subqueries_executed'] <= 6
+    else:
+        assert data['budget_trace']['early_stop_triggered'] is True
+        assert data['budget_trace']['early_stop_reason'] == 'enough-evidence'
+        assert data['budget_trace']['pages_read'] <= data['budget_limits']['max_pages_read']
+        assert data['budget_trace']['synthesis_rounds_used'] == 1
+
