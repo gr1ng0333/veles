@@ -734,3 +734,164 @@ def test_benchmark_domain_priors_trace_by_primary_type(_web, _fetch, _save):
     assert any('benchmark-primary:leaderboard' in reason for reason in ranked['https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard']['reasons'])
     assert any('benchmark-primary:paper' in reason for reason in ranked['https://arxiv.org/abs/2501.12345']['reasons'])
     assert any('benchmark-primary:repo_methodology' in reason for reason in ranked['https://github.com/openai/evals']['reasons'])
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_policy_data_usage_prefers_official_policy_paths(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    query = 'OpenAI API data usage policy official source'
+    _web.side_effect = [
+        json.dumps({
+            "query": query,
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "Blog summary", "url": "https://example.com/openai-data-usage-summary", "snippet": "data usage policy overview"},
+                {"title": "OpenAI policy", "url": "https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/", "snippet": "policy data usage training privacy"},
+                {"title": "API help article", "url": "https://help.openai.com/en/articles/5722486-how-your-data-is-used-to-improve-model-performance", "snippet": "how your data is used api business services"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": f"{query} recent",
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "OpenAI privacy", "url": "https://openai.com/policies/privacy-policy/", "snippet": "privacy policy retention training"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": f"{query} official policy data usage retention privacy docs",
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "OpenAI policy", "url": "https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/", "snippet": "official policy data usage"},
+                {"title": "API help article", "url": "https://help.openai.com/en/articles/5722486-how-your-data-is-used-to-improve-model-performance", "snippet": "help center data usage business"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({
+            "query": f"{query} privacy policy data retention help center official guidance",
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "OpenAI privacy", "url": "https://openai.com/policies/privacy-policy/", "snippet": "official privacy policy retention training"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/", "status": "ok", "content_type": "text/html", "text_preview": "policy", "relevant_sections": ["policy"], "findings": [{"claim": "OpenAI documents how API and business data may be handled and when training use differs by service.", "evidence_snippet": "The policy page explains how data usage differs across services.", "source_url": "https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/", "source_type": "policy", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+        {"url": "https://help.openai.com/en/articles/5722486-how-your-data-is-used-to-improve-model-performance", "status": "ok", "content_type": "text/html", "text_preview": "help center", "relevant_sections": ["help center"], "findings": [{"claim": "OpenAI help center clarifies service-specific data handling behavior.", "evidence_snippet": "The help article explains business and API service handling.", "source_url": "https://help.openai.com/en/articles/5722486-how-your-data-is-used-to-improve-model-performance", "source_type": "policy", "observed_at": "2026-03-18", "confidence_local": "medium"}], "error": None},
+        {"url": "https://openai.com/policies/privacy-policy/", "status": "ok", "content_type": "text/html", "text_preview": "privacy", "relevant_sections": ["privacy"], "findings": [{"claim": "OpenAI publishes privacy-policy details relevant to retention and processing.", "evidence_snippet": "The privacy policy describes retention and processing terms.", "source_url": "https://openai.com/policies/privacy-policy/", "source_type": "policy", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-policy-official'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    assert data['intent_type'] == 'product_docs_api_lookup'
+    assert data['intent_policy']['require_official_source'] is True
+    assert data['query_plan']['official_docs_query'].endswith('official policy data usage retention privacy docs')
+    assert data['candidate_sources'][0]['url'].startswith('https://openai.com/policies/')
+    assert data['candidate_sources'][0]['authority'] == 'official'
+    assert any('official-policy-path' in reason or 'policy-primary-path:+1.5' in reason for reason in data['candidate_sources'][0]['reasons'])
+    assert all(item['authority'] == 'official' for item in data['candidate_sources'])
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_docs_lookup_rejects_nonofficial_even_if_primary_brand_domain(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    query = 'Find official OpenAI API rate limits documentation'
+    _web.side_effect = [
+        json.dumps({
+            "query": query,
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "OpenAI blog", "url": "https://openai.com/index/new-api-updates/", "snippet": "api updates and limits summary"},
+                {"title": "OpenAI docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official docs rate limits"},
+                {"title": "OpenAI reference", "url": "https://platform.openai.com/docs/api-reference/rate-limits", "snippet": "reference rate limits"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({"query": f"{query} recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} official docs", "status": "ok", "backend": "serper", "sources": [{"title": "OpenAI docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official docs rate limits"}], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} reference guide", "status": "ok", "backend": "serper", "sources": [{"title": "OpenAI reference", "url": "https://platform.openai.com/docs/api-reference/rate-limits", "snippet": "reference rate limits"}], "answer": "", "error": None}),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://platform.openai.com/docs/guides/rate-limits", "status": "ok", "content_type": "text/html", "text_preview": "docs", "relevant_sections": ["docs"], "findings": [{"claim": "OpenAI documents API rate limits in the official guide.", "evidence_snippet": "The guide describes current API rate-limit behavior.", "source_url": "https://platform.openai.com/docs/guides/rate-limits", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+        {"url": "https://platform.openai.com/docs/api-reference/rate-limits", "status": "ok", "content_type": "text/html", "text_preview": "reference", "relevant_sections": ["reference"], "findings": [{"claim": "The API reference links to official limit guidance.", "evidence_snippet": "The reference material points to the rate-limit guide.", "source_url": "https://platform.openai.com/docs/api-reference/rate-limits", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-docs-official'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    ranked = {}
+    for page in data['visited_pages']:
+        for item in page.get('ranked_sources', []):
+            ranked[item['url']] = item
+    assert ranked['https://openai.com/index/new-api-updates/']['authority'] == 'primary'
+    assert ranked['https://openai.com/index/new-api-updates/']['decision'] == 'reject'
+    assert 'selection-policy:official-needed' in ranked['https://openai.com/index/new-api-updates/']['reasons']
+    assert ranked['https://platform.openai.com/docs/guides/rate-limits']['authority'] == 'official'
+    assert all(item['authority'] == 'official' for item in data['candidate_sources'])
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_comparison_preferred_source_upgrade_rewards_vendor_compare_pages(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    query = 'Compare GitHub Copilot vs Cursor for developer workflows'
+    _web.side_effect = [
+        json.dumps({
+            "query": query,
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "Generic roundup", "url": "https://medium.com/@dev/copilot-vs-cursor", "snippet": "comparison roundup opinions"},
+                {"title": "GitHub Copilot docs", "url": "https://docs.github.com/en/copilot/get-started/what-is-github-copilot", "snippet": "official docs developer workflows"},
+                {"title": "Cursor pricing", "url": "https://www.cursor.com/pricing", "snippet": "official pricing and product plans"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({"query": f"{query} recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} tradeoffs benchmark methodology independent results", "status": "ok", "backend": "serper", "sources": [{"title": "Cursor docs", "url": "https://docs.cursor.com/get-started/overview", "snippet": "official docs overview workflows"}], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} benchmark disagreement counterarguments", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://docs.github.com/en/copilot/get-started/what-is-github-copilot", "status": "ok", "content_type": "text/html", "text_preview": "copilot", "relevant_sections": ["copilot"], "findings": [{"claim": "GitHub documents Copilot workflow integration in official docs.", "evidence_snippet": "The docs explain where Copilot fits into developer workflows.", "source_url": "https://docs.github.com/en/copilot/get-started/what-is-github-copilot", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+        {"url": "https://www.cursor.com/pricing", "status": "ok", "content_type": "text/html", "text_preview": "cursor", "relevant_sections": ["cursor"], "findings": [{"claim": "Cursor publishes official product-plan information on its pricing page.", "evidence_snippet": "The pricing page describes plan differences relevant to workflow comparison.", "source_url": "https://www.cursor.com/pricing", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "medium"}], "error": None},
+        {"url": "https://docs.cursor.com/get-started/overview", "status": "ok", "content_type": "text/html", "text_preview": "cursor docs", "relevant_sections": ["cursor docs"], "findings": [{"claim": "Cursor docs describe the product workflow model directly from the vendor.", "evidence_snippet": "The overview explains core workflow concepts.", "source_url": "https://docs.cursor.com/get-started/overview", "source_type": "docs", "observed_at": "2026-03-18", "confidence_local": "high"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-comparison-preferred'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    top_urls = [item['url'] for item in data['candidate_sources'][:3]]
+    assert 'https://docs.github.com/en/copilot/get-started/what-is-github-copilot' in top_urls
+    assert 'https://docs.cursor.com/get-started/overview' in top_urls or 'https://www.cursor.com/pricing' in top_urls
+    preferred_reasons = [reason for item in data['candidate_sources'][:3] for reason in item['reasons']]
+    assert any('comparison-preferred-source:+0.8' in reason for reason in preferred_reasons)
+    medium_entry = next(item for item in data['visited_pages'][0]['ranked_sources'] if item['url'] == 'https://medium.com/@dev/copilot-vs-cursor')
+    assert 'comparison-aggregator:-0.6' in medium_entry['reasons']

@@ -16,14 +16,12 @@ from ouroboros.artifacts import save_artifact
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
-
 SEARXNG_DEFAULT = "http://localhost:8888"
 SERPER_DEFAULT_URL = "https://google.serper.dev/search"
 MAX_RESULTS = 5
 DEFAULT_INTENT = "background_explainer"
 MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS = 6, 6, 2, 1
 clean_sources = lambda items: [{"title": title, "url": url, "snippet": snippet} for title, url, snippet in [(str((item or {}).get("title") or (item or {}).get("url") or "").strip(), str((item or {}).get("url") or "").strip(), str((item or {}).get("snippet") or (item or {}).get("content") or "").strip()) for item in (items or []) if isinstance(item, dict) and str(item.get("url") or "").strip().startswith(("http://", "https://"))] if url]
-
 @dataclass(frozen=True)
 class IntentPolicy:
     freshness_priority: str
@@ -63,6 +61,11 @@ DOMAIN_SCORES: Dict[str, float] = {
 AGGREGATOR_DOMAINS = {"www.reddit.com", "reddit.com", "news.ycombinator.com", "hn.algolia.com", "medium.com", "towardsdatascience.com", "www.linkedin.com", "linkedin.com"}
 SOCIAL_DOMAINS = {"x.com", "twitter.com", "www.x.com", "www.twitter.com", "facebook.com", "www.facebook.com"}
 OFFICIAL_HOST_MARKERS = ("docs.", "developer.", "developers.", "platform.", "api.")
+OFFICIAL_DOC_HOSTS = ("docs.python.org", "docs.github.com", "pkg.go.dev", "go.dev", "core.telegram.org", "git-scm.com", "freedesktop.org", "man7.org", "docs.docker.com", "developers.cloudflare.com", "platform.openai.com", "docs.anthropic.com")
+OFFICIAL_POLICY_HOSTS = ("openai.com", "help.openai.com", "anthropic.com")
+OFFICIAL_POLICY_PATH_HINTS = ("policy", "policies", "privacy", "security", "trust", "data-usage", "data-usage-policies", "data-retention", "retention", "training", "enterprise-privacy", "usage-data")
+OFFICIAL_DOC_PATH_HINTS = ("/docs", "/doc", "/reference", "/api", "/guides", "/manual", "/learn", "/sdk", "/quickstart", "/help")
+POLICY_QUERY_MARKERS = ("policy", "data usage", "data retention", "privacy", "retention", "training", "artifact retention", "rate limits official source")
 PRIMARY_HOST_MARKERS = ("openai.com", "anthropic.com", "github.com", "python.org", "mozilla.org", "google.com", "huggingface.co", "arxiv.org")
 BENCHMARK_VENDOR_HOSTS = ("platform.openai.com", "openai.com", "docs.anthropic.com", "anthropic.com")
 BENCHMARK_LEADERBOARD_HOSTS = ("huggingface.co", "paperswithcode.com", "lmarena.ai", "chat.lmsys.org")
@@ -84,7 +87,6 @@ INTENT_POLICIES: Dict[str, IntentPolicy] = {
     "background_explainer": IntentPolicy("low", 3, 2, False),
     "people_company_ecosystem_tracking": IntentPolicy("high", 4, 3, False),
 }
-
 INTENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "breaking_news",
@@ -220,14 +222,23 @@ class ResearchRun:
     budget_mode: str = "balanced"
     budget_limits: Dict[str, Any] = field(default_factory=dict)
     budget_trace: Dict[str, Any] = field(default_factory=dict)
-def _source_authority(host: str, require_official: bool) -> tuple[str, float, list[str]]:
+def _source_authority(host: str, require_official: bool, url: str = "", query: str = "") -> tuple[str, float, list[str]]:
     authority = "secondary"
     score = 0.0
     reasons: List[str] = []
-    if require_official and any(marker in host for marker in OFFICIAL_HOST_MARKERS):
+    lowered_url = str(url or "").lower()
+    lowered_query = str(query or "").lower()
+    official_host = any(marker in host for marker in OFFICIAL_HOST_MARKERS) or any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_DOC_HOSTS)
+    official_doc_path = any(hint in lowered_url for hint in OFFICIAL_DOC_PATH_HINTS)
+    policy_sensitive = any(marker in lowered_query for marker in POLICY_QUERY_MARKERS)
+    official_policy_host = any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_POLICY_HOSTS)
+    official_policy_path = any(hint in lowered_url for hint in OFFICIAL_POLICY_PATH_HINTS)
+    if require_official and (official_host or (official_host and official_doc_path) or (policy_sensitive and official_policy_host and official_policy_path)):
         authority = "official"
-        score = 3.0
+        score = 3.0 + (0.6 if official_policy_path else 0.0)
         reasons.append("official-source")
+        if official_policy_path:
+            reasons.append("official-policy-path")
     elif any(token in host for token in PRIMARY_HOST_MARKERS):
         authority = "primary"
         score = 2.0
@@ -235,7 +246,6 @@ def _source_authority(host: str, require_official: bool) -> tuple[str, float, li
     elif host in AGGREGATOR_DOMAINS or host in SOCIAL_DOMAINS:
         authority = "community"
     return authority, score, reasons
-
 READING_PRIORITY = lambda entry: ({"official": 0, "primary": 1, "secondary": 2, "community": 3}.get(str(entry.get("authority") or "secondary"), 2), -float(entry.get("score") or 0.0))
 
 NEUTRALIZE_TEXT = lambda value: re.sub(r"\s+", " ", __import__("functools").reduce(lambda acc, phrase: re.sub(re.escape(phrase), "", acc, flags=re.IGNORECASE), ANTI_SYCOPHANCY_PHRASES, str(value or ""))).strip(" ,.!?:;\n\t")
@@ -335,18 +345,18 @@ def _render_synthesis(run: ResearchRun, policy: IntentPolicy) -> None:
 
 def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SUBQUERIES, freshness_priority_override: str | None = None) -> QueryPlan:
     base = re.sub(r"\s+", " ", str(query or "").strip())
-    policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT]); comparison_benchmark = bool(intent_type == "comparison_evaluation" and re.search(r"\b(benchmark|latency|throughput|eval|evaluation|head[- ]?to[- ]?head)\b", base.lower()))
+    policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT]); comparison_benchmark = bool(intent_type == "comparison_evaluation" and re.search(r"\b(benchmark|latency|throughput|eval|evaluation|head[- ]?to[- ]?head)\b", base.lower())); policy_sensitive = bool(re.search(r"\b(policy|privacy|retention|data usage|data retention|artifact retention|training)\b", base.lower()))
     freshness_priority = freshness_priority_override if freshness_priority_override in {"low", "medium", "high"} else policy.freshness_priority
     freshness_suffix = {
         "high": "latest updates",
         "medium": "recent",
         "low": "overview",
     }[freshness_priority]
-    official_suffix = "official benchmark methodology maintainers" if comparison_benchmark else ("official docs" if policy.require_official_source else "official source")
+    official_suffix = "official benchmark methodology maintainers" if comparison_benchmark else ("official policy data usage retention privacy docs" if policy_sensitive else ("official docs" if policy.require_official_source else "official source"))
     alternative_suffix = {
         "comparison_evaluation": "tradeoffs benchmark methodology independent results",
         "breaking_news": "timeline and reactions",
-        "product_docs_api_lookup": "reference guide",
+        "product_docs_api_lookup": "reference guide" if not policy_sensitive else "privacy policy data retention help center official guidance",
         "people_company_ecosystem_tracking": "ecosystem map",
         "fact_lookup": "exact value reference",
         "background_explainer": "overview",
@@ -354,7 +364,7 @@ def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SU
     contradiction_suffix = {
         "breaking_news": "conflicting reports",
         "fact_lookup": "contradicting value",
-        "product_docs_api_lookup": "limitations exceptions",
+        "product_docs_api_lookup": "limitations exceptions" if not policy_sensitive else "conflicting policy statement retention training opt out",
         "comparison_evaluation": "benchmark disagreement counterarguments",
         "people_company_ecosystem_tracking": "controversy changes",
         "background_explainer": "common misconceptions",
@@ -762,7 +772,8 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
         run.intent_type = next((intent_type for intent_type, keywords in INTENT_KEYWORDS if any(keyword in lowered for keyword in keywords)), ("fact_lookup" if any(ch.isdigit() for ch in lowered) else DEFAULT_INTENT))
     base_policy = INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT])
     effective_freshness = str(freshness_bias or "").strip().lower() or base_policy.freshness_priority
-    policy_obj = IntentPolicy(freshness_priority=effective_freshness if effective_freshness in {"low", "medium", "high"} else base_policy.freshness_priority, search_branches=base_policy.search_branches, min_sources_before_synthesis=base_policy.min_sources_before_synthesis, require_official_source=base_policy.require_official_source)
+    official_sensitive_query = any(marker in lowered for marker in POLICY_QUERY_MARKERS) or any(marker in lowered for marker in ("docs", "documentation", "api", "reference", "guide", "sdk", "rate limit"))
+    policy_obj = IntentPolicy(freshness_priority=effective_freshness if effective_freshness in {"low", "medium", "high"} else base_policy.freshness_priority, search_branches=base_policy.search_branches, min_sources_before_synthesis=base_policy.min_sources_before_synthesis, require_official_source=(base_policy.require_official_source or official_sensitive_query))
     policy = asdict(policy_obj)
     plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)
     run.subqueries = list(plan.subqueries)
@@ -801,7 +812,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
         for index, source in enumerate(sources):
             url = str(source.get("url") or "").strip(); lowered_url = url.lower(); host_match = re.match(r"https?://([^/]+)", lowered_url)
             host = (host_match.group(1) if host_match else "").lstrip("www."); title = str(source.get("title") or "").strip(); snippet = str(source.get("snippet") or "").strip(); haystack = f"{title} {snippet} {url}".lower(); score = 0.0; reasons: List[str] = []
-            authority, authority_score, authority_reasons = _source_authority(host, policy["require_official_source"]); official = authority == "official"; primary = authority in {"official", "primary"}
+            authority, authority_score, authority_reasons = _source_authority(host, policy["require_official_source"], url, run.user_query); official = authority == "official"; primary = authority in {"official", "primary"}
             if authority_score: score += authority_score; reasons.extend(authority_reasons)
             if authority == "community": reasons.append("retelling-or-community")
             domain_bonus = next((value / 10.0 for domain, value in DOMAIN_SCORES.items() if host == domain or host.endswith(f".{domain}")), 0.0)
@@ -816,7 +827,17 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             if host in SOCIAL_DOMAINS: score += -1.3; reasons.append("forum-social:-1.3")
             if index == 0: score += 0.4; reasons.append("serp-position:+0.4")
             benchmark_hits = len(re.findall(r"\b(benchmark|benchmarks|methodology|throughput|latency|eval|evaluation|head[- ]to[- ]head|comparison|leaderboard|arena)\b", haystack))
+            policy_hits = len(re.findall(r"\b(policy|privacy|retention|training|data usage|data retention|artifact retention|usage data)\b", haystack))
             if benchmark_hits: benchmark_score = min(1.8, benchmark_hits * 0.45); score += benchmark_score; reasons.append(f"benchmark-signal:{benchmark_score:+.1f}")
+            policy_branch = any(token in subquery.lower() for token in POLICY_QUERY_MARKERS) or any(token in run.user_query.lower() for token in POLICY_QUERY_MARKERS)
+            official_policy_candidate = policy_hits and any(hint in lowered_url for hint in OFFICIAL_POLICY_PATH_HINTS)
+            official_doc_candidate = any(hint in lowered_url for hint in OFFICIAL_DOC_PATH_HINTS) or any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_DOC_HOSTS)
+            if policy_branch and official_policy_candidate:
+                score += 1.5; reasons.append("policy-primary-path:+1.5")
+            elif policy_branch and official_doc_candidate:
+                score += 0.9; reasons.append("policy-official-doc:+0.9")
+            elif policy_branch and not official and host not in AGGREGATOR_DOMAINS and host not in SOCIAL_DOMAINS:
+                score -= 0.7; reasons.append("policy-nonofficial:-0.7")
             benchmark_branch = any(token in subquery.lower() for token in ("benchmark", "methodology", "maintainers", "official benchmark"))
             benchmark_primary_type = ""
             if benchmark_branch or benchmark_hits:
@@ -826,12 +847,19 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
                 elif any(host == domain or host.endswith(f".{domain}") for domain in BENCHMARK_REPO_HOSTS): benchmark_primary_type = "repo_methodology"
             benchmark_primary_bonus = {"vendor_docs": 1.3, "leaderboard": 1.0, "paper": 0.9, "repo_methodology": 0.8}.get(benchmark_primary_type, 0.0)
             if benchmark_primary_bonus: score += benchmark_primary_bonus; reasons.append(f"benchmark-primary:{benchmark_primary_type}:{benchmark_primary_bonus:+.1f}")
-            if official and ("official docs" in subquery.lower() or "reference guide" in subquery.lower() or benchmark_branch): score += 1.0; reasons.append("official-branch:+1.0")
+            if official and ("official docs" in subquery.lower() or "reference guide" in subquery.lower() or "official policy" in subquery.lower() or benchmark_branch): score += 1.0; reasons.append("official-branch:+1.0")
+            comparison_branch = run.intent_type == "comparison_evaluation"
+            comparison_preferred = comparison_branch and any(token in lowered_url for token in ("/compare", "/comparisons", "/docs", "/benchmarks", "/evals", "/pricing")) and (official or primary)
+            if comparison_preferred:
+                score += 0.8; reasons.append("comparison-preferred-source:+0.8")
+            elif comparison_branch and host in AGGREGATOR_DOMAINS:
+                score -= 0.6; reasons.append("comparison-aggregator:-0.6")
             if benchmark_branch and primary: score += 0.8; reasons.append("primary-benchmark-branch:+0.8")
             elif benchmark_branch and not primary and benchmark_hits == 0 and not benchmark_primary_type: score -= 0.6; reasons.append("benchmark-branch-without-signal:-0.6")
-            decision = "reject" if is_duplicate else ("reject" if policy["require_official_source"] and not (official or primary) and score < 1.2 else ("reject" if score < 0.4 else "selected"))
+            strict_official_query = bool(policy["require_official_source"] and re.search(r"\b(official|documentation|docs|reference|policy|privacy|retention)\b", run.user_query.lower()))
+            decision = "reject" if is_duplicate else ("reject" if strict_official_query and not official else ("reject" if score < 0.4 else "selected"))
             if is_duplicate: reasons.append("selection-policy:duplicate-url")
-            elif policy["require_official_source"] and not (official or primary) and score < 1.2: reasons.append("selection-policy:official-needed")
+            elif strict_official_query and not official: reasons.append("selection-policy:official-needed")
             elif score < 0.4: reasons.append("selection-policy:low-score")
             entry = {"title": title or url, "url": url, "snippet": snippet, "score": round(score, 3), "reasons": reasons, "decision": decision, "host": host, "query": subquery, "authority": authority, "benchmark_primary_type": benchmark_primary_type}
             page_trace["ranked_sources"].append(entry)
@@ -844,6 +872,24 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
         page_trace["ranked_sources"].sort(key=lambda item: (READING_PRIORITY(item),), reverse=False)
         page_trace["selected_to_read"].sort(key=lambda item: READING_PRIORITY(next((row for row in page_trace["ranked_sources"] if row["url"] == item["url"]), item)))
         page_trace["rejected"].sort(key=itemgetter("score"), reverse=True)
+        prioritized_candidates = [
+            {
+                "title": item.get("title") or item.get("url"),
+                "url": item.get("url"),
+                "snippet": item.get("snippet", ""),
+                "score": item.get("score"),
+                "authority": item.get("authority", "unknown"),
+                "benchmark_primary_type": item.get("benchmark_primary_type", ""),
+            }
+            for item in page_trace["ranked_sources"]
+            if item.get("url")
+        ]
+        existing_candidate_urls = {str(item.get("url") or "") for item in run.candidate_sources}
+        for item in prioritized_candidates:
+            if item["url"] in existing_candidate_urls:
+                continue
+            run.candidate_sources.append(item)
+            existing_candidate_urls.add(item["url"])
         run.visited_pages.append(page_trace)
         read_budget_remaining = max(0, budget.max_pages_read - run.budget_trace["pages_read"])
         browse_depth = min(budget.max_browse_depth, read_budget_remaining)
@@ -862,9 +908,9 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             run.findings.extend(read_result.get("findings") or [])
             read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
             strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
-            has_conflict = bool(getattr(run, "contradictions", []))
+            has_conflict = bool(_detect_contradictions(run.findings))
             should_stop = read_pages_ok >= budget.early_stop_min_read_pages and strong_findings >= budget.early_stop_min_findings and not has_conflict
-            if policy.get("require_official_source"):
+            if policy.get("require_official_source") and not any(str(item.get("authority") or "") == "official" for item in ranked_sources[: max(1, policy.get("min_sources_before_synthesis", 1))]):
                 should_stop = False
             if page_trace["query"] == run.query_plan.get("contradiction_check_query"):
                 should_stop = False
@@ -876,7 +922,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
         run.budget_trace["early_stop_reason"] = "subquery-budget-exhausted"
     ranked_sources.sort(key=READING_PRIORITY)
     selected_limit = max(policy["min_sources_before_synthesis"], min(budget.max_pages_read, len(ranked_sources)))
-    run.candidate_sources = ranked_sources[:selected_limit]
+    run.candidate_sources = [{"title": item.get("title") or item.get("url"), "url": item.get("url"), "snippet": item.get("snippet", ""), "score": item.get("score"), "authority": item.get("authority", "unknown"), "benchmark_primary_type": item.get("benchmark_primary_type", ""), "reasons": list(item.get("reasons") or []), "decision": item.get("decision", "selected"), "query": item.get("query", ""), "host": item.get("host", "")} for item in ranked_sources[:selected_limit] if item.get("url")]
     deduped_findings: List[Dict[str, Any]] = []
     seen_finding_keys: set[str] = set()
     for finding in run.findings:
