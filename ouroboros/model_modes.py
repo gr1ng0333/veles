@@ -9,7 +9,7 @@ from supervisor.state import load_state, save_state
 
 DEFAULT_AUX_LIGHT_MODEL = "qwen/qwen3-coder:free"
 DEFAULT_BACKGROUND_OPENROUTER_MODEL = DEFAULT_AUX_LIGHT_MODEL
-DEFAULT_CONSCIOUSNESS_CODEX_MODEL = "gpt-5.1-codex-mini"
+DEFAULT_CONSCIOUSNESS_CODEX_MODEL = "gpt-5.4-codex-mini"
 
 
 @dataclass(frozen=True)
@@ -140,7 +140,7 @@ def get_background_model() -> str:
 
 
 def get_background_reasoning_effort() -> str:
-    return os.environ.get("OUROBOROS_BG_REASONING_EFFORT", "").strip().lower() or "low"
+    return os.environ.get("OUROBOROS_BG_REASONING_EFFORT", "").strip().lower() or "medium"
 
 
 def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy:

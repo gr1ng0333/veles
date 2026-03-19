@@ -185,7 +185,7 @@ class BackgroundConsciousness:
     # -------------------------------------------------------------------
 
     def _policy_wakeup_sec(self) -> float:
-        """Wakeup policy from owner: 600s with tasks, 900s when idle."""
+        """Wakeup policy from owner: 1800s with tasks, 3600s when idle."""
         try:
             qpath = self._drive_root / "state" / "queue_snapshot.json"
             if qpath.exists():
@@ -193,10 +193,10 @@ class BackgroundConsciousness:
                 pending = int(snap.get("pending_count", 0) or 0)
                 running = int(snap.get("running_count", 0) or 0)
                 if (pending + running) > 0:
-                    return 600.0
+                    return 1800.0
         except Exception:
             log.debug("Failed to read queue snapshot for wakeup policy", exc_info=True)
-        return 900.0
+        return 3600.0
 
     def _loop(self) -> None:
         """Daemon thread: sleep → wake → think → sleep."""
@@ -491,6 +491,40 @@ class BackgroundConsciousness:
             parts.append("## Recent observations\n\n" + "\n".join(
                 f"- {o}" for o in observations[-10:]))
 
+        # Recent commits for reflection
+        try:
+            import subprocess
+            git_log = subprocess.run(
+                ["git", "log", "--oneline", "-10"],
+                cwd=str(self._repo_dir),
+                capture_output=True, text=True, timeout=5,
+            )
+            if git_log.returncode == 0 and git_log.stdout.strip():
+                parts.append(f"\n## Recent commits\n```\n{git_log.stdout.strip()}\n```")
+        except Exception:
+            pass  # Non-critical, skip silently
+
+        # Recent task results for reflection
+        try:
+            results_dir = self._drive_root / "task_results"
+            if results_dir.exists():
+                result_files = sorted(results_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)[:3]
+                if result_files:
+                    summaries = []
+                    for rf in result_files:
+                        try:
+                            data = json.loads(rf.read_text(encoding="utf-8"))
+                            task_text = str(data.get("task_text", ""))[:200]
+                            status = data.get("status", "?")
+                            result_preview = str(data.get("result", ""))[:300]
+                            summaries.append(f"- [{status}] {task_text}\n  Result: {result_preview}")
+                        except Exception:
+                            continue
+                    if summaries:
+                        parts.append(f"\n## Recent task results\n" + "\n".join(summaries))
+        except Exception:
+            pass  # Non-critical
+
         # Runtime info + state
         runtime_lines = [f"UTC: {utc_now_iso()}"]
         runtime_lines.append(f"BG budget spent: ${self._bg_spent_usd:.4f}")
@@ -531,6 +565,8 @@ class BackgroundConsciousness:
         "chat_history",
         # GitHub Issues
         "list_github_issues", "get_github_issue",
+        # Code awareness
+        "git_status", "git_diff", "codebase_health",
     })
 
     def _build_registry(self) -> "ToolRegistry":
