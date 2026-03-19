@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from operator import itemgetter
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 DOMAIN_SCORES: Dict[str, float] = {
     "docs.python.org": 2.6, "platform.openai.com": 2.8, "openai.com": 2.4, "docs.anthropic.com": 2.8,
@@ -30,7 +30,7 @@ COMPARISON_ECOSYSTEM_MARKERS = ("ecosystem", "tooling", "workflow", "integration
 READING_PRIORITY = lambda item: (0 if item.get("authority") == "official" else 1, 0 if item.get("benchmark_primary_type") else 1, -(item.get("score") or 0.0))
 
 
-def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, detect_contradictions_fn: Any) -> List[Dict[str, Any]]:
+def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, detect_contradictions_fn: Any, checkpoint_fn: Callable[..., None] | None = None) -> List[Dict[str, Any]]:
     policy, budget = run.intent_policy, run.budget_profile
     query_terms = {term for term in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9_-]+", run.user_query.lower()) if len(term) > 2}
     ranked_sources: List[Dict[str, Any]] = []
@@ -43,6 +43,8 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
         transport = dict(result.get("transport") or {})
         page_trace = {"query": subquery, "status": result.get("status"), "backend": result.get("backend"), "source_count": len(sources), "intent_type": run.intent_type, "policy": policy, "transport": transport, "ranked_sources": [], "selected_to_read": [], "rejected": []}
         run.transport.setdefault("events", []).extend([event for event in transport.get("events", []) if event not in run.transport.get("events", [])])
+        if checkpoint_fn:
+            checkpoint_fn("post_discovery", query=subquery, backend=result.get("backend"), source_count=len(sources))
         if transport.get("fallback_backend") and transport.get("fallback_backend") not in (run.transport.get("fallback_backends") or []):
             run.transport.setdefault("fallback_backends", []).append(transport.get("fallback_backend"))
             run.transport["fallback_backend"] = transport.get("fallback_backend")
@@ -143,6 +145,8 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
         page_trace["ranked_sources"].sort(key=lambda item: (READING_PRIORITY(item),), reverse=False)
         page_trace["selected_to_read"].sort(key=lambda item: READING_PRIORITY(next((row for row in page_trace["ranked_sources"] if row["url"] == item["url"]), item)))
         page_trace["rejected"].sort(key=itemgetter("score"), reverse=True)
+        if checkpoint_fn:
+            checkpoint_fn("post_ranking", query=subquery, ranked_count=len(page_trace["ranked_sources"]), selected_count=len(page_trace["selected_to_read"]))
         existing_candidate_urls = {str(item.get("url") or "") for item in run.candidate_sources}
         for item in [{"title": item.get("title") or item.get("url"), "url": item.get("url"), "snippet": item.get("snippet", ""), "score": item.get("score"), "authority": item.get("authority", "unknown"), "benchmark_primary_type": item.get("benchmark_primary_type", "")} for item in page_trace["ranked_sources"] if item.get("url")]:
             if item["url"] not in existing_candidate_urls:
@@ -165,6 +169,8 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
             run.budget_trace["pages_read"] += 1
             run.budget_trace["browse_depth_used"] = max(run.budget_trace["browse_depth_used"], page_trace["budget"]["browse_depth_used"])
             run.findings.extend(read_result.get("findings") or [])
+            if checkpoint_fn:
+                checkpoint_fn("page_read_complete", query=subquery, url=ranked_entry.get("url"), findings_added=len(read_result.get("findings") or []), pages_read=run.budget_trace["pages_read"])
             read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
             strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
             has_conflict = bool(detect_contradictions_fn(run.findings))

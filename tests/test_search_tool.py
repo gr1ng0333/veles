@@ -1,4 +1,6 @@
 import json
+import pathlib
+import queue
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +14,7 @@ from ouroboros.tools.search import (
     get_tools,
 )
 from ouroboros.tools.search_transport import run_discovery_transport
+from ouroboros.tools.registry import ToolContext
 
 
 @pytest.mark.parametrize(
@@ -959,3 +962,55 @@ def test_policy_vendor_marketing_page_gets_penalized_against_policy_path(_web, _
     assert 'policy-marketing-penalty:-1.0' in ranked['https://www.anthropic.com/news/model-updates']['reasons'] or 'vendor-marketing-penalty:-0.7' in ranked['https://www.anthropic.com/news/model-updates']['reasons']
     assert ranked['https://www.anthropic.com/legal/privacy']['authority'] == 'official'
     assert data['candidate_sources'][0]['url'] == 'https://www.anthropic.com/legal/privacy'
+
+
+def test_research_run_can_be_superseded_by_new_owner_request(tmp_path):
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id='task-interrupt', current_chat_id=1, incoming_messages=queue.Queue())
+
+    search_payload = json.dumps({
+        "query": "compare claude and gpt for research",
+        "status": "ok",
+        "backend": "serper",
+        "sources": [
+            {"title": "Official docs A", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official docs"},
+            {"title": "Official docs B", "url": "https://docs.anthropic.com/en/docs/overview", "snippet": "official docs"},
+        ],
+        "answer": "",
+        "error": None,
+        "transport": {
+            "discovery_backend": "serper",
+            "used_backend": "serper",
+            "reading_backend": None,
+            "fallback_backend": None,
+            "events": [{"backend": "serper", "status": "ok", "stage": "discovery", "used": True, "trigger": "primary", "reason": None}],
+        },
+    })
+
+    def fake_read_page(_query, source):
+        ctx.incoming_messages.put('сравни лучше ещё с Gemini и перезапусти')
+        return {
+            "status": "ok",
+            "url": source.get("url"),
+            "findings": [{
+                "claim": f"claim from {source.get('url')}",
+                "evidence_snippet": "evidence",
+                "source_url": source.get("url"),
+                "source_type": "page",
+                "observed_at": "2026-03-19",
+                "confidence_local": "high",
+            }],
+        }
+
+    with patch('ouroboros.tools.search._web_search', return_value=search_payload), \
+         patch('ouroboros.tools.search._read_page_findings', side_effect=fake_read_page), \
+         patch('ouroboros.tools.search.save_artifact', return_value={"relative_path": "artifacts/outbox/trace.json", "bytes": 1}):
+        payload = json.loads(_research_run(ctx, 'compare claude and gpt for research', budget_mode='balanced', output_mode='comparison'))
+
+    assert payload['interrupted'] is True
+    assert payload['status'] == 'superseded_by_new_request'
+    assert payload['interrupt_reason'] == 'superseded_by_new_request'
+    assert payload['interrupt_stage'] == 'page_read_complete'
+    assert 'новый запрос владельца' in payload['final_answer'].lower()
+    assert payload['budget_trace']['pages_read'] == 1
+    assert len(payload['findings']) == 1
+    assert any(event.get('type') == 'tool_interrupt_checkpoint' and event.get('reason') == 'superseded_by_new_request' for event in ctx.pending_events)
