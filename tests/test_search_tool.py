@@ -986,7 +986,7 @@ def test_research_run_can_be_superseded_by_new_owner_request(tmp_path):
         },
     })
 
-    def fake_read_page(_query, source):
+    def fake_read_page(_query, source, timeout_sec=15):
         ctx.incoming_messages.put('сравни лучше ещё с Gemini и перезапусти')
         return {
             "status": "ok",
@@ -1014,3 +1014,66 @@ def test_research_run_can_be_superseded_by_new_owner_request(tmp_path):
     assert payload['budget_trace']['pages_read'] == 1
     assert len(payload['findings']) == 1
     assert any(event.get('type') == 'tool_interrupt_checkpoint' and event.get('reason') == 'superseded_by_new_request' for event in ctx.pending_events)
+
+
+
+def test_run_discovery_transport_timeout_trace():
+    payload = run_discovery_transport(
+        'timeout query',
+        lambda _query: {"status": "timeout", "sources": [], "answer": "", "error": "discovery_timeout", "timeout_limit": 20},
+        [('searxng', lambda _query: {"status": "ok", "sources": [{"title": "Fallback", "url": "https://example.com/fallback", "snippet": "ok"}], "answer": "", "error": None})],
+    )
+    assert payload['status'] == 'ok'
+    assert payload['backend'] == 'searxng'
+    assert payload['transport']['events'][0]['status'] == 'timeout'
+    assert payload['transport']['events'][0]['reason'] == 'discovery_timeout'
+    assert payload['transport']['events'][0]['timeout_limit'] == 20
+    assert payload['transport']['events'][1]['trigger'] == 'serper_timeout'
+
+
+@patch('ouroboros.tools.search.save_artifact', return_value={"relative_path": "artifacts/outbox/trace.json", "bytes": 1})
+@patch('ouroboros.tools.search._web_search')
+def test_research_run_records_discovery_timeout(_web, _save):
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-timeout-discovery'
+        current_chat_id = 1
+
+    _web.side_effect = [
+        json.dumps({"query": "openai api rate limit", "status": "timeout", "backend": "serper", "sources": [], "answer": "", "error": "discovery_timeout", "timeout_limit": 20}),
+        json.dumps({"query": "openai api rate limit recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": "openai api rate limit official docs", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": "openai api rate limit reference guide", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+    ]
+    data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
+    assert data['timeout_profile']['overall_run_timeout_sec'] >= data['timeout_profile']['discovery_timeout_sec']
+    assert any(item['error_type'] == 'discovery_timeout' for item in data['timeout_events'])
+    assert any(event.get('status') == 'timeout' for event in data['transport']['events'])
+
+
+@patch('ouroboros.tools.search.save_artifact', return_value={"relative_path": "artifacts/outbox/trace.json", "bytes": 1})
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_research_run_records_page_read_timeout(_web, _fetch, _save):
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-timeout-page'
+        current_chat_id = 1
+
+    _web.side_effect = [
+        json.dumps({"query": "openai api rate limit", "status": "ok", "backend": "serper", "sources": [{"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official"}], "answer": "", "error": None}),
+        json.dumps({"query": "openai api rate limit recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": "openai api rate limit official docs", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": "openai api rate limit reference guide", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+    ]
+    _fetch.return_value = {"url": "https://platform.openai.com/docs/guides/rate-limits", "status": "timeout", "content_type": "", "text_preview": "", "relevant_sections": [], "findings": [], "error": "page_read_timeout", "timeout_limit": 15}
+    data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
+    assert any(item['error_type'] == 'page_read_timeout' for item in data['timeout_events'])
+    assert data['transport']['reading_backend'] == 'urllib'
+
+
+def test_research_tool_timeout_contract_is_above_internal_budget():
+    tools = {entry.name: entry for entry in get_tools()}
+    for name in ('research_run', 'deep_research'):
+        entry = tools[name]
+        assert entry.timeout_sec >= 180

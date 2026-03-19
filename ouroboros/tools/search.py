@@ -6,7 +6,9 @@ import html
 import json
 import logging
 import os
+import time
 import re
+import socket
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List
 from urllib.parse import urlparse
@@ -14,13 +16,17 @@ from urllib.parse import urlparse
 from ouroboros.artifacts import save_artifact
 from ouroboros.llm import LLMClient
 from ouroboros.tools.search_ranking import DOC_QUERY_MARKERS, POLICY_QUERY_MARKERS, READING_PRIORITY, collect_research_sources
-from ouroboros.tools.search_transport import READING_BACKEND, run_discovery_transport
+from ouroboros.tools.search_transport import READING_BACKEND, classify_timeout_error, run_discovery_transport, timeout_profile
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
 SEARXNG_DEFAULT = "http://localhost:8888"
 SERPER_DEFAULT_URL = "https://google.serper.dev/search"
 MAX_RESULTS = 5
+
+
+_timeout_like = lambda exc: isinstance(exc, TimeoutError | socket.timeout) or exc.__class__.__name__ in {"TimeoutError", "ReadTimeout", "ConnectTimeout"}
+
 DEFAULT_INTENT = "background_explainer"
 MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS = 6, 6, 2, 1
 
@@ -210,6 +216,8 @@ class ResearchRun:
     budget_limits: Dict[str, Any] = field(default_factory=dict)
     budget_trace: Dict[str, Any] = field(default_factory=dict)
     transport: Dict[str, Any] = field(default_factory=dict)
+    timeout_profile: Dict[str, int] = field(default_factory=dict)
+    timeout_events: List[Dict[str, Any]] = field(default_factory=list)
     status: str = "ok"
     interrupted: bool = False
     interrupt_reason: str = ""
@@ -380,7 +388,7 @@ def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SU
         branch_budget=branch_budget,
     )
 
-def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
+def _read_page_findings(query: str, source: Dict[str, Any], timeout_sec: int = 12) -> Dict[str, Any]:
     url = str(source.get("url") or "")
     try:
         import urllib.request
@@ -392,7 +400,7 @@ def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
             },
         )
-        with urllib.request.urlopen(req, timeout=12) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             body = resp.read()
             content_type = str(resp.headers.get("Content-Type") or "")
         charset_match = re.search(r"charset=([A-Za-z0-9._-]+)", content_type, re.IGNORECASE)
@@ -482,14 +490,17 @@ def _read_page_findings(query: str, source: Dict[str, Any]) -> Dict[str, Any]:
             "error": None,
         }
     except Exception as exc:
+        timeout_info = classify_timeout_error(exc, "page_read") if _timeout_like(exc) else None
         return {
             "url": url,
-            "status": "error",
+            "status": "timeout" if timeout_info else "error",
             "content_type": "",
             "text_preview": "",
             "relevant_sections": [],
             "findings": [],
-            "error": repr(exc),
+            "error": (timeout_info or {}).get("type") or repr(exc),
+            "timeout_detail": (timeout_info or {}).get("detail", ""),
+            "timeout_limit": timeout_sec if timeout_info else None,
         }
 def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_override: str | None = None) -> None:
     freshness_known = sum(1 for finding in run.findings if str(finding.get("observed_at") or "").strip())
@@ -515,8 +526,9 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_
     run.answer_mode = output_mode_override if output_mode_override in {"short_factual", "analyst_memo", "comparison_brief", "timeline"} else mode_by_intent.get(run.intent_type, "short_factual")
     _render_synthesis(run, policy)
 
-def _web_search(ctx: ToolContext, query: str) -> str:
+def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) -> str:
     del ctx
+    timeout_sec = max(int(timeout_sec or 20), 1)
     def run_backend(name: str, q: str) -> Dict[str, Any]:
         if name == "searxng":
             if not SEARXNG_DEFAULT:
@@ -528,11 +540,14 @@ def _web_search(ctx: ToolContext, query: str) -> str:
                 params = urllib.parse.urlencode({"q": q, "format": "json", "language": "ru", "safesearch": 0})
                 url = f"{SEARXNG_DEFAULT.rstrip('/')}/search?{params}"
                 req = urllib.request.Request(url, headers={"Accept": "application/json"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                     data = json.loads(resp.read())
                 return {"query": q, "status": "ok", "backend": "searxng", "sources": clean_sources(data.get("results", [])), "answer": "", "error": None}
             except Exception as exc:
                 log.warning("SearXNG search failed: %s", exc)
+                if _timeout_like(exc):
+                    timeout_info = classify_timeout_error(exc, "discovery")
+                    return {"query": q, "status": "timeout", "backend": "searxng", "sources": [], "answer": "", "error": timeout_info["type"], "error_detail": timeout_info["detail"], "timeout_limit": timeout_sec}
                 return {"query": q, "status": "error", "backend": "searxng", "sources": [], "answer": "", "error": repr(exc)}
         if name == "openai":
             if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")):
@@ -580,7 +595,7 @@ def _web_search(ctx: ToolContext, query: str) -> str:
                 headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                 data = json.loads(resp.read())
             organic = data.get("organic") or []
             answer_box = data.get("answerBox") or {}
@@ -607,6 +622,9 @@ def _web_search(ctx: ToolContext, query: str) -> str:
             return result
         except Exception as exc:
             log.warning("Serper search failed: %s", exc)
+            if _timeout_like(exc):
+                timeout_info = classify_timeout_error(exc, "discovery")
+                return {"query": q, "status": "timeout", "backend": "serper", "sources": [], "answer": "", "error": timeout_info["type"], "error_detail": timeout_info["detail"], "timeout_limit": timeout_sec}
             return {"query": q, "status": "error", "backend": "serper", "sources": [], "answer": "", "error": repr(exc)}
 
     result = run_discovery_transport(query, lambda q: run_backend("serper", q), (("searxng", lambda q: run_backend("searxng", q)), ("openai", lambda q: run_backend("openai", q))))
@@ -638,14 +656,16 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     run.intent_policy = policy
     run.budget_profile = budget
     run.transport = {"discovery_backend": "serper", "reading_backend": READING_BACKEND, "fallback_backend": None, "fallback_backends": [], "events": []}
+    run.timeout_profile = timeout_profile(run.budget_mode)
+    deadline = time.monotonic() + max(int(run.timeout_profile.get("overall_run_timeout_sec", 90)), 1)
     plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)
     run.subqueries = list(plan.subqueries)
     run.query_plan = asdict(plan)
     try:
         ranked_sources = collect_research_sources(
             run,
-            lambda query: json.loads(_web_search(ctx, query)),
-            _read_page_findings,
+            lambda query: json.loads(_web_search(ctx, query, timeout_sec=run.timeout_profile.get("discovery_timeout_sec", 20))),
+            lambda user_query, ranked_entry: _read_page_findings(user_query, ranked_entry, timeout_sec=int(run.timeout_profile.get("page_read_timeout_sec", 15))),
             _detect_contradictions,
             checkpoint_fn=lambda stage, **payload: (
                 (lambda info: (
@@ -660,6 +680,41 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
                 )
             ),
         )
+        for event in (run.transport.get("events") or []):
+            if str(event.get("status") or "") == "timeout":
+                info = {"stage": "discovery", "error_type": "discovery_timeout", "timeout_limit": int(run.timeout_profile.get("discovery_timeout_sec", 20))}
+                if event.get("backend"):
+                    info["backend"] = str(event.get("backend") or "")
+                if event.get("trigger"):
+                    info["trigger"] = str(event.get("trigger") or "")
+                if event.get("reason"):
+                    info["reason"] = str(event.get("reason") or "")
+                run.timeout_events = [*(run.timeout_events or []), info]
+                note = f"discovery_timeout at discovery" + (f" via {info['backend']}" if info.get("backend") else "")
+                if note not in run.uncertainty_notes:
+                    run.uncertainty_notes = [*(run.uncertainty_notes or []), note]
+        for page in run.visited_pages:
+            for item in page.get("read_results") or []:
+                if str(item.get("status") or "") == "timeout":
+                    info = {"stage": "page_read", "error_type": "page_read_timeout", "timeout_limit": int(run.timeout_profile.get("page_read_timeout_sec", 15)), "backend": READING_BACKEND}
+                    if item.get("error"):
+                        info["reason"] = str(item.get("error") or "")
+                    if item.get("url"):
+                        info["url"] = str(item.get("url") or "")
+                    run.timeout_events = [*(run.timeout_events or []), info]
+                    note = "page_read_timeout at page_read via urllib"
+                    if note not in run.uncertainty_notes:
+                        run.uncertainty_notes = [*(run.uncertainty_notes or []), note]
+        if time.monotonic() > deadline:
+            timeout_info = classify_timeout_error(TimeoutError("overall research budget exceeded"), "overall")
+            info = {"stage": "overall", "error_type": timeout_info["type"], "timeout_limit": int(run.timeout_profile.get("overall_run_timeout_sec", 90))}
+            if timeout_info.get("detail"):
+                info["reason"] = timeout_info["detail"]
+            run.timeout_events = [*(run.timeout_events or []), info]
+            note = f"{timeout_info['type']} at overall"
+            if note not in run.uncertainty_notes:
+                run.uncertainty_notes = [*(run.uncertainty_notes or []), note]
+            raise TimeoutError(timeout_info["type"])
         selected_limit = max(policy["min_sources_before_synthesis"], min(budget.max_pages_read, len(ranked_sources)))
         run.candidate_sources = [{"title": item.get("title") or item.get("url"), "url": item.get("url"), "snippet": item.get("snippet", ""), "score": item.get("score"), "authority": item.get("authority", "unknown"), "benchmark_primary_type": item.get("benchmark_primary_type", ""), "reasons": list(item.get("reasons") or []), "decision": item.get("decision", "selected"), "query": item.get("query", ""), "host": item.get("host", "")} for item in ranked_sources[:selected_limit] if item.get("url")]
         deduped_findings: List[Dict[str, Any]] = []
@@ -680,8 +735,35 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
                 run.interrupt_stage = "pre_synthesis"
                 run.interrupt_message = str(info.get("message") or "").strip()
                 raise ResearchInterrupted(run.interrupt_reason or "research interrupted")
+        if time.monotonic() > deadline:
+            timeout_info = classify_timeout_error(TimeoutError("overall research budget exceeded before synthesis"), "overall")
+            info = {"stage": "overall", "error_type": timeout_info["type"], "timeout_limit": int(run.timeout_profile.get("overall_run_timeout_sec", 90))}
+            if timeout_info.get("detail"):
+                info["reason"] = timeout_info["detail"]
+            run.timeout_events = [*(run.timeout_events or []), info]
+            note = f"{timeout_info['type']} at overall"
+            if note not in run.uncertainty_notes:
+                run.uncertainty_notes = [*(run.uncertainty_notes or []), note]
+            raise TimeoutError(timeout_info["type"])
         run.budget_trace["synthesis_rounds_used"] = min(1, budget.max_synthesis_rounds)
         output_map = {"brief": "short_factual", "memo": "analyst_memo", "timeline": "timeline", "comparison": "comparison_brief"}; _apply_research_quality(run, policy_obj, output_map.get(str(output_mode or "").strip().lower()))
+    except TimeoutError as exc:
+        timeout_info = classify_timeout_error(exc, "overall")
+        if not run.timeout_events or run.timeout_events[-1].get("error_type") != timeout_info["type"]:
+            info = {"stage": "overall", "error_type": timeout_info["type"], "timeout_limit": int(run.timeout_profile.get("overall_run_timeout_sec", 90))}
+            if timeout_info.get("detail"):
+                info["reason"] = timeout_info["detail"]
+            run.timeout_events = [*(run.timeout_events or []), info]
+            note = f"{timeout_info['type']} at overall"
+            if note not in run.uncertainty_notes:
+                run.uncertainty_notes = [*(run.uncertainty_notes or []), note]
+        run.status = timeout_info["type"]
+        run.confidence = "low"
+        summary = "Исследование остановлено по лимиту времени; часть шагов могла не успеть завершиться."
+        if not run.final_answer:
+            run.final_answer = summary
+        run.synthesis = run.synthesis or {"short_answer": run.final_answer, "key_findings": [], "evidence_backed_explanation": run.final_answer, "uncertainty_caveats": list(run.uncertainty_notes), "sources": []}
+        payload = asdict(run)
     except ResearchInterrupted:
         run.confidence = "low"
         if run.interrupt_reason == "cancel_requested":
@@ -701,6 +783,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     payload["intent_policy"] = policy
     payload["trace"] = artifact if isinstance(artifact, dict) else {"status": "error", "message": str(artifact)}
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
@@ -727,6 +810,7 @@ def get_tools() -> List[ToolEntry]:
                 },
             },
             lambda ctx, query, budget_mode="balanced", output_mode=None, freshness_bias=None: _research_run(ctx, query, budget_mode, output_mode, freshness_bias),
+            timeout_sec=180,
         ),
         ToolEntry(
             "deep_research",
@@ -757,5 +841,6 @@ def get_tools() -> List[ToolEntry]:
                     if str(item.get("url") or "").strip()
                 ],
             ),
+            timeout_sec=180,
         ),
     ]
