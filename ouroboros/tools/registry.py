@@ -11,6 +11,7 @@ import json
 import pathlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+import queue
 
 from ouroboros.utils import safe_relpath
 
@@ -54,6 +55,10 @@ class ToolContext:
     event_queue: Optional[Any] = None
     task_id: Optional[str] = None
 
+    # Owner interruptibility hooks for long-running tools
+    incoming_messages: Optional[Any] = None
+    interrupt_seen_ids: set[str] = field(default_factory=set)
+
     # Task depth for fork bomb protection
     task_depth: int = 0
 
@@ -68,6 +73,53 @@ class ToolContext:
 
     def drive_logs(self) -> pathlib.Path:
         return (self.drive_root / "logs").resolve()
+
+    def checkpoint(self, stage: str, *, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Check whether the active task has been superseded or interrupted by a new owner message."""
+        notes: List[str] = []
+        pending: List[str] = []
+        if self.incoming_messages is not None:
+            while True:
+                try:
+                    msg = self.incoming_messages.get_nowait()
+                except queue.Empty:
+                    break
+                except Exception:
+                    break
+                else:
+                    text = str(msg or '').strip()
+                    if text:
+                        pending.append(text)
+        if self.drive_root and self.task_id:
+            try:
+                from ouroboros.owner_inject import drain_owner_messages
+                for text in drain_owner_messages(self.drive_root, task_id=self.task_id, seen_ids=self.interrupt_seen_ids):
+                    if text:
+                        pending.append(str(text).strip())
+            except Exception:
+                pass
+        if not pending:
+            return None
+        lowered = ' '.join(pending).lower()
+        reason = 'cancel_requested' if any(tok in lowered for tok in ('stop', 'cancel', 'стоп', 'отмена', 'прекрати', 'остановись')) else 'superseded_by_new_request'
+        message = pending[-1]
+        event = {
+            'type': 'tool_interrupt_checkpoint',
+            'task_id': self.task_id,
+            'stage': stage,
+            'reason': reason,
+            'message': message[:500],
+            'pending_count': len(pending),
+            'payload': payload or {},
+        }
+        if self.pending_events is not None:
+            self.pending_events.append(event)
+        if self.event_queue is not None:
+            try:
+                self.event_queue.put_nowait(event)
+            except Exception:
+                pass
+        return {'stage': stage, 'reason': reason, 'message': message, 'pending_messages': pending, 'payload': payload or {}}
 
 
 @dataclass

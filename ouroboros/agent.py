@@ -348,6 +348,7 @@ class OuroborosAgent:
             emit_progress_fn=self._emit_progress,
             task_depth=int(task.get("depth", 0)),
             is_direct_chat=is_direct,
+            incoming_messages=self._incoming_messages,
         )
 
         # For direct chat: reuse persistent browser session (preserves cookies/page)

@@ -25,22 +25,6 @@ DEFAULT_INTENT = "background_explainer"
 MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS = 6, 6, 2, 1
 
 
-def clean_sources(items):
-    cleaned, seen = [], set()
-    for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or "").strip()
-        if not url.startswith(("http://", "https://")) or url in seen:
-            continue
-        seen.add(url)
-        cleaned.append({
-            "title": str(item.get("title") or "").strip() or url,
-            "url": url,
-            "snippet": str(item.get("snippet") or item.get("content") or "").strip(),
-        })
-    return cleaned
-
 _normalize_text_block = lambda text: re.sub(r"\s+", " ", html.unescape(str(text or "")).replace(" ", " ")).strip()
 
 @dataclass(frozen=True)
@@ -226,6 +210,16 @@ class ResearchRun:
     budget_limits: Dict[str, Any] = field(default_factory=dict)
     budget_trace: Dict[str, Any] = field(default_factory=dict)
     transport: Dict[str, Any] = field(default_factory=dict)
+    status: str = "ok"
+    interrupted: bool = False
+    interrupt_reason: str = ""
+    interrupt_stage: str = ""
+    interrupt_message: str = ""
+
+
+class ResearchInterrupted(RuntimeError):
+    pass
+
 def _detect_contradictions(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     numeric_findings, status_findings = [], []
     for finding in findings:
@@ -647,24 +641,63 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)
     run.subqueries = list(plan.subqueries)
     run.query_plan = asdict(plan)
-    seen_urls: set[str] = set()
-    ranked_sources = collect_research_sources(run, lambda query: json.loads(_web_search(ctx, query)), _read_page_findings, _detect_contradictions)
-    selected_limit = max(policy["min_sources_before_synthesis"], min(budget.max_pages_read, len(ranked_sources)))
-    run.candidate_sources = [{"title": item.get("title") or item.get("url"), "url": item.get("url"), "snippet": item.get("snippet", ""), "score": item.get("score"), "authority": item.get("authority", "unknown"), "benchmark_primary_type": item.get("benchmark_primary_type", ""), "reasons": list(item.get("reasons") or []), "decision": item.get("decision", "selected"), "query": item.get("query", ""), "host": item.get("host", "")} for item in ranked_sources[:selected_limit] if item.get("url")]
-    deduped_findings: List[Dict[str, Any]] = []
-    seen_finding_keys: set[str] = set()
-    for finding in run.findings:
-        key = re.sub(r"\W+", " ", f"{finding.get('claim', '')} {finding.get('evidence_snippet', '')}".casefold()).strip()
-        if not key or key in seen_finding_keys:
-            continue
-        seen_finding_keys.add(key)
-        deduped_findings.append(finding)
-    run.findings = deduped_findings
-
-    run.budget_trace["synthesis_rounds_used"] = min(1, budget.max_synthesis_rounds)
-    output_map = {"brief": "short_factual", "memo": "analyst_memo", "timeline": "timeline", "comparison": "comparison_brief"}; _apply_research_quality(run, policy_obj, output_map.get(str(output_mode or "").strip().lower()))
-    artifact = save_artifact(ctx, filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json", content=json.dumps(asdict(run), ensure_ascii=False, indent=2), content_kind="json", source="research_run", mime_type="application/json", caption="Research run trace", metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy, "query_plan": run.query_plan})
-    payload = asdict(run)
+    try:
+        ranked_sources = collect_research_sources(
+            run,
+            lambda query: json.loads(_web_search(ctx, query)),
+            _read_page_findings,
+            _detect_contradictions,
+            checkpoint_fn=lambda stage, **payload: (
+                (lambda info: (
+                    run.__setattr__("status", info.get("reason") or "interrupted"),
+                    run.__setattr__("interrupted", True),
+                    run.__setattr__("interrupt_reason", info.get("reason") or "interrupted"),
+                    run.__setattr__("interrupt_stage", stage),
+                    run.__setattr__("interrupt_message", str(info.get("message") or "").strip()),
+                    (_ for _ in ()).throw(ResearchInterrupted(info.get("reason") or "research interrupted"))
+                )[-1] if info else None)(
+                    ctx.checkpoint(stage, payload=payload) if hasattr(ctx, "checkpoint") else None
+                )
+            ),
+        )
+        selected_limit = max(policy["min_sources_before_synthesis"], min(budget.max_pages_read, len(ranked_sources)))
+        run.candidate_sources = [{"title": item.get("title") or item.get("url"), "url": item.get("url"), "snippet": item.get("snippet", ""), "score": item.get("score"), "authority": item.get("authority", "unknown"), "benchmark_primary_type": item.get("benchmark_primary_type", ""), "reasons": list(item.get("reasons") or []), "decision": item.get("decision", "selected"), "query": item.get("query", ""), "host": item.get("host", "")} for item in ranked_sources[:selected_limit] if item.get("url")]
+        deduped_findings: List[Dict[str, Any]] = []
+        seen_finding_keys: set[str] = set()
+        for finding in run.findings:
+            key = re.sub(r"\W+", " ", f"{finding.get('claim', '')} {finding.get('evidence_snippet', '')}".casefold()).strip()
+            if not key or key in seen_finding_keys:
+                continue
+            seen_finding_keys.add(key)
+            deduped_findings.append(finding)
+        run.findings = deduped_findings
+        if hasattr(ctx, "checkpoint"):
+            info = ctx.checkpoint("pre_synthesis", payload={"findings": len(run.findings), "candidate_sources": len(run.candidate_sources), "pages_read": run.budget_trace.get("pages_read", 0)})
+            if info:
+                run.status = info.get("reason") or "interrupted"
+                run.interrupted = True
+                run.interrupt_reason = info.get("reason") or "interrupted"
+                run.interrupt_stage = "pre_synthesis"
+                run.interrupt_message = str(info.get("message") or "").strip()
+                raise ResearchInterrupted(run.interrupt_reason or "research interrupted")
+        run.budget_trace["synthesis_rounds_used"] = min(1, budget.max_synthesis_rounds)
+        output_map = {"brief": "short_factual", "memo": "analyst_memo", "timeline": "timeline", "comparison": "comparison_brief"}; _apply_research_quality(run, policy_obj, output_map.get(str(output_mode or "").strip().lower()))
+    except ResearchInterrupted:
+        run.confidence = "low"
+        if run.interrupt_reason == "cancel_requested":
+            note = "research run was cancelled by owner"
+            summary = "Исследование остановлено по новому сообщению владельца."
+        else:
+            note = "research run was superseded by a newer owner request"
+            summary = "Исследование прервано, потому что пришёл новый запрос владельца."
+        run.uncertainty_notes = list(dict.fromkeys([*run.uncertainty_notes, note]))
+        if not run.final_answer:
+            run.final_answer = summary
+        run.synthesis = run.synthesis or {"short_answer": run.final_answer, "key_findings": [], "evidence_backed_explanation": run.final_answer, "uncertainty_caveats": list(run.uncertainty_notes), "sources": []}
+        payload = asdict(run)
+    else:
+        payload = asdict(run)
+    artifact = save_artifact(ctx, filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json", content=json.dumps(payload, ensure_ascii=False, indent=2), content_kind="json", source="research_run", mime_type="application/json", caption="Research run trace", metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy, "query_plan": run.query_plan})
     payload["intent_policy"] = policy
     payload["trace"] = artifact if isinstance(artifact, dict) else {"status": "error", "message": str(artifact)}
     return json.dumps(payload, ensure_ascii=False, indent=2)

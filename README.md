@@ -1,7 +1,7 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.69.18-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.69.19-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
@@ -41,6 +41,11 @@
 Слабее всего пока ведут себя **fresh timeline** и **comparison**, если SERP переполнен вторичными обзорами и не отдаёт первичку наверх.
 
 ## Changelog
+
+### 6.69.19
+- Made deep research interruptible and owner-responsive: long-running runs now checkpoint after discovery, after ranking, after each page read, and again before synthesis so a new owner message can supersede or cancel the current run instead of making the agent feel unreachable.
+- Threaded incoming owner messages through the live tool context and recorded explicit interruption events/reasons (`cancel_requested` / `superseded_by_new_request`) in research traces, turning invisible stalls into observable state.
+- Added regression coverage for superseding a research run mid-flight while keeping `py_compile`, `tests/test_search_tool.py`, `tests/test_research_eval.py`, and `tests/test_smoke.py` green under the structural budget.
 
 ### 6.69.18
 - Split retrieval transport into explicit discovery/reading/fallback layers with honest trace reporting.
