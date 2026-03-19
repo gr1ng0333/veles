@@ -203,7 +203,7 @@ class TestVlmQueryTool(unittest.TestCase):
             repo_dir=pathlib.Path("/tmp"),
             drive_root=pathlib.Path("/tmp"),
         )
-        tools = registry.available_tools()
+        tools = [s["name"] for s in registry.schemas()]
         self.assertIn("analyze_screenshot", tools, "analyze_screenshot must be registered")
         self.assertIn("vlm_query", tools, "vlm_query must be registered")
         self.assertIn("solve_simple_captcha", tools, "solve_simple_captcha must be registered")

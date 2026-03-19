@@ -96,7 +96,7 @@ class TestForwardToWorkerTool(unittest.TestCase):
             repo_dir=pathlib.Path("/tmp"),
             drive_root=pathlib.Path("/tmp"),
         )
-        tools = registry.available_tools()
+        tools = [s["name"] for s in registry.schemas()]
         self.assertIn("forward_to_worker", tools)
 
 
