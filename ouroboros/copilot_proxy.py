@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +26,55 @@ TIMEOUT_SEC = 180
 MAX_RETRIES = 2
 
 from ouroboros import copilot_proxy_accounts as _accounts_impl
+
+
+# ---------------------------------------------------------------------------
+# Copilot session tracking — per interaction_id stats
+# ---------------------------------------------------------------------------
+
+_session_lock = threading.Lock()
+_active_sessions: Dict[str, Dict[str, Any]] = {}  # interaction_id → stats
+
+
+def _track_session(interaction_id: Optional[str], usage: Dict[str, Any], initiator: str) -> Dict[str, Any]:
+    """Track cumulative stats for a Copilot agentic session. Returns session stats."""
+    if not interaction_id:
+        return {}
+    with _session_lock:
+        if interaction_id not in _active_sessions:
+            _active_sessions[interaction_id] = {
+                "started": time.time(),
+                "rounds": 0,
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "premium_requests": 0,  # should be 1 for entire session
+            }
+        s = _active_sessions[interaction_id]
+        s["rounds"] += 1
+        s["total_prompt_tokens"] += usage.get("prompt_tokens", 0)
+        s["total_completion_tokens"] += usage.get("completion_tokens", 0)
+        if initiator == "user":
+            s["premium_requests"] += 1
+        s["last_activity"] = time.time()
+        return dict(s)
+
+
+def get_session_stats(interaction_id: str) -> Optional[Dict[str, Any]]:
+    """Get stats for a Copilot session. Returns None if not tracked."""
+    with _session_lock:
+        return dict(_active_sessions[interaction_id]) if interaction_id in _active_sessions else None
+
+
+def cleanup_stale_sessions(max_age_seconds: int = 3600) -> int:
+    """Remove sessions older than max_age_seconds. Returns count of removed sessions."""
+    now = time.time()
+    removed = 0
+    with _session_lock:
+        stale = [k for k, v in _active_sessions.items() if now - v.get("last_activity", 0) > max_age_seconds]
+        for k in stale:
+            del _active_sessions[k]
+            removed += 1
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -77,17 +127,33 @@ def _call_with_rotation(
     """Execute request with multi-account rotation on errors."""
     tried: set = set()
     last_error: Optional[Exception] = None
+    _exhaustion_retried = False
 
     while True:
         result = _accounts_impl._get_active_account()
-        if result is None:
-            raise RuntimeError(
-                f"All Copilot accounts exhausted. Last error: {last_error}"
-            )
-        acc, idx = result
 
-        if idx in tried:
-            raise RuntimeError(f"All Copilot accounts tried. Last error: {last_error}")
+        if result is None or (result is not None and result[1] in tried):
+            # All accounts exhausted or already tried — wait for shortest cooldown
+            if _exhaustion_retried:
+                raise RuntimeError(
+                    f"All Copilot accounts exhausted after retry. Last error: {last_error}"
+                )
+            wait_time = _accounts_impl._shortest_cooldown_remaining()
+            if wait_time <= 0:
+                raise RuntimeError(
+                    f"All Copilot accounts exhausted (no cooldown to wait for). Last error: {last_error}"
+                )
+            wait_time = min(wait_time, 120)  # cap at 2 minutes
+            log.warning(
+                "copilot_all_accounts_exhausted waiting=%ds interaction=%s",
+                wait_time, (interaction_id or "?")[:8],
+            )
+            time.sleep(wait_time)
+            tried.clear()
+            _exhaustion_retried = True
+            continue
+
+        acc, idx = result
         tried.add(idx)
 
         copilot_token = _accounts_impl._ensure_copilot_token(
@@ -200,6 +266,14 @@ def call_copilot(
         model, initiator, interaction_id or "none", sum(len(json.dumps(m)) for m in messages) // 4,
     )
 
+    # Warn if context is getting large for Copilot
+    approx_context_chars = sum(len(json.dumps(m)) for m in messages)
+    if approx_context_chars > 400_000:  # ~100k tokens
+        log.warning(
+            "copilot_large_context model=%s chars=%d interaction=%s — approaching Copilot context limit",
+            model, approx_context_chars, (interaction_id or "?")[:8],
+        )
+
     response_data: Dict[str, Any] = {}
 
     if _accounts_impl._is_multi_account():
@@ -294,5 +368,17 @@ def call_copilot(
         "total_tokens": prompt_tokens + completion_tokens,
         "cost": 0.0,  # Free via Copilot Pro subscription
     }
+
+    # Track session stats
+    session_stats = _track_session(interaction_id, usage, initiator)
+    if session_stats:
+        log.debug(
+            "copilot_session id=%s rounds=%d prompt_tok=%d compl_tok=%d premium=%d",
+            interaction_id[:8] if interaction_id else "?",
+            session_stats["rounds"],
+            session_stats["total_prompt_tokens"],
+            session_stats["total_completion_tokens"],
+            session_stats["premium_requests"],
+        )
 
     return msg, usage

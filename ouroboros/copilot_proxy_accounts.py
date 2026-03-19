@@ -256,6 +256,20 @@ def _on_dead_account(account_idx: int) -> None:
             _save_accounts_state(_accounts)
 
 
+def _shortest_cooldown_remaining() -> float:
+    """Return seconds until the earliest account exits cooldown. 0 if none on cooldown."""
+    with _accounts_lock:
+        now = time.time()
+        remaining = []
+        for acc in _accounts:
+            if acc.get("dead"):
+                continue
+            cd = acc.get("cooldown_until", 0)
+            if cd > now:
+                remaining.append(cd - now)
+        return min(remaining) if remaining else 0.0
+
+
 def _ensure_copilot_token(acc: Dict[str, Any], account_idx: int, urlopen) -> str:
     """Ensure account has a valid Copilot API token; exchange if needed."""
     now = time.time()
