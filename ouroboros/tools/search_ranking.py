@@ -41,6 +41,18 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
         sources = list(result.get("sources") or [])[:5]
         run.budget_trace["search_calls"] += 1
         transport = dict(result.get("transport") or {})
+        if not transport:
+            event = {"backend": result.get("backend"), "status": result.get("status")}
+            if result.get("error"):
+                event["reason"] = result.get("error")
+            if result.get("status") == "timeout":
+                event["trigger"] = "backend_timeout"
+                event["timeout_limit"] = result.get("timeout_limit")
+            transport = {
+                "discovery_backend": result.get("backend"),
+                "fallback_backend": None,
+                "events": [event],
+            }
         page_trace = {"query": subquery, "status": result.get("status"), "backend": result.get("backend"), "source_count": len(sources), "intent_type": run.intent_type, "policy": policy, "transport": transport, "ranked_sources": [], "selected_to_read": [], "rejected": []}
         run.transport.setdefault("events", []).extend([event for event in transport.get("events", []) if event not in run.transport.get("events", [])])
         if checkpoint_fn:
