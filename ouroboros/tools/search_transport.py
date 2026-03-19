@@ -4,6 +4,49 @@ from typing import Any, Callable, Dict, Iterable, Tuple
 
 READING_BACKEND = "urllib"
 
+TIMEOUT_PROFILES = {
+    "cheap": {
+        "overall_run_timeout_sec": 45,
+        "discovery_timeout_sec": 12,
+        "page_read_timeout_sec": 10,
+        "browser_timeout_ms": 15000,
+        "synthesis_timeout_sec": 8,
+        "eval_timeout_sec": 10,
+        "shell_timeout_sec": 60,
+    },
+    "balanced": {
+        "overall_run_timeout_sec": 90,
+        "discovery_timeout_sec": 20,
+        "page_read_timeout_sec": 15,
+        "browser_timeout_ms": 25000,
+        "synthesis_timeout_sec": 15,
+        "eval_timeout_sec": 15,
+        "shell_timeout_sec": 90,
+    },
+    "deep": {
+        "overall_run_timeout_sec": 150,
+        "discovery_timeout_sec": 30,
+        "page_read_timeout_sec": 25,
+        "browser_timeout_ms": 40000,
+        "synthesis_timeout_sec": 25,
+        "eval_timeout_sec": 20,
+        "shell_timeout_sec": 120,
+    },
+}
+
+
+TIMEOUT_ERROR_TYPES = {
+    "discovery": "discovery_timeout",
+    "page_read": "page_read_timeout",
+    "browser": "browser_timeout",
+    "synthesis": "synthesis_timeout",
+    "eval": "eval_timeout",
+    "overall": "overall_run_timeout",
+}
+
+timeout_profile = lambda mode: dict(TIMEOUT_PROFILES.get(str(mode or "balanced").strip().lower() or "balanced", TIMEOUT_PROFILES["balanced"]))
+classify_timeout_error = lambda exc, stage: {"type": TIMEOUT_ERROR_TYPES.get(stage, "tool_timeout"), "stage": stage, "detail": str(exc).strip() or type(exc).__name__}
+
 
 def run_discovery_transport(
     query: str,
@@ -45,6 +88,7 @@ def run_discovery_transport(
         "used": True,
         "trigger": "primary",
         "reason": primary.get("error") if primary.get("status") != "ok" else None,
+        "timeout_limit": primary.get("timeout_limit"),
     })
     if primary.get("status") == "ok" and (primary.get("sources") or str(primary.get("answer") or "").strip()):
         primary["transport"] = {
@@ -55,7 +99,7 @@ def run_discovery_transport(
             "events": events,
         }
         return primary
-    fallback_reason = "serper_no_results" if primary.get("status") == "no_results" else "serper_error"
+    fallback_reason = "serper_no_results" if primary.get("status") == "no_results" else ("serper_timeout" if primary.get("status") == "timeout" else "serper_error")
     last = primary
     for backend_name, fn in fallback_search_fns:
         fallback = dict(fn(query) or {})
@@ -92,6 +136,7 @@ def run_discovery_transport(
             "used": True,
             "trigger": fallback_reason,
             "reason": fallback.get("error") if fallback.get("status") != "ok" else None,
+            "timeout_limit": fallback.get("timeout_limit"),
         })
         if fallback.get("status") == "ok" and (fallback.get("sources") or str(fallback.get("answer") or "").strip()):
             fallback["transport"] = {

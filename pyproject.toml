@@ -1,6 +1,6 @@
 [project]
 name = "ouroboros"
-version = "6.69.19"
+version = "6.69.20"
 description = "Self-creating agent"
 requires-python = ">=3.10"
 

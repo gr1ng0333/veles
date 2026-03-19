@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.69.19-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.69.20-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.69.18 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.69.20 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -41,6 +41,11 @@
 Слабее всего пока ведут себя **fresh timeline** и **comparison**, если SERP переполнен вторичными обзорами и не отдаёт первичку наверх.
 
 ## Changelog
+
+### 6.69.20
+- Normalized research timeout handling across discovery, page reading, and the overall run budget: search transport now carries a unified timeout profile and the research trace records diagnostic timeout events instead of leaking ambiguous outer watchdog failures.
+- Fixed the interruptibility regression in `superseded_by_new_request` coverage by aligning fake page-reading hooks with the live timeout-aware signature, so owner supersession remains tested under the new read-path contract.
+- Recorded `page_read_timeout` in the final research trace as honestly as discovery timeouts, kept the search contour under structural budget, and revalidated with `py_compile`, `tests/test_search_tool.py`, `tests/test_research_eval.py`, and `tests/test_smoke.py`.
 
 ### 6.69.19
 - Made deep research interruptible and owner-responsive: long-running runs now checkpoint after discovery, after ranking, after each page read, and again before synthesis so a new owner message can supersede or cancel the current run instead of making the agent feel unreachable.
