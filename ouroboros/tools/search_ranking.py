@@ -12,21 +12,21 @@ DOMAIN_SCORES: Dict[str, float] = {
 AGGREGATOR_DOMAINS = {"www.reddit.com", "reddit.com", "news.ycombinator.com", "hn.algolia.com", "medium.com", "towardsdatascience.com", "www.linkedin.com", "linkedin.com"}
 SOCIAL_DOMAINS = {"x.com", "twitter.com", "www.x.com", "www.twitter.com", "facebook.com", "www.facebook.com"}
 OFFICIAL_HOST_MARKERS = ("docs.", "developer.", "developers.", "platform.", "api.")
-OFFICIAL_DOC_HOSTS = ("docs.python.org", "docs.github.com", "pkg.go.dev", "go.dev", "core.telegram.org", "git-scm.com", "freedesktop.org", "man7.org", "docs.docker.com", "developers.cloudflare.com", "platform.openai.com", "docs.anthropic.com")
-OFFICIAL_POLICY_HOSTS = ("openai.com", "help.openai.com", "anthropic.com")
+OFFICIAL_DOC_HOSTS = ("docs.python.org", "docs.github.com", "pkg.go.dev", "go.dev", "core.telegram.org", "git-scm.com", "freedesktop.org", "man7.org", "docs.docker.com", "developers.cloudflare.com", "platform.openai.com", "docs.anthropic.com", "docs.cursor.com", "huggingface.co")
+OFFICIAL_POLICY_HOSTS = ("openai.com", "help.openai.com", "anthropic.com", "github.com", "docs.github.com")
 OFFICIAL_POLICY_PATH_HINTS = ("policy", "policies", "privacy", "security", "trust", "data-usage", "data-usage-policies", "data-retention", "retention", "training", "enterprise-privacy", "usage-data", "legal")
 OFFICIAL_DOC_PATH_HINTS = ("/docs", "/doc", "/reference", "/api", "/guides", "/manual", "/learn", "/sdk", "/quickstart", "/help", "platform/docs", "platform/reference")
 OFFICIAL_PRICING_PATH_HINTS = ("/pricing", "/plans", "/billing", "/enterprise")
-MARKETING_PATH_HINTS = ("/blog", "/index/", "/news", "/customers", "/case-studies", "/solutions", "/lp/", "/landing", "/announcements", "/features")
-DOC_QUERY_MARKERS = ("docs", "documentation", "api", "reference", "sdk", "guide", "quickstart", "manual", "rate limit", "endpoint")
-POLICY_QUERY_MARKERS = ("policy", "data usage", "data retention", "privacy", "retention", "training", "artifact retention", "rate limits official source")
+MARKETING_PATH_HINTS = ("/blog", "/index/", "/news", "/customers", "/case-studies", "/solutions", "/lp/", "/landing", "/announcements", "/features", "/why-", "/enterprise")
+DOC_QUERY_MARKERS = ("docs", "documentation", "api", "reference", "sdk", "guide", "quickstart", "manual", "rate limit", "endpoint", "developer docs", "integration docs")
+POLICY_QUERY_MARKERS = ("policy", "data usage", "data retention", "privacy", "retention", "training", "artifact retention", "legal", "terms", "rate limits official source")
 PRIMARY_HOST_MARKERS = ("openai.com", "anthropic.com", "github.com", "python.org", "mozilla.org", "google.com", "huggingface.co", "arxiv.org", "cursor.com")
 BENCHMARK_VENDOR_HOSTS = ("platform.openai.com", "openai.com", "docs.anthropic.com", "anthropic.com")
 BENCHMARK_LEADERBOARD_HOSTS = ("huggingface.co", "paperswithcode.com", "lmarena.ai", "chat.lmsys.org")
 BENCHMARK_PAPER_HOSTS = ("arxiv.org", "huggingface.co")
 BENCHMARK_REPO_HOSTS = ("github.com",)
 COMPARISON_BENCHMARK_MARKERS = ("benchmark", "latency", "throughput", "eval", "evaluation", "leaderboard", "arena", "head-to-head")
-COMPARISON_ECOSYSTEM_MARKERS = ("ecosystem", "tooling", "workflow", "integration", "maintainer", "community", "extension", "plugin")
+COMPARISON_ECOSYSTEM_MARKERS = ("ecosystem", "tooling", "workflow", "integration", "integrations", "maintainer", "community", "extension", "plugin")
 READING_PRIORITY = lambda item: (0 if item.get("authority") == "official" else 1, 0 if item.get("benchmark_primary_type") else 1, -(item.get("score") or 0.0))
 
 
@@ -99,10 +99,14 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
             if host in SOCIAL_DOMAINS: score += -1.3; reasons.append("forum-social:-1.3")
             if index == 0: score += 0.4; reasons.append("serp-position:+0.4")
             benchmark_hits = len(re.findall(r"\b(benchmark|benchmarks|methodology|throughput|latency|eval|evaluation|head[- ]to[- ]head|comparison|leaderboard|arena)\b", haystack))
-            policy_hits = len(re.findall(r"\b(policy|privacy|retention|training|data usage|data retention|artifact retention|usage data|legal)\b", haystack))
-            docs_hits = len(re.findall(r"\b(docs|documentation|api|reference|sdk|guide|manual|endpoint|quickstart)\b", haystack))
-            pricing_hits = len(re.findall(r"\b(pricing|price|plan|billing|seat|seats)\b", haystack))
-            page_kind = "policy_legal" if any(hint in lowered_url for hint in OFFICIAL_POLICY_PATH_HINTS) else ("docs" if any(hint in lowered_url for hint in OFFICIAL_DOC_PATH_HINTS) else ("pricing" if any(hint in lowered_url for hint in OFFICIAL_PRICING_PATH_HINTS) else ("marketing" if any(hint in lowered_url for hint in MARKETING_PATH_HINTS) else "generic")))
+            policy_hits = len(re.findall(r"\b(policy|privacy|retention|training|data usage|data retention|artifact retention|usage data|legal|terms)\b", haystack))
+            docs_hits = len(re.findall(r"\b(docs|documentation|api|reference|sdk|guide|manual|endpoint|quickstart|integration)\b", haystack))
+            pricing_hits = len(re.findall(r"\b(pricing|price|plan|billing|seat|seats|cost)\b", haystack))
+            official_policy_path = any(hint in lowered_url for hint in OFFICIAL_POLICY_PATH_HINTS)
+            official_docs_path = any(hint in lowered_url for hint in OFFICIAL_DOC_PATH_HINTS)
+            official_pricing_path = any(hint in lowered_url for hint in OFFICIAL_PRICING_PATH_HINTS)
+            marketing_like = any(hint in lowered_url for hint in MARKETING_PATH_HINTS) or any(token in haystack for token in ("summary", "overview", "roundup", "review", "opinion", "marketing"))
+            page_kind = "policy_legal" if official_policy_path else ("docs" if official_docs_path else ("pricing" if official_pricing_path else ("marketing" if marketing_like else "generic")))
             reasons.append(f"page-kind:{page_kind}")
             if benchmark_hits: benchmark_score = min(1.8, benchmark_hits * 0.45); score += benchmark_score; reasons.append(f"benchmark-signal:{benchmark_score:+.1f}")
             policy_branch = any(token in subquery.lower() for token in POLICY_QUERY_MARKERS) or any(token in run.user_query.lower() for token in POLICY_QUERY_MARKERS)
@@ -110,14 +114,14 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
             official_policy_candidate = policy_hits and any(hint in lowered_url for hint in OFFICIAL_POLICY_PATH_HINTS) and any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_POLICY_HOSTS)
             official_doc_candidate = any(hint in lowered_url for hint in OFFICIAL_DOC_PATH_HINTS) and (any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_DOC_HOSTS) or any(marker in host for marker in OFFICIAL_HOST_MARKERS))
             official_pricing_candidate = pricing_hits and any(hint in lowered_url for hint in OFFICIAL_PRICING_PATH_HINTS) and authority in {"official", "primary"}
-            if policy_branch and official_policy_candidate: score += 1.8; reasons.append("policy-primary-path:+1.8")
-            elif policy_branch and page_kind == "marketing" and authority in {"official", "primary"}: score -= 1.0; reasons.append("policy-marketing-penalty:-1.0")
-            elif policy_branch and not official_policy_candidate and authority in {"official", "primary"} and page_kind != "policy_legal": score -= 0.8; reasons.append("policy-wrong-surface:-0.8")
-            elif policy_branch and not official and host not in AGGREGATOR_DOMAINS and host not in SOCIAL_DOMAINS: score -= 0.7; reasons.append("policy-nonofficial:-0.7")
-            if docs_branch and official_doc_candidate: score += 1.8; reasons.append("docs-primary-path:+1.8")
-            elif docs_branch and page_kind == "pricing" and authority in {"official", "primary"}: score -= 0.9; reasons.append("docs-pricing-mismatch:-0.9")
-            elif docs_branch and page_kind == "marketing" and authority in {"official", "primary"}: score -= 1.1; reasons.append("docs-marketing-penalty:-1.1")
-            elif docs_branch and authority in {"official", "primary"} and docs_hits == 0: score -= 0.7; reasons.append("docs-nondoc-surface:-0.7")
+            if policy_branch and official_policy_candidate: score += 2.0; reasons.append("policy-primary-path:+2.0")
+            elif policy_branch and page_kind == "marketing" and authority in {"official", "primary"}: score -= 1.3; reasons.append("policy-marketing-penalty:-1.3")
+            elif policy_branch and not official_policy_candidate and authority in {"official", "primary"} and page_kind != "policy_legal": score -= 1.0; reasons.append("policy-wrong-surface:-1.0")
+            elif policy_branch and not official and host not in AGGREGATOR_DOMAINS and host not in SOCIAL_DOMAINS: score -= 0.9; reasons.append("policy-nonofficial:-0.9")
+            if docs_branch and official_doc_candidate: score += 2.0; reasons.append("docs-primary-path:+2.0")
+            elif docs_branch and page_kind == "pricing" and authority in {"official", "primary"}: score -= 1.1; reasons.append("docs-pricing-mismatch:-1.1")
+            elif docs_branch and page_kind == "marketing" and authority in {"official", "primary"}: score -= 1.3; reasons.append("docs-marketing-penalty:-1.3")
+            elif docs_branch and authority in {"official", "primary"} and docs_hits == 0: score -= 0.9; reasons.append("docs-nondoc-surface:-0.9")
             benchmark_branch = any(token in subquery.lower() for token in ("benchmark", "methodology", "maintainers", "official benchmark"))
             benchmark_primary_type = ""
             if benchmark_branch or benchmark_hits:
@@ -135,7 +139,7 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
             elif comparison_branch and authority in {"official", "primary"} and (official_doc_candidate or official_pricing_candidate or any(token in lowered_url for token in ("/feature", "/features", "/integrations", "/pricing"))): comparison_source_class = "vendor_docs_pricing_matrix"
             elif comparison_branch and benchmark_primary_type in {"vendor_docs", "leaderboard", "paper"}: comparison_source_class = "benchmark_primary"
             elif comparison_branch and benchmark_primary_type == "repo_methodology": comparison_source_class = "maintainer_primary_repo"
-            comparison_bonus = {("feature", "official_compare_page"): 1.2, ("feature", "vendor_docs_pricing_matrix"): 1.0, ("feature", "maintainer_primary_repo"): 0.7, ("benchmark", "benchmark_primary"): 1.2, ("benchmark", "vendor_docs_pricing_matrix"): 0.8, ("benchmark", "maintainer_primary_repo"): 0.9, ("ecosystem", "maintainer_primary_repo"): 1.1, ("ecosystem", "vendor_docs_pricing_matrix"): 0.9, ("ecosystem", "official_compare_page"): 0.8, ("ecosystem", "benchmark_primary"): 0.5}.get((comparison_kind, comparison_source_class), 0.0)
+            comparison_bonus = {("feature", "official_compare_page"): 1.4, ("feature", "vendor_docs_pricing_matrix"): 1.1, ("feature", "maintainer_primary_repo"): 0.8, ("benchmark", "benchmark_primary"): 1.3, ("benchmark", "vendor_docs_pricing_matrix"): 0.9, ("benchmark", "maintainer_primary_repo"): 1.0, ("ecosystem", "maintainer_primary_repo"): 1.2, ("ecosystem", "vendor_docs_pricing_matrix"): 1.0, ("ecosystem", "official_compare_page"): 0.9, ("ecosystem", "benchmark_primary"): 0.5}.get((comparison_kind, comparison_source_class), 0.0)
             if comparison_bonus: score += comparison_bonus; reasons.append(f"comparison-preferred-source:{comparison_source_class}:{comparison_bonus:+.1f}")
             elif comparison_branch and (host in AGGREGATOR_DOMAINS or "review" in haystack or "roundup" in haystack or "opinion" in haystack): score -= 0.9; reasons.append("comparison-roundup-noise:-0.9")
             if benchmark_branch and primary: score += 0.8; reasons.append("primary-benchmark-branch:+0.8")
@@ -146,7 +150,7 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
             if is_duplicate: reasons.append("selection-policy:duplicate-url")
             elif strict_official_query and not official: reasons.append("selection-policy:official-needed")
             elif score < 0.4: reasons.append("selection-policy:low-score")
-            entry = {"title": title or url, "url": url, "snippet": snippet, "score": round(score, 3), "reasons": reasons, "decision": decision, "host": host, "query": subquery, "authority": authority, "benchmark_primary_type": benchmark_primary_type}
+            entry = {"title": title or url, "url": url, "snippet": snippet, "score": round(score, 3), "reasons": reasons, "decision": decision, "host": host, "query": subquery, "authority": authority, "benchmark_primary_type": benchmark_primary_type, "page_kind": page_kind, "comparison_source_class": comparison_source_class}
             page_trace["ranked_sources"].append(entry)
             if entry["decision"] == "selected":
                 ranked_sources.append(entry)
