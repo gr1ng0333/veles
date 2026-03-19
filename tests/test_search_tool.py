@@ -11,6 +11,7 @@ from ouroboros.tools.search import (
     _web_search,
     get_tools,
 )
+from ouroboros.tools.search_transport import run_discovery_transport
 
 
 @pytest.mark.parametrize(
@@ -111,60 +112,6 @@ from ouroboros.tools.search import (
 @patch('ouroboros.tools.search.save_artifact')
 @patch('ouroboros.tools.search._web_search')
 def test_research_run_policy_trace_and_scored_candidates(_web, _save, query, side_effect, expected_intent, expected_policy, expected_subqueries, expected_first_url):
-    with patch.dict('os.environ', {'SERPER_API_KEY': ''}, clear=False), patch('ouroboros.tools.search._search_searxng', return_value={
-        "query": "test",
-        "status": "ok",
-        "backend": "searxng",
-        "sources": [{"title": "A", "url": "https://example.com", "snippet": "x"}],
-        "answer": "",
-        "error": None,
-    }):
-        raw = _web_search(None, 'test')
-        data = json.loads(raw)
-        assert data['status'] == 'ok'
-        assert data['backend'] in {'serper', 'searxng'}
-        assert isinstance(data['sources'], list)
-        assert data['sources'][0]['url'] == 'https://example.com'
-
-    with patch.dict('os.environ', {'SERPER_API_KEY': ''}, clear=False), patch('ouroboros.tools.search._search_searxng', return_value={
-        "query": "test query",
-        "status": "ok",
-        "backend": "searxng",
-        "sources": [
-            {"title": "A", "url": "https://example.com/a", "snippet": "x"},
-            {"title": "A2", "url": "https://example.com/a", "snippet": "dup"},
-            {"title": "Bad", "url": "ftp://bad.example.com", "snippet": "skip"},
-            {"title": "", "url": "https://example.com/b", "snippet": "y"},
-        ],
-        "answer": "",
-        "error": None,
-    }):
-        payload = json.loads(_web_search(None, 'test query'))
-        assert payload['sources'] == [
-            {'url': 'https://example.com/a', 'title': 'A', 'snippet': 'x'},
-            {'url': 'https://example.com/b', 'title': 'https://example.com/b', 'snippet': 'y'},
-        ]
-
-    with patch.dict('os.environ', {'SERPER_API_KEY': ''}, clear=False), patch('ouroboros.tools.search._search_searxng', return_value={
-        "query": "test",
-        "status": "no_results",
-        "backend": "searxng",
-        "sources": [],
-        "answer": "",
-        "error": "empty",
-    }), patch('ouroboros.tools.search._search_openai', return_value={
-        "query": "test",
-        "status": "ok",
-        "backend": "openai",
-        "sources": [{"title": "B", "url": "https://example.com/b", "snippet": "two"}],
-        "answer": "fallback answer",
-        "error": None,
-    }):
-        merged = json.loads(_web_search(None, 'test'))
-    assert merged['status'] == 'degraded'
-    assert merged['backend'] == 'searxng+openai'
-    assert merged['sources'][0]['url'] == 'https://example.com/b'
-
     _web.side_effect = side_effect
     _save.return_value = {"relative_path": "artifacts/outbox/2026/03/17/task/json/research-run.json", "bytes": 123}
 
@@ -187,6 +134,82 @@ def test_research_run_policy_trace_and_scored_candidates(_web, _save, query, sid
     assert data['query_plan']['branch_budget'] == expected_subqueries
     assert any('selected_to_read' in page and 'rejected' in page for page in data['visited_pages'])
     assert any(page['ranked_sources'] for page in data['visited_pages'] if page['source_count'])
+    assert data['transport']['discovery_backend'] == 'serper'
+    assert data['transport']['reading_backend'] == 'urllib'
+    assert isinstance(data['transport']['fallback_backends'], list)
+
+
+@pytest.mark.parametrize(
+    ("serper_result", "searx_result", "openai_result", "expected_backend", "expected_fallback_backend", "expected_event_backends", "expected_trigger", "expected_source_url"),
+    [
+        (
+            {"query": "openai api rate limit", "status": "ok", "backend": "serper", "sources": [{"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official docs"}], "answer": "", "error": None},
+            {"query": "openai api rate limit", "status": "ok", "backend": "searxng", "sources": [{"title": "Fallback", "url": "https://example.com/fallback", "snippet": "fallback"}], "answer": "", "error": None},
+            {"query": "openai api rate limit", "status": "ok", "backend": "openai", "sources": [{"title": "Backup", "url": "https://example.com/openai", "snippet": "backup"}], "answer": "", "error": None},
+            "serper",
+            None,
+            ["serper"],
+            None,
+            "https://platform.openai.com/docs/guides/rate-limits",
+        ),
+        (
+            {"query": "test", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": "Serper returned no usable results."},
+            {"query": "test", "status": "ok", "backend": "searxng", "sources": [{"title": "Fallback", "url": "https://example.com/a", "snippet": "fallback"}], "answer": "", "error": None},
+            {"query": "test", "status": "ok", "backend": "openai", "sources": [{"title": "Backup", "url": "https://example.com/b", "snippet": "backup"}], "answer": "", "error": None},
+            "searxng",
+            "searxng",
+            ["serper", "searxng"],
+            "serper_no_results",
+            "https://example.com/a",
+        ),
+        (
+            {"query": "test", "status": "error", "backend": "serper", "sources": [], "answer": "", "error": "boom"},
+            {"query": "test", "status": "error", "backend": "searxng", "sources": [], "answer": "", "error": "still boom"},
+            {"query": "test", "status": "ok", "backend": "openai", "sources": [{"title": "OpenAI", "url": "https://example.com/b", "snippet": "backup"}], "answer": "", "error": None},
+            "openai",
+            "openai",
+            ["serper", "searxng", "openai"],
+            "searxng_error",
+            "https://example.com/b",
+        ),
+    ],
+)
+def test_web_search_transport_paths(serper_result, searx_result, openai_result, expected_backend, expected_fallback_backend, expected_event_backends, expected_trigger, expected_source_url):
+    query = serper_result['query']
+    payload = run_discovery_transport(
+        query,
+        lambda _query: serper_result,
+        [('searxng', lambda _query: searx_result), ('openai', lambda _query: openai_result)],
+    )
+    assert payload['status'] == 'ok'
+    assert payload['backend'] == expected_backend
+    assert payload['sources'][0]['url'] == expected_source_url
+    assert payload['transport']['discovery_backend'] == 'serper'
+    assert payload['transport']['used_backend'] == expected_backend
+    assert payload['transport']['fallback_backend'] == expected_fallback_backend
+    assert [event['backend'] for event in payload['transport']['events']] == expected_event_backends
+    if expected_trigger is None:
+        assert len(payload['transport']['events']) == 1
+    else:
+        assert payload['transport']['events'][-1]['trigger'] == expected_trigger
+
+
+def test_run_discovery_transport_trace_honesty():
+    payload = run_discovery_transport(
+        'test query',
+        lambda _query: {"status": "error", "sources": [], "answer": "", "error": "serper down"},
+        [
+            ('searxng', lambda _query: {"status": "no_results", "sources": [], "answer": "", "error": "empty"}),
+            ('openai', lambda _query: {"status": "ok", "sources": [{"title": "Backup", "url": "https://example.com/openai", "snippet": "backup"}], "answer": "", "error": None}),
+        ],
+    )
+    assert payload['backend'] == 'openai'
+    assert payload['transport']['discovery_backend'] == 'serper'
+    assert payload['transport']['used_backend'] == 'openai'
+    assert payload['transport']['fallback_backend'] == 'openai'
+    assert [event['backend'] for event in payload['transport']['events']] == ['serper', 'searxng', 'openai']
+    assert payload['transport']['events'][1]['trigger'] == 'serper_error'
+    assert payload['transport']['events'][2]['trigger'] == 'searxng_no_results'
 
 
 QUERY_CASES = [

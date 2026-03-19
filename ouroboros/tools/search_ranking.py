@@ -30,32 +30,6 @@ COMPARISON_ECOSYSTEM_MARKERS = ("ecosystem", "tooling", "workflow", "integration
 READING_PRIORITY = lambda item: (0 if item.get("authority") == "official" else 1, 0 if item.get("benchmark_primary_type") else 1, -(item.get("score") or 0.0))
 
 
-def source_authority(host: str, require_official: bool, url: str = "", query: str = "") -> tuple[str, float, list[str]]:
-    authority, score, reasons = "secondary", 0.0, []
-    lowered_url, lowered_query = str(url or "").lower(), str(query or "").lower()
-    official_host = any(marker in host for marker in OFFICIAL_HOST_MARKERS) or any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_DOC_HOSTS)
-    official_doc_host = any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_DOC_HOSTS)
-    official_doc_path = any(hint in lowered_url for hint in OFFICIAL_DOC_PATH_HINTS)
-    official_pricing_path = any(hint in lowered_url for hint in OFFICIAL_PRICING_PATH_HINTS)
-    policy_sensitive = any(marker in lowered_query for marker in POLICY_QUERY_MARKERS)
-    docs_sensitive = any(marker in lowered_query for marker in DOC_QUERY_MARKERS)
-    official_policy_host = any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_POLICY_HOSTS)
-    official_policy_path = any(hint in lowered_url for hint in OFFICIAL_POLICY_PATH_HINTS)
-    if require_official and policy_sensitive and official_policy_host and official_policy_path:
-        authority, score, reasons = "official", 3.6, ["official-source", "official-policy-path"]
-    elif require_official and docs_sensitive and (official_doc_host or (official_host and official_doc_path)) and official_doc_path:
-        authority, score, reasons = "official", 3.4, ["official-source", "official-doc-path"]
-    elif require_official and official_host and official_doc_path:
-        authority, score, reasons = "official", 3.0, ["official-source", "official-doc-path"]
-    elif require_official and official_policy_host and official_pricing_path and "pricing" in lowered_query:
-        authority, score, reasons = "official", 3.1, ["official-source", "official-pricing-path"]
-    elif any(token in host for token in PRIMARY_HOST_MARKERS):
-        authority, score, reasons = "primary", 2.0, ["primary-source"]
-    elif host in SOCIAL_DOMAINS:
-        authority, score, reasons = "community", -0.6, ["community-source"]
-    return authority, score, reasons
-
-
 def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, detect_contradictions_fn: Any) -> List[Dict[str, Any]]:
     policy, budget = run.intent_policy, run.budget_profile
     query_terms = {term for term in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9_-]+", run.user_query.lower()) if len(term) > 2}
@@ -66,11 +40,37 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
         result = web_search_fn(subquery)
         sources = list(result.get("sources") or [])[:5]
         run.budget_trace["search_calls"] += 1
-        page_trace = {"query": subquery, "status": result.get("status"), "backend": result.get("backend"), "source_count": len(sources), "intent_type": run.intent_type, "policy": policy, "ranked_sources": [], "selected_to_read": [], "rejected": []}
+        transport = dict(result.get("transport") or {})
+        page_trace = {"query": subquery, "status": result.get("status"), "backend": result.get("backend"), "source_count": len(sources), "intent_type": run.intent_type, "policy": policy, "transport": transport, "ranked_sources": [], "selected_to_read": [], "rejected": []}
+        run.transport.setdefault("events", []).extend([event for event in transport.get("events", []) if event not in run.transport.get("events", [])])
+        if transport.get("fallback_backend") and transport.get("fallback_backend") not in (run.transport.get("fallback_backends") or []):
+            run.transport.setdefault("fallback_backends", []).append(transport.get("fallback_backend"))
+            run.transport["fallback_backend"] = transport.get("fallback_backend")
         for index, source in enumerate(sources):
             url = str(source.get("url") or "").strip(); lowered_url = url.lower(); host_match = re.match(r"https?://([^/]+)", lowered_url)
             host = (host_match.group(1) if host_match else "").lstrip("www."); title = str(source.get("title") or "").strip(); snippet = str(source.get("snippet") or "").strip(); haystack = f"{title} {snippet} {url}".lower(); score = 0.0; reasons: List[str] = []
-            authority, authority_score, authority_reasons = source_authority(host, policy["require_official_source"], url, run.user_query); official = authority == "official"; primary = authority in {"official", "primary"}
+            lowered_query = run.user_query.lower(); authority, authority_score, authority_reasons = "secondary", 0.0, []
+            official_host = any(marker in host for marker in OFFICIAL_HOST_MARKERS) or any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_DOC_HOSTS)
+            official_doc_host = any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_DOC_HOSTS)
+            official_doc_path = any(hint in lowered_url for hint in OFFICIAL_DOC_PATH_HINTS)
+            official_pricing_path = any(hint in lowered_url for hint in OFFICIAL_PRICING_PATH_HINTS)
+            policy_sensitive = any(marker in lowered_query for marker in POLICY_QUERY_MARKERS)
+            docs_sensitive = any(marker in lowered_query for marker in DOC_QUERY_MARKERS)
+            official_policy_host = any(host == domain or host.endswith(f".{domain}") for domain in OFFICIAL_POLICY_HOSTS)
+            official_policy_path = any(hint in lowered_url for hint in OFFICIAL_POLICY_PATH_HINTS)
+            if policy["require_official_source"] and policy_sensitive and official_policy_host and official_policy_path:
+                authority, authority_score, authority_reasons = "official", 3.6, ["official-source", "official-policy-path"]
+            elif policy["require_official_source"] and docs_sensitive and (official_doc_host or (official_host and official_doc_path)) and official_doc_path:
+                authority, authority_score, authority_reasons = "official", 3.4, ["official-source", "official-doc-path"]
+            elif policy["require_official_source"] and official_host and official_doc_path:
+                authority, authority_score, authority_reasons = "official", 3.0, ["official-source", "official-doc-path"]
+            elif policy["require_official_source"] and official_policy_host and official_pricing_path and "pricing" in lowered_query:
+                authority, authority_score, authority_reasons = "official", 3.1, ["official-source", "official-pricing-path"]
+            elif any(token in host for token in PRIMARY_HOST_MARKERS):
+                authority, authority_score, authority_reasons = "primary", 2.0, ["primary-source"]
+            elif host in SOCIAL_DOMAINS:
+                authority, authority_score, authority_reasons = "community", -0.6, ["community-source"]
+            official = authority == "official"; primary = authority in {"official", "primary"}
             if authority_score: score += authority_score; reasons.extend(authority_reasons)
             if authority == "community": reasons.append("retelling-or-community")
             domain_bonus = next((value / 10.0 for domain, value in DOMAIN_SCORES.items() if host == domain or host.endswith(f".{domain}")), 0.0)
@@ -159,6 +159,7 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
             if not ranked_entry:
                 continue
             read_result = read_page_fn(run.user_query, ranked_entry)
+            read_result.setdefault("transport", {"reading_backend": run.transport.get("reading_backend", "urllib"), "discovery_backend": page_trace.get("transport", {}).get("used_backend") or page_trace.get("backend")})
             page_trace["read_results"].append(read_result)
             page_trace["budget"]["browse_depth_used"] += 1
             run.budget_trace["pages_read"] += 1

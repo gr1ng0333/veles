@@ -8,11 +8,13 @@ import logging
 import os
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 from ouroboros.artifacts import save_artifact
+from ouroboros.llm import LLMClient
 from ouroboros.tools.search_ranking import DOC_QUERY_MARKERS, POLICY_QUERY_MARKERS, READING_PRIORITY, collect_research_sources
+from ouroboros.tools.search_transport import READING_BACKEND, run_discovery_transport
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
@@ -21,8 +23,26 @@ SERPER_DEFAULT_URL = "https://google.serper.dev/search"
 MAX_RESULTS = 5
 DEFAULT_INTENT = "background_explainer"
 MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS = 6, 6, 2, 1
-clean_sources = lambda items: [{"title": title, "url": url, "snippet": snippet} for title, url, snippet in [(str((item or {}).get("title") or (item or {}).get("url") or "").strip(), str((item or {}).get("url") or "").strip(), str((item or {}).get("snippet") or (item or {}).get("content") or "").strip()) for item in (items or []) if isinstance(item, dict) and str(item.get("url") or "").strip().startswith(("http://", "https://"))] if url]
-NEUTRALIZE_TEXT = lambda text: re.sub(r"\s+", " ", html.unescape(str(text or "")).replace(" ", " ")).strip()
+
+
+def clean_sources(items):
+    cleaned, seen = [], set()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")) or url in seen:
+            continue
+        seen.add(url)
+        cleaned.append({
+            "title": str(item.get("title") or "").strip() or url,
+            "url": url,
+            "snippet": str(item.get("snippet") or item.get("content") or "").strip(),
+        })
+    return cleaned
+
+_normalize_text_block = lambda text: re.sub(r"\s+", " ", html.unescape(str(text or "")).replace(" ", " ")).strip()
+
 @dataclass(frozen=True)
 class IntentPolicy:
     freshness_priority: str
@@ -205,6 +225,7 @@ class ResearchRun:
     budget_mode: str = "balanced"
     budget_limits: Dict[str, Any] = field(default_factory=dict)
     budget_trace: Dict[str, Any] = field(default_factory=dict)
+    transport: Dict[str, Any] = field(default_factory=dict)
 def _detect_contradictions(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     numeric_findings, status_findings = [], []
     for finding in findings:
@@ -258,11 +279,11 @@ def _render_synthesis(run: ResearchRun, policy: IntentPolicy) -> None:
         if not source_url or source_url in seen_source_urls:
             continue
         seen_source_urls.add(source_url)
-        unique_source_rows.append({"url": source_url, "source_type": str(finding.get("source_type") or "page").strip() or "page", "observed_at": str(finding.get("observed_at") or "").strip(), "claim": NEUTRALIZE_TEXT(str(finding.get("claim") or "").strip()), "evidence_snippet": NEUTRALIZE_TEXT(str(finding.get("evidence_snippet") or "").strip()), "authority": source_authority_map.get(source_url, "secondary")})
+        unique_source_rows.append({"url": source_url, "source_type": str(finding.get("source_type") or "page").strip() or "page", "observed_at": str(finding.get("observed_at") or "").strip(), "claim": _normalize_text_block(str(finding.get("claim") or "").strip()), "evidence_snippet": _normalize_text_block(str(finding.get("evidence_snippet") or "").strip()), "authority": source_authority_map.get(source_url, "secondary")})
     key_finding_rows = []
     for finding in ranked_findings[:4]:
-        claim = NEUTRALIZE_TEXT(str(finding.get("claim") or "").strip())
-        evidence = NEUTRALIZE_TEXT(str(finding.get("evidence_snippet") or "").strip())
+        claim = _normalize_text_block(str(finding.get("claim") or "").strip())
+        evidence = _normalize_text_block(str(finding.get("evidence_snippet") or "").strip())
         source_url = str(finding.get("source_url") or "").strip()
         if claim and evidence and source_url:
             key_finding_rows.append({"claim": claim, "evidence_snippet": evidence, "source_url": source_url, "source_type": str(finding.get("source_type") or "page").strip() or "page", "observed_at": str(finding.get("observed_at") or "").strip(), "confidence_local": str(finding.get("confidence_local") or "low"), "authority": source_authority_map.get(source_url, "secondary")})
@@ -500,129 +521,65 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_
     run.answer_mode = output_mode_override if output_mode_override in {"short_factual", "analyst_memo", "comparison_brief", "timeline"} else mode_by_intent.get(run.intent_type, "short_factual")
     _render_synthesis(run, policy)
 
-def _search_searxng(query: str) -> Optional[Dict[str, Any]]:
-    url = os.environ.get("SEARXNG_URL", SEARXNG_DEFAULT)
-    if not url:
-        return None
-    try:
-        import urllib.parse
-        import urllib.request
-
-        params = urllib.parse.urlencode({"q": query, "format": "json"})
-        req = urllib.request.Request(f"{url}/search?{params}", headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        sources = clean_sources(
-            [{"title": row.get("title", ""), "url": row.get("url", ""), "content": row.get("content", "")} for row in data.get("results", [])[:MAX_RESULTS]]
-        )
-        if not sources:
-            return {"query": query, "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": "SearXNG returned no usable results."}
-        return {"query": query, "status": "ok", "backend": "searxng", "sources": sources, "answer": "", "error": None}
-    except Exception as exc:
-        log.warning("SearXNG search failed: %s", exc)
-        return None
-
-def _search_openai(query: str) -> Dict[str, Any]:
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        return {
-            "query": query,
-            "status": "error",
-            "backend": "unavailable",
-            "sources": [],
-            "answer": "",
-            "error": "Neither Serper/SearXNG nor OPENAI_API_KEY available.",
-        }
-    try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=api_key)
-        resp = client.responses.create(
-            model=os.environ.get("OUROBOROS_WEBSEARCH_MODEL", "gpt-5"),
-            tools=[{"type": "web_search"}],
-            tool_choice="auto",
-            input=query,
-        )
-        resp_dump = resp.model_dump()
-        text_parts: List[str] = []
-        sources: List[Dict[str, str]] = []
-        seen_urls: set[str] = set()
-        for item in resp_dump.get("output", []) or []:
-            if item.get("type") != "message":
-                continue
-            for block in item.get("content", []) or []:
-                if block.get("type") not in ("output_text", "text"):
-                    continue
-                text_value = str(block.get("text") or "")
-                if text_value:
-                    text_parts.append(text_value)
-                for ann in block.get("annotations") or []:
-                    url = str(
-                        ann.get("url")
-                        or ann.get("source", {}).get("url")
-                        or ann.get("webpage", {}).get("url")
-                        or ""
-                    ).strip()
-                    if not url or url in seen_urls:
-                        continue
-                    sources.append(
-                        {
-                            "title": str(
-                                ann.get("title")
-                                or ann.get("source", {}).get("title")
-                                or ann.get("webpage", {}).get("title")
-                                or url
-                            ).strip()
-                            or url,
-                            "url": url,
-                            "snippet": str(ann.get("text") or ann.get("quote") or "").strip(),
-                        }
-                    )
-                    seen_urls.add(url)
-        answer = "\n\n".join(part for part in text_parts if part).strip()
-        if not sources and answer:
-            for url in re.findall(r"https?://\S+", answer):
-                clean_url = url.rstrip(").,;]\"'")
-                if clean_url in seen_urls:
-                    continue
-                sources.append(
-                    {
-                        "title": clean_url,
-                        "url": clean_url,
-                        "snippet": "Extracted from model response text.",
-                    }
-                )
-                seen_urls.add(clean_url)
-                if len(sources) >= MAX_RESULTS:
-                    break
-        sources = clean_sources(sources)
-        return {
-            "query": query,
-            "status": "ok" if (answer or sources) else "no_results",
-            "backend": "openai",
-            "sources": sources,
-            "answer": answer,
-            "error": None if (answer or sources) else "OpenAI web search returned empty output.",
-        }
-    except Exception as exc:
-        return {
-            "query": query,
-            "status": "error",
-            "backend": "openai",
-            "sources": [],
-            "answer": "",
-            "error": repr(exc),
-        }
-
 def _web_search(ctx: ToolContext, query: str) -> str:
     del ctx
-    primary = None
-    api_key = os.environ.get("SERPER_API_KEY", "").strip()
-    if api_key:
+    def run_backend(name: str, q: str) -> Dict[str, Any]:
+        if name == "searxng":
+            if not SEARXNG_DEFAULT:
+                return {"query": q, "status": "error", "backend": "searxng", "sources": [], "answer": "", "error": "SEARXNG_URL missing."}
+            try:
+                import urllib.parse
+                import urllib.request
+
+                params = urllib.parse.urlencode({"q": q, "format": "json", "language": "ru", "safesearch": 0})
+                url = f"{SEARXNG_DEFAULT.rstrip('/')}/search?{params}"
+                req = urllib.request.Request(url, headers={"Accept": "application/json"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+                return {"query": q, "status": "ok", "backend": "searxng", "sources": clean_sources(data.get("results", [])), "answer": "", "error": None}
+            except Exception as exc:
+                log.warning("SearXNG search failed: %s", exc)
+                return {"query": q, "status": "error", "backend": "searxng", "sources": [], "answer": "", "error": repr(exc)}
+        if name == "openai":
+            if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")):
+                return {"query": q, "status": "error", "backend": "openai", "sources": [], "answer": "", "error": "Web search backend unavailable: no OPENAI_API_KEY or OPENROUTER_API_KEY configured."}
+            client = LLMClient()
+            model = os.environ.get("WEB_SEARCH_MODEL", "openai/gpt-4.1-mini")
+            prompt = (
+                "Search the web and answer the user query. Return JSON with keys: answer, sources. "
+                "sources must be a list of objects with title, url, snippet. Only include real URLs."
+            )
+            msg, _usage = client.chat(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": q},
+                ],
+                model=model,
+                max_tokens=1200,
+                tools=None,
+                reasoning_effort="low",
+            )
+            payload: Dict[str, Any] = {}
+            content = msg.get("content")
+            if isinstance(content, str):
+                try:
+                    payload = json.loads(content)
+                except Exception:
+                    payload = {"answer": content.strip(), "sources": []}
+            elif isinstance(content, list):
+                text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+                try:
+                    payload = json.loads(text)
+                except Exception:
+                    payload = {"answer": text.strip(), "sources": []}
+            return {"query": q, "status": "ok", "backend": "openai", "sources": clean_sources(payload.get("sources", [])), "answer": str(payload.get("answer") or "").strip(), "error": None}
+        api_key = os.environ.get("SERPER_API_KEY", "").strip()
+        if not api_key:
+            return {"query": q, "status": "error", "backend": "serper", "sources": [], "answer": "", "error": "SERPER_API_KEY missing."}
         try:
             import urllib.request
 
-            payload = json.dumps({"q": query, "num": MAX_RESULTS}).encode("utf-8")
+            payload = json.dumps({"q": q, "num": MAX_RESULTS}).encode("utf-8")
             req = urllib.request.Request(
                 os.environ.get("SERPER_URL", SERPER_DEFAULT_URL),
                 data=payload,
@@ -634,8 +591,8 @@ def _web_search(ctx: ToolContext, query: str) -> str:
             organic = data.get("organic") or []
             answer_box = data.get("answerBox") or {}
             knowledge_graph = data.get("knowledgeGraph") or {}
-            primary = {
-                "query": query,
+            result = {
+                "query": q,
                 "status": "ok",
                 "backend": "serper",
                 "sources": clean_sources([
@@ -651,63 +608,20 @@ def _web_search(ctx: ToolContext, query: str) -> str:
                 ),
                 "error": None,
             }
-            if not primary["sources"] and not primary["answer"]:
-                primary = {"query": query, "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": "Serper returned no usable results."}
+            if not result["sources"] and not result["answer"]:
+                result.update({"status": "no_results", "error": "Serper returned no usable results."})
+            return result
         except Exception as exc:
             log.warning("Serper search failed: %s", exc)
-    if primary is None:
-        primary = _search_searxng(query)
-    if primary is None:
-        return json.dumps(_search_openai(query), ensure_ascii=False, indent=2)
-    primary_sources: List[Dict[str, str]] = []
-    seen_urls: set[str] = set()
-    for item in primary.get("sources") or []:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or "").strip()
-        if not url.startswith(("http://", "https://")) or url in seen_urls:
-            continue
-        seen_urls.add(url)
-        primary_sources.append({"title": str(item.get("title") or url).strip() or url, "url": url, "snippet": str(item.get("snippet") or item.get("content") or "").strip()})
-        if len(primary_sources) >= MAX_RESULTS:
-            break
-    if primary_sources and str(primary.get("status") or "") == "ok":
-        primary["sources"] = primary_sources
-        return json.dumps(primary, ensure_ascii=False, indent=2)
-    fallback = _search_openai(query)
-    merged_sources: List[Dict[str, str]] = []
-    seen_urls = set()
-    for bucket in (primary.get("sources") or [], fallback.get("sources") or []):
-        for item in bucket:
-            if not isinstance(item, dict):
-                continue
-            url = str(item.get("url") or "").strip()
-            if not url.startswith(("http://", "https://")) or url in seen_urls:
-                continue
-            seen_urls.add(url)
-            merged_sources.append({"title": str(item.get("title") or url).strip() or url, "url": url, "snippet": str(item.get("snippet") or item.get("content") or "").strip()})
-            if len(merged_sources) >= MAX_RESULTS:
-                break
-        if len(merged_sources) >= MAX_RESULTS:
-            break
-    answer = "\n\n".join(
-        part for part in (str(primary.get("answer") or "").strip(), str(fallback.get("answer") or "").strip()) if part
-    )
-    error = " | ".join(
-        part for part in (str(primary.get("error") or "").strip(), str(fallback.get("error") or "").strip()) if part
-    ) or None
-    if merged_sources:
-        status = "degraded" if primary.get("status") != "ok" or fallback.get("status") == "error" else "ok"
-    else:
-        status = "error" if "error" in {str(primary.get("status") or ""), str(fallback.get("status") or "")} else "no_results"
-    return json.dumps({
-        "query": query,
-        "status": status,
-        "backend": f"{primary.get('backend', 'unknown')}+{fallback.get('backend', 'unknown')}",
-        "sources": merged_sources,
-        "answer": answer,
-        "error": error,
-    }, ensure_ascii=False, indent=2)
+            return {"query": q, "status": "error", "backend": "serper", "sources": [], "answer": "", "error": repr(exc)}
+
+    result = run_discovery_transport(query, lambda q: run_backend("serper", q), (("searxng", lambda q: run_backend("searxng", q)), ("openai", lambda q: run_backend("openai", q))))
+    result["sources"] = clean_sources(result.get("sources", []))
+    transport = dict(result.get("transport") or {})
+    if transport:
+        transport["reading_backend"] = transport.get("reading_backend")
+        result["transport"] = transport
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", output_mode: str | None = None, freshness_bias: str | None = None) -> str:
     run = ResearchRun(user_query=str(query or "").strip())
@@ -729,6 +643,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     policy = asdict(policy_obj)
     run.intent_policy = policy
     run.budget_profile = budget
+    run.transport = {"discovery_backend": "serper", "reading_backend": READING_BACKEND, "fallback_backend": None, "fallback_backends": [], "events": []}
     plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)
     run.subqueries = list(plan.subqueries)
     run.query_plan = asdict(plan)
