@@ -71,9 +71,6 @@ class ToolContext:
     def drive_path(self, rel: str) -> pathlib.Path:
         return (self.drive_root / safe_relpath(rel)).resolve()
 
-    def drive_logs(self) -> pathlib.Path:
-        return (self.drive_root / "logs").resolve()
-
     def checkpoint(self, stage: str, *, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Check whether the active task has been superseded or interrupted by a new owner message."""
         notes: List[str] = []

@@ -51,7 +51,7 @@ def _schedule_task(ctx: ToolContext, description: str, context: str = "", parent
     if getattr(ctx, 'is_direct_chat', False):
         from ouroboros.utils import append_jsonl
         try:
-            append_jsonl(ctx.drive_logs() / "events.jsonl", {
+            append_jsonl(ctx.drive_path("logs") / "events.jsonl", {
                 "ts": utc_now_iso(),
                 "type": "schedule_task_from_direct_chat",
                 "description": description[:200],
@@ -120,7 +120,7 @@ def _send_owner_message(ctx: ToolContext, text: str, reason: str = "") -> str:
         "is_progress": False,
         "ts": utc_now_iso(),
     })
-    append_jsonl(ctx.drive_logs() / "events.jsonl", {
+    append_jsonl(ctx.drive_path("logs") / "events.jsonl", {
         "ts": utc_now_iso(),
         "type": "proactive_message",
         "reason": reason,
