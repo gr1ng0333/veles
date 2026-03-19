@@ -330,18 +330,25 @@ def _render_synthesis(run: ResearchRun, policy: IntentPolicy) -> None:
 
 def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SUBQUERIES, freshness_priority_override: str | None = None) -> QueryPlan:
     base = re.sub(r"\s+", " ", str(query or "").strip())
-    policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT]); comparison_benchmark = bool(intent_type == "comparison_evaluation" and re.search(r"\b(benchmark|latency|throughput|eval|evaluation|head[- ]?to[- ]?head|leaderboard|arena)\b", base.lower())); policy_sensitive = bool(re.search(r"\b(policy|privacy|retention|data usage|data retention|artifact retention|training)\b", base.lower())); docs_sensitive = bool(re.search(r"\b(docs|documentation|api|reference|sdk|guide|quickstart|manual|endpoint|rate limit)\b", base.lower()))
+    lowered = base.lower()
+    policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT]); comparison_benchmark = bool(intent_type == "comparison_evaluation" and re.search(r"\b(benchmark|latency|throughput|eval|evaluation|head[- ]?to[- ]?head|leaderboard|arena)\b", lowered)); comparison_ecosystem = bool(intent_type == "comparison_evaluation" and re.search(r"\b(ecosystem|tooling|workflow|integration|integrations|maintainer|plugin|extension|community)\b", lowered)); policy_sensitive = bool(re.search(r"\b(policy|privacy|retention|data usage|data retention|artifact retention|training|legal|terms)\b", lowered)); docs_sensitive = bool(re.search(r"\b(docs|documentation|api|reference|sdk|guide|quickstart|manual|endpoint|rate limit)\b", lowered))
     freshness_priority = freshness_priority_override if freshness_priority_override in {"low", "medium", "high"} else policy.freshness_priority
     freshness_suffix = {
         "high": "latest updates",
         "medium": "recent",
         "low": "overview",
     }[freshness_priority]
-    official_suffix = "official benchmark methodology maintainers" if comparison_benchmark else ("official policy data usage retention privacy docs" if policy_sensitive else ("official docs api reference vendor documentation" if docs_sensitive or policy.require_official_source else "official source"))
+    vendor_hints = [hint for needle, hint in (("openai", "platform.openai.com openai"), ("anthropic", "docs.anthropic.com anthropic"), ("github actions", "docs.github.com github actions"), ("github", "docs.github.com github"), ("cursor", "docs.cursor.com cursor"), ("huggingface", "huggingface docs huggingface")) if needle in lowered]
+    vendor_hint = " ".join(dict.fromkeys(vendor_hints))
+    official_suffix = "official benchmark methodology maintainers" if comparison_benchmark else ("official policy data usage retention privacy docs" if policy_sensitive else ((f"{vendor_hint} official docs api reference vendor documentation".strip()) if docs_sensitive or policy.require_official_source else "official source"))
+    if comparison_ecosystem:
+        official_suffix = f"{vendor_hint} official docs integrations maintainer repo pricing".strip() or "official docs integrations maintainer repo pricing"
+    elif intent_type == "comparison_evaluation" and not comparison_benchmark:
+        official_suffix = f"{vendor_hint} official compare pricing feature matrix vendor docs".strip() or "official compare pricing feature matrix vendor docs"
     alternative_suffix = {
-        "comparison_evaluation": "tradeoffs benchmark methodology independent results",
+        "comparison_evaluation": "tradeoffs benchmark methodology independent results" if comparison_benchmark else ("integrations plugin maintainer repo workflow docs" if comparison_ecosystem else "tradeoffs official compare pricing feature matrix"),
         "breaking_news": "timeline and reactions",
-        "product_docs_api_lookup": "reference guide vendor documentation api reference" if not policy_sensitive else "privacy policy data retention help center official guidance",
+        "product_docs_api_lookup": ((f"{vendor_hint} reference guide vendor documentation api reference".strip()) if not policy_sensitive else (f"{vendor_hint} privacy policy data retention help center official guidance".strip())),
         "people_company_ecosystem_tracking": "ecosystem map",
         "fact_lookup": "exact value reference",
         "background_explainer": "overview",
@@ -350,7 +357,7 @@ def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SU
         "breaking_news": "conflicting reports",
         "fact_lookup": "contradicting value",
         "product_docs_api_lookup": "limitations exceptions" if not policy_sensitive else "conflicting policy statement retention training opt out",
-        "comparison_evaluation": "benchmark disagreement counterarguments",
+        "comparison_evaluation": "benchmark disagreement counterarguments" if comparison_benchmark else "counterarguments maintainer disagreements",
         "people_company_ecosystem_tracking": "controversy changes",
         "background_explainer": "common misconceptions",
     }.get(intent_type, "contradictions")
@@ -744,7 +751,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
                 run.uncertainty_notes = [*(run.uncertainty_notes or []), note]
             raise TimeoutError(timeout_info["type"])
         selected_limit = max(policy["min_sources_before_synthesis"], min(budget.max_pages_read, len(ranked_sources)))
-        run.candidate_sources = [{"title": item.get("title") or item.get("url"), "url": item.get("url"), "snippet": item.get("snippet", ""), "score": item.get("score"), "authority": item.get("authority", "unknown"), "benchmark_primary_type": item.get("benchmark_primary_type", ""), "reasons": list(item.get("reasons") or []), "decision": item.get("decision", "selected"), "query": item.get("query", ""), "host": item.get("host", "")} for item in ranked_sources[:selected_limit] if item.get("url")]
+        run.candidate_sources = [{"title": item.get("title") or item.get("url"), "url": item.get("url"), "snippet": item.get("snippet", ""), "score": item.get("score"), "authority": item.get("authority", "unknown"), "benchmark_primary_type": item.get("benchmark_primary_type", ""), "comparison_source_class": item.get("comparison_source_class", ""), "page_kind": item.get("page_kind", "generic"), "reasons": list(item.get("reasons") or []), "decision": item.get("decision", "selected"), "query": item.get("query", ""), "host": item.get("host", "")} for item in ranked_sources[:selected_limit] if item.get("url")]
         deduped_findings: List[Dict[str, Any]] = []
         seen_finding_keys: set[str] = set()
         for finding in run.findings:

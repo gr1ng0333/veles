@@ -827,10 +827,10 @@ def test_policy_data_usage_prefers_official_policy_paths(_web, _fetch, _save):
     data = json.loads(_research_run(Ctx(), query))
     assert data['intent_type'] == 'product_docs_api_lookup'
     assert data['intent_policy']['require_official_source'] is True
-    assert data['query_plan']['official_docs_query'].endswith('official policy data usage retention privacy docs')
+    assert 'official policy data usage retention privacy docs' in data['query_plan']['official_docs_query']
     assert data['candidate_sources'][0]['url'].startswith('https://openai.com/policies/')
     assert data['candidate_sources'][0]['authority'] == 'official'
-    assert any('official-policy-path' in reason or 'policy-primary-path:+1.8' in reason for reason in data['candidate_sources'][0]['reasons'])
+    assert any('official-policy-path' in reason or 'policy-primary-path:+2.0' in reason for reason in data['candidate_sources'][0]['reasons'])
     assert all(item['authority'] == 'official' for item in data['candidate_sources'])
 
 
@@ -922,6 +922,95 @@ def test_comparison_preferred_source_upgrade_rewards_vendor_compare_pages(_web, 
     medium_entry = next(item for item in data['visited_pages'][0]['ranked_sources'] if item['url'] == 'https://medium.com/@dev/copilot-vs-cursor')
     assert 'comparison-roundup-noise:-0.9' in medium_entry['reasons']
 
+
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_docs_query_rewriting_uses_vendor_hint_and_trace_page_kind(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    query = 'Find official GitHub Actions matrix strategy docs'
+    _web.side_effect = [
+        json.dumps({
+            "query": query,
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "GitHub blog", "url": "https://github.blog/changelog/matrix-strategy", "snippet": "matrix strategy summary"},
+                {"title": "GitHub docs", "url": "https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs", "snippet": "official docs matrix strategy reference"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({"query": f"{query} recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} docs.github.com github actions official docs api reference vendor documentation", "status": "ok", "backend": "serper", "sources": [{"title": "GitHub docs", "url": "https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs", "snippet": "official docs matrix strategy reference"}], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} docs.github.com github actions reference guide vendor documentation api reference", "status": "ok", "backend": "serper", "sources": [{"title": "GitHub reference", "url": "https://docs.github.com/en/actions/learn-github-actions/contexts", "snippet": "reference docs contexts matrix"}], "answer": "", "error": None}),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs", "status": "ok", "content_type": "text/html", "text_preview": "docs", "relevant_sections": ["docs"], "findings": [{"claim": "GitHub documents matrix strategy in official Actions docs.", "evidence_snippet": "The docs show how to define a matrix strategy.", "source_url": "https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs", "source_type": "docs", "observed_at": "2026-03-19", "confidence_local": "high"}], "error": None},
+        {"url": "https://docs.github.com/en/actions/learn-github-actions/contexts", "status": "ok", "content_type": "text/html", "text_preview": "reference", "relevant_sections": ["reference"], "findings": [{"claim": "GitHub reference docs cover contexts used with matrix workflows.", "evidence_snippet": "The reference explains contexts relevant to matrix usage.", "source_url": "https://docs.github.com/en/actions/learn-github-actions/contexts", "source_type": "docs", "observed_at": "2026-03-19", "confidence_local": "medium"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-docs-vendor-rewrite'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    assert 'docs.github.com github actions' in data['query_plan']['official_docs_query']
+    ranked = {}
+    for page in data['visited_pages']:
+        for item in page.get('ranked_sources', []):
+            ranked[item['url']] = item
+    assert ranked['https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs']['page_kind'] == 'docs'
+    assert any('docs-primary-path:+2.0' in reason for reason in ranked['https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs']['reasons'])
+    assert ranked['https://github.blog/changelog/matrix-strategy']['decision'] == 'reject'
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_comparison_ecosystem_trace_exposes_preferred_source_class(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    query = 'Compare GitHub Copilot vs Cursor ecosystem integrations and tooling'
+    _web.side_effect = [
+        json.dumps({
+            "query": query,
+            "status": "ok",
+            "backend": "serper",
+            "sources": [
+                {"title": "Roundup", "url": "https://example.com/copilot-cursor-roundup", "snippet": "ecosystem roundup opinions"},
+                {"title": "GitHub Copilot extensions", "url": "https://docs.github.com/en/copilot/how-tos/personal-settings/configure-github-copilot-in-your-environment", "snippet": "official docs integrations extensions tooling"},
+                {"title": "Cursor docs", "url": "https://docs.cursor.com/get-started/overview", "snippet": "official docs workflow integrations overview"},
+                {"title": "Open source repo", "url": "https://github.com/openai/evals", "snippet": "maintainer repo methodology tooling"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({"query": f"{query} recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} docs.cursor.com cursor official docs integrations maintainer repo pricing", "status": "ok", "backend": "serper", "sources": [{"title": "Cursor docs", "url": "https://docs.cursor.com/get-started/overview", "snippet": "official docs workflow integrations overview"}], "answer": "", "error": None}),
+        json.dumps({"query": f"{query} integrations plugin maintainer repo workflow docs", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
+    ]
+    _fetch.side_effect = [
+        {"url": "https://docs.github.com/en/copilot/how-tos/personal-settings/configure-github-copilot-in-your-environment", "status": "ok", "content_type": "text/html", "text_preview": "copilot", "relevant_sections": ["copilot"], "findings": [{"claim": "GitHub documents Copilot environment integration paths in official docs.", "evidence_snippet": "The docs explain integration setup in developer environments.", "source_url": "https://docs.github.com/en/copilot/how-tos/personal-settings/configure-github-copilot-in-your-environment", "source_type": "docs", "observed_at": "2026-03-19", "confidence_local": "high"}], "error": None},
+        {"url": "https://docs.cursor.com/get-started/overview", "status": "ok", "content_type": "text/html", "text_preview": "cursor", "relevant_sections": ["cursor"], "findings": [{"claim": "Cursor describes its workflow and integration surface in vendor docs.", "evidence_snippet": "The docs describe workflow concepts and integration surface.", "source_url": "https://docs.cursor.com/get-started/overview", "source_type": "docs", "observed_at": "2026-03-19", "confidence_local": "high"}], "error": None},
+    ]
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-comparison-ecosystem-trace'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), query))
+    ranked = {}
+    for page in data['visited_pages']:
+        for item in page.get('ranked_sources', []):
+            ranked[item['url']] = item
+    assert 'docs.cursor.com cursor official docs integrations maintainer repo pricing' in data['query_plan']['official_docs_query']
+    assert ranked['https://docs.cursor.com/get-started/overview']['comparison_source_class'] == 'vendor_docs_pricing_matrix'
+    assert ranked['https://docs.github.com/en/copilot/how-tos/personal-settings/configure-github-copilot-in-your-environment']['comparison_source_class'] == 'vendor_docs_pricing_matrix'
+    assert 'comparison-roundup-noise:-0.9' in ranked['https://example.com/copilot-cursor-roundup']['reasons']
 
 @patch('ouroboros.tools.search.save_artifact')
 @patch('ouroboros.tools.search._read_page_findings')
