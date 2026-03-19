@@ -1168,3 +1168,33 @@ def test_research_tool_timeout_contract_is_above_internal_budget():
     for name in ('research_run', 'deep_research'):
         entry = tools[name]
         assert entry.timeout_sec >= 180
+
+
+@patch('os.environ.get')
+@patch('urllib.request.urlopen')
+def test_web_search_serper_success_normalizes_sources(mock_urlopen, mock_env_get):
+    class _Resp:
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def read(self):
+            return json.dumps({
+                "organic": [
+                    {"title": "Docs", "link": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official docs"},
+                    {"title": "Docs duplicate", "link": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "duplicate"},
+                    {"title": "Bad", "link": "javascript:void(0)", "snippet": "bad"},
+                ],
+                "answerBox": {"answer": "Rate limits depend on tier."},
+            }).encode()
+    mock_urlopen.return_value = _Resp()
+    mock_env_get.side_effect = lambda key, default=None: {"SERPER_API_KEY": "test-key", "SERPER_URL": "https://google.serper.dev/search"}.get(key, default)
+    payload = json.loads(_web_search(ToolContext(repo_dir='/tmp', drive_root='/tmp', task_id='task-1', current_chat_id=1), 'openai rate limits'))
+    assert payload['status'] == 'ok'
+    assert payload['backend'] == 'serper'
+    assert payload['answer'] == 'Rate limits depend on tier.'
+    assert payload['sources'] == [{
+        'title': 'Docs',
+        'url': 'https://platform.openai.com/docs/guides/rate-limits',
+        'snippet': 'official docs',
+    }]

@@ -33,6 +33,25 @@ MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS = 6, 6, 2
 
 _normalize_text_block = lambda text: re.sub(r"\s+", " ", html.unescape(str(text or "")).replace(" ", " ")).strip()
 
+def clean_sources(rows: Any) -> List[Dict[str, str]]:
+    cleaned: List[Dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for item in rows or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")) or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        cleaned.append({
+            "title": str(item.get("title") or url).strip() or url,
+            "url": url,
+            "snippet": _normalize_text_block(str(item.get("snippet") or item.get("content") or item.get("body") or item.get("text") or "").strip()),
+        })
+        if len(cleaned) >= MAX_RESULTS:
+            break
+    return cleaned
+
 @dataclass(frozen=True)
 class IntentPolicy:
     freshness_priority: str
@@ -237,6 +256,27 @@ class ResearchRun:
 
 class ResearchInterrupted(RuntimeError):
     pass
+
+
+def _checkpoint_inline(ctx: ToolContext, run: ResearchRun, stage: str, payload: Dict[str, Any]) -> None:
+    checkpoint = getattr(ctx, "checkpoint", None)
+    event = checkpoint(stage, payload=payload) if callable(checkpoint) else None
+    record = {"stage": stage, **(payload or {}), "owner_message_seen": bool(event)}
+    if event:
+        record.update({
+            "reason": str(event.get("reason") or ""),
+            "message": str(event.get("message") or ""),
+            "pending_count": len(event.get("pending_messages") or []),
+        })
+        run.interrupted = True
+        run.owner_interrupt_seen = True
+        run.interrupt_reason = str(event.get("reason") or "superseded_by_new_request")
+        run.interrupt_stage = stage
+        run.interrupt_message = str(event.get("message") or "")
+        run.status = run.interrupt_reason
+    run.interruption_checks = [*(run.interruption_checks or []), record]
+    if event:
+        raise ResearchInterrupted(run.interrupt_reason)
 
 def _detect_contradictions(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     numeric_findings, status_findings = [], []
@@ -688,32 +728,13 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)
     run.subqueries = list(plan.subqueries)
     run.query_plan = asdict(plan)
-    def checkpoint(stage: str, **payload: Any) -> None:
-        entry = {"stage": stage, "payload": payload}
-        if hasattr(ctx, "checkpoint"):
-            info = ctx.checkpoint(stage, payload=payload)
-            entry["owner_message_seen"] = bool(info)
-            if info:
-                entry["reason"] = info.get("reason") or "interrupted"
-                entry["message"] = str(info.get("message") or "").strip()
-                run.status = info.get("reason") or "interrupted"
-                run.interrupted = True
-                run.owner_interrupt_seen = True
-                run.interrupt_reason = info.get("reason") or "interrupted"
-                run.interrupt_stage = stage
-                run.interrupt_message = str(info.get("message") or "").strip()
-                run.interruption_checks.append(entry)
-                raise ResearchInterrupted(info.get("reason") or "research interrupted")
-        else:
-            entry["owner_message_seen"] = False
-        run.interruption_checks.append(entry)
     try:
         ranked_sources = collect_research_sources(
             run,
             lambda query: json.loads(_web_search(ctx, query, timeout_sec=run.timeout_profile.get("discovery_timeout_sec", 20))),
             lambda user_query, ranked_entry: _read_page_findings(user_query, ranked_entry, timeout_sec=int(run.timeout_profile.get("page_read_timeout_sec", 15))),
             _detect_contradictions,
-            checkpoint_fn=checkpoint,
+            checkpoint_fn=(lambda stage, **payload: (_checkpoint_inline(ctx, run, stage, payload))),
         )
         for event in (run.transport.get("events") or []):
             if str(event.get("status") or "") == "timeout":
@@ -761,7 +782,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             seen_finding_keys.add(key)
             deduped_findings.append(finding)
         run.findings = deduped_findings
-        checkpoint("pre_synthesis", findings=len(run.findings), candidate_sources=len(run.candidate_sources), pages_read=run.budget_trace.get("pages_read", 0))
+        _checkpoint_inline(ctx, run, "pre_synthesis", {"findings": len(run.findings), "candidate_sources": len(run.candidate_sources), "pages_read": run.budget_trace.get("pages_read", 0)})
         if time.monotonic() > deadline:
             timeout_info = classify_timeout_error(TimeoutError("overall research budget exceeded before synthesis"), "overall")
             info = {"stage": "overall", "error_type": timeout_info["type"], "timeout_limit": int(run.timeout_profile.get("overall_run_timeout_sec", 90))}

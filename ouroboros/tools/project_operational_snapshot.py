@@ -49,10 +49,6 @@ def _risk_flags(status_payload: Dict[str, Any], github: Dict[str, Any], runtime:
     return _build_operational_risk_flags(status_payload, github, runtime, last_outcome)
 
 
-def _next_actions(status_payload: Dict[str, Any], github: Dict[str, Any], runtime: Dict[str, Any], last_outcome: Dict[str, Any] | None) -> List[str]:
-    return _build_operational_next_actions(status_payload, github, runtime, last_outcome)
-
-
 def _project_operational_snapshot(
     ctx: ToolContext,
     name: str,
@@ -102,7 +98,7 @@ def _project_operational_snapshot(
         },
         'readiness': _readiness(status_payload, github, runtime, last_outcome),
         'risk_flags': _risk_flags(status_payload, github, runtime, last_outcome),
-        'next_actions': _next_actions(status_payload, github, runtime, last_outcome),
+        'next_actions': _build_operational_next_actions(status_payload, github, runtime, last_outcome),
         'repo': {
             'branch': (status_payload.get('repo') or {}).get('branch') or '',
             'head': (status_payload.get('repo') or {}).get('head') or '',
