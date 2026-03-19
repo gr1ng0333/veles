@@ -519,11 +519,10 @@ def test_browser_run_actions_wait_for_url_absence_keeps_legacy_text_flag(monkeyp
     page.url = "https://example.com/dashboard/loading"
     ctx = make_ctx(page)
 
-    def advance_url(timeout):
-        page.calls.append(("wait_for_timeout", timeout))
-        page.url = "https://example.com/dashboard"
-
-    page.wait_for_timeout = advance_url
+    page.wait_for_timeout = lambda timeout: (
+        page.calls.append(("wait_for_timeout", timeout)),
+        setattr(page, "url", "https://example.com/dashboard"),
+    )[-1]
 
     monkeypatch.setattr('ouroboros.tools.browser_session_actions._ensure_browser', lambda _ctx: page)
 

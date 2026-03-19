@@ -986,24 +986,18 @@ def test_research_run_can_be_superseded_by_new_owner_request(tmp_path):
         },
     })
 
-    def fake_read_page(_query, source, timeout_sec=15):
-        ctx.incoming_messages.put('сравни лучше ещё с Gemini и перезапусти')
-        return {
-            "status": "ok",
-            "url": source.get("url"),
-            "findings": [{
-                "claim": f"claim from {source.get('url')}",
-                "evidence_snippet": "evidence",
-                "source_url": source.get("url"),
-                "source_type": "page",
-                "observed_at": "2026-03-19",
-                "confidence_local": "high",
-            }],
-        }
+    read_result = {
+        "status": "ok",
+        "findings": [{
+            "claim": "claim from injected source",
+            "evidence_snippet": "evidence",
+            "source_type": "page",
+            "observed_at": "2026-03-19",
+            "confidence_local": "high",
+        }],
+    }
 
-    with patch('ouroboros.tools.search._web_search', return_value=search_payload), \
-         patch('ouroboros.tools.search._read_page_findings', side_effect=fake_read_page), \
-         patch('ouroboros.tools.search.save_artifact', return_value={"relative_path": "artifacts/outbox/trace.json", "bytes": 1}):
+    with patch('ouroboros.tools.search._web_search', return_value=search_payload),          patch('ouroboros.tools.search._read_page_findings', side_effect=lambda _query, source, timeout_sec=15: (ctx.incoming_messages.put('сравни лучше ещё с Gemini и перезапусти'), {**read_result, "url": source.get("url"), "findings": [{**read_result["findings"][0], "claim": f"claim from {source.get('url')}", "source_url": source.get("url")}]})[1]),          patch('ouroboros.tools.search.save_artifact', return_value={"relative_path": "artifacts/outbox/trace.json", "bytes": 1}):
         payload = json.loads(_research_run(ctx, 'compare claude and gpt for research', budget_mode='balanced', output_mode='comparison'))
 
     assert payload['interrupted'] is True
@@ -1017,59 +1011,67 @@ def test_research_run_can_be_superseded_by_new_owner_request(tmp_path):
 
 
 
-def test_run_discovery_transport_timeout_trace():
-    payload = run_discovery_transport(
-        'timeout query',
-        lambda _query: {"status": "timeout", "sources": [], "answer": "", "error": "discovery_timeout", "timeout_limit": 20},
-        [('searxng', lambda _query: {"status": "ok", "sources": [{"title": "Fallback", "url": "https://example.com/fallback", "snippet": "ok"}], "answer": "", "error": None})],
-    )
-    assert payload['status'] == 'ok'
-    assert payload['backend'] == 'searxng'
-    assert payload['transport']['events'][0]['status'] == 'timeout'
-    assert payload['transport']['events'][0]['reason'] == 'discovery_timeout'
-    assert payload['transport']['events'][0]['timeout_limit'] == 20
-    assert payload['transport']['events'][1]['trigger'] == 'serper_timeout'
 
-
-@patch('ouroboros.tools.search.save_artifact', return_value={"relative_path": "artifacts/outbox/trace.json", "bytes": 1})
-@patch('ouroboros.tools.search._web_search')
-def test_research_run_records_discovery_timeout(_web, _save):
-    class Ctx:
-        drive_root = '/tmp'
-        task_id = 'task-timeout-discovery'
-        current_chat_id = 1
-
-    _web.side_effect = [
-        json.dumps({"query": "openai api rate limit", "status": "timeout", "backend": "serper", "sources": [], "answer": "", "error": "discovery_timeout", "timeout_limit": 20}),
-        json.dumps({"query": "openai api rate limit recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
-        json.dumps({"query": "openai api rate limit official docs", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
-        json.dumps({"query": "openai api rate limit reference guide", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
-    ]
-    data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
-    assert data['timeout_profile']['overall_run_timeout_sec'] >= data['timeout_profile']['discovery_timeout_sec']
-    assert any(item['error_type'] == 'discovery_timeout' for item in data['timeout_events'])
-    assert any(event.get('status') == 'timeout' for event in data['transport']['events'])
-
-
+@pytest.mark.parametrize('timeout_kind', ['discovery', 'page_read'])
 @patch('ouroboros.tools.search.save_artifact', return_value={"relative_path": "artifacts/outbox/trace.json", "bytes": 1})
 @patch('ouroboros.tools.search._read_page_findings')
 @patch('ouroboros.tools.search._web_search')
-def test_research_run_records_page_read_timeout(_web, _fetch, _save):
+def test_research_run_records_timeout_events(_web, _fetch, _save, timeout_kind):
+    if timeout_kind == 'discovery':
+        payload = run_discovery_transport(
+            'timeout query',
+            lambda _query: {"status": "timeout", "sources": [], "answer": "", "error": "discovery_timeout", "timeout_limit": 20},
+            [('searxng', lambda _query: {"status": "ok", "sources": [{"title": "Fallback", "url": "https://example.com/fallback", "snippet": "ok"}], "answer": "", "error": None})],
+        )
+        assert payload['status'] == 'ok'
+        assert payload['backend'] == 'searxng'
+        assert payload['transport']['events'][0]['status'] == 'timeout'
+        assert payload['transport']['events'][0]['reason'] == 'discovery_timeout'
+        assert payload['transport']['events'][0]['timeout_limit'] == 20
+        assert payload['transport']['events'][1]['trigger'] == 'serper_timeout'
+
     class Ctx:
         drive_root = '/tmp'
-        task_id = 'task-timeout-page'
+        task_id = f'task-timeout-{timeout_kind}'
         current_chat_id = 1
 
     _web.side_effect = [
-        json.dumps({"query": "openai api rate limit", "status": "ok", "backend": "serper", "sources": [{"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official"}], "answer": "", "error": None}),
+        json.dumps({"query": "openai api rate limit", "status": "timeout" if timeout_kind == 'discovery' else "ok", "backend": "serper", "sources": [] if timeout_kind == 'discovery' else [{"title": "Docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "official"}], "answer": "", "error": "discovery_timeout" if timeout_kind == 'discovery' else None, "timeout_limit": 20 if timeout_kind == 'discovery' else None}),
         json.dumps({"query": "openai api rate limit recent", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
         json.dumps({"query": "openai api rate limit official docs", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
         json.dumps({"query": "openai api rate limit reference guide", "status": "no_results", "backend": "serper", "sources": [], "answer": "", "error": None}),
     ]
     _fetch.return_value = {"url": "https://platform.openai.com/docs/guides/rate-limits", "status": "timeout", "content_type": "", "text_preview": "", "relevant_sections": [], "findings": [], "error": "page_read_timeout", "timeout_limit": 15}
     data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
-    assert any(item['error_type'] == 'page_read_timeout' for item in data['timeout_events'])
-    assert data['transport']['reading_backend'] == 'urllib'
+    expected_error = 'discovery_timeout' if timeout_kind == 'discovery' else 'page_read_timeout'
+    assert any(item['error_type'] == expected_error for item in data['timeout_events'])
+    assert data['timeout_profile']['overall_run_timeout_sec'] >= data['timeout_profile']['discovery_timeout_sec']
+    assert data['discovery_backend_used'] == 'serper'
+    if timeout_kind == 'discovery':
+        assert any(event.get('status') == 'timeout' for event in data['transport']['events'])
+    else:
+        assert data['transport']['reading_backend'] == 'urllib'
+        assert data['reading_backend_used'] == 'urllib'
+        assert data['fallback_chain'] == ['serper']
+        assert data['pages_attempted'] == 1
+        assert data['pages_succeeded'] == 0
+        assert data['pages_failed'] == 1
+        assert data['degraded_mode'] is True
+        assert data['owner_interrupt_seen'] is False
+        assert len(data['interruption_checks']) >= 2
+        summary = data['debug_summary']
+        assert summary['discovery_backend_used'] == 'serper'
+        assert summary['reading_backend_used'] == 'urllib'
+        assert summary['pages_attempted'] == 1
+        assert summary['pages_succeeded'] == 0
+        assert summary['pages_failed'] == 1
+        assert summary['degraded_mode'] is True
+        read_results = data['visited_pages'][0]['read_results']
+        assert read_results
+        reasons = read_results[0]['read_reason']
+        assert any('selected-for-reading:score=' in item for item in reasons)
+        assert read_results[0]['browser_used'] is False
+        assert 'browser_not_used' in read_results[0]['browser_reason']
 
 
 def test_research_tool_timeout_contract_is_above_internal_budget():

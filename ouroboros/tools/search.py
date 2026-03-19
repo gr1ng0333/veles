@@ -218,6 +218,16 @@ class ResearchRun:
     transport: Dict[str, Any] = field(default_factory=dict)
     timeout_profile: Dict[str, int] = field(default_factory=dict)
     timeout_events: List[Dict[str, Any]] = field(default_factory=list)
+    interruption_checks: List[Dict[str, Any]] = field(default_factory=list)
+    owner_interrupt_seen: bool = False
+    discovery_backend_used: str = ""
+    reading_backend_used: str = ""
+    fallback_chain: List[str] = field(default_factory=list)
+    pages_attempted: int = 0
+    pages_succeeded: int = 0
+    pages_failed: int = 0
+    degraded_mode: bool = False
+    debug_summary: Dict[str, Any] = field(default_factory=dict)
     status: str = "ok"
     interrupted: bool = False
     interrupt_reason: str = ""
@@ -390,6 +400,8 @@ def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SU
 
 def _read_page_findings(query: str, source: Dict[str, Any], timeout_sec: int = 12) -> Dict[str, Any]:
     url = str(source.get("url") or "")
+    read_reasons = list(source.get("reasons") or [])
+    browser_reason = "browser_not_used: default direct urllib reading path"
     try:
         import urllib.request
 
@@ -488,6 +500,9 @@ def _read_page_findings(query: str, source: Dict[str, Any], timeout_sec: int = 1
             "relevant_sections": relevant_sections,
             "findings": findings,
             "error": None,
+            "read_reason": read_reasons,
+            "browser_reason": browser_reason,
+            "browser_used": False,
         }
     except Exception as exc:
         timeout_info = classify_timeout_error(exc, "page_read") if _timeout_like(exc) else None
@@ -501,6 +516,9 @@ def _read_page_findings(query: str, source: Dict[str, Any], timeout_sec: int = 1
             "error": (timeout_info or {}).get("type") or repr(exc),
             "timeout_detail": (timeout_info or {}).get("detail", ""),
             "timeout_limit": timeout_sec if timeout_info else None,
+            "read_reason": read_reasons,
+            "browser_reason": browser_reason,
+            "browser_used": False,
         }
 def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_override: str | None = None) -> None:
     freshness_known = sum(1 for finding in run.findings if str(finding.get("observed_at") or "").strip())
@@ -657,28 +675,38 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     run.budget_profile = budget
     run.transport = {"discovery_backend": "serper", "reading_backend": READING_BACKEND, "fallback_backend": None, "fallback_backends": [], "events": []}
     run.timeout_profile = timeout_profile(run.budget_mode)
+    run.discovery_backend_used = "serper"
+    run.reading_backend_used = READING_BACKEND
     deadline = time.monotonic() + max(int(run.timeout_profile.get("overall_run_timeout_sec", 90)), 1)
     plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)
     run.subqueries = list(plan.subqueries)
     run.query_plan = asdict(plan)
+    def checkpoint(stage: str, **payload: Any) -> None:
+        entry = {"stage": stage, "payload": payload}
+        if hasattr(ctx, "checkpoint"):
+            info = ctx.checkpoint(stage, payload=payload)
+            entry["owner_message_seen"] = bool(info)
+            if info:
+                entry["reason"] = info.get("reason") or "interrupted"
+                entry["message"] = str(info.get("message") or "").strip()
+                run.status = info.get("reason") or "interrupted"
+                run.interrupted = True
+                run.owner_interrupt_seen = True
+                run.interrupt_reason = info.get("reason") or "interrupted"
+                run.interrupt_stage = stage
+                run.interrupt_message = str(info.get("message") or "").strip()
+                run.interruption_checks.append(entry)
+                raise ResearchInterrupted(info.get("reason") or "research interrupted")
+        else:
+            entry["owner_message_seen"] = False
+        run.interruption_checks.append(entry)
     try:
         ranked_sources = collect_research_sources(
             run,
             lambda query: json.loads(_web_search(ctx, query, timeout_sec=run.timeout_profile.get("discovery_timeout_sec", 20))),
             lambda user_query, ranked_entry: _read_page_findings(user_query, ranked_entry, timeout_sec=int(run.timeout_profile.get("page_read_timeout_sec", 15))),
             _detect_contradictions,
-            checkpoint_fn=lambda stage, **payload: (
-                (lambda info: (
-                    run.__setattr__("status", info.get("reason") or "interrupted"),
-                    run.__setattr__("interrupted", True),
-                    run.__setattr__("interrupt_reason", info.get("reason") or "interrupted"),
-                    run.__setattr__("interrupt_stage", stage),
-                    run.__setattr__("interrupt_message", str(info.get("message") or "").strip()),
-                    (_ for _ in ()).throw(ResearchInterrupted(info.get("reason") or "research interrupted"))
-                )[-1] if info else None)(
-                    ctx.checkpoint(stage, payload=payload) if hasattr(ctx, "checkpoint") else None
-                )
-            ),
+            checkpoint_fn=checkpoint,
         )
         for event in (run.transport.get("events") or []):
             if str(event.get("status") or "") == "timeout":
@@ -726,15 +754,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
             seen_finding_keys.add(key)
             deduped_findings.append(finding)
         run.findings = deduped_findings
-        if hasattr(ctx, "checkpoint"):
-            info = ctx.checkpoint("pre_synthesis", payload={"findings": len(run.findings), "candidate_sources": len(run.candidate_sources), "pages_read": run.budget_trace.get("pages_read", 0)})
-            if info:
-                run.status = info.get("reason") or "interrupted"
-                run.interrupted = True
-                run.interrupt_reason = info.get("reason") or "interrupted"
-                run.interrupt_stage = "pre_synthesis"
-                run.interrupt_message = str(info.get("message") or "").strip()
-                raise ResearchInterrupted(run.interrupt_reason or "research interrupted")
+        checkpoint("pre_synthesis", findings=len(run.findings), candidate_sources=len(run.candidate_sources), pages_read=run.budget_trace.get("pages_read", 0))
         if time.monotonic() > deadline:
             timeout_info = classify_timeout_error(TimeoutError("overall research budget exceeded before synthesis"), "overall")
             info = {"stage": "overall", "error_type": timeout_info["type"], "timeout_limit": int(run.timeout_profile.get("overall_run_timeout_sec", 90))}
@@ -779,6 +799,30 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
         payload = asdict(run)
     else:
         payload = asdict(run)
+    payload["discovery_backend_used"] = payload.get("discovery_backend_used") or str((payload.get("transport") or {}).get("events", [{}])[-1].get("backend") or (payload.get("transport") or {}).get("discovery_backend") or "")
+    payload["reading_backend_used"] = payload.get("reading_backend_used") or str((payload.get("transport") or {}).get("reading_backend") or READING_BACKEND)
+    payload["fallback_chain"] = list(dict.fromkeys([event.get("backend") for event in (payload.get("transport") or {}).get("events", [])[1:] if event.get("backend")]))
+    read_results = [result for page in payload.get("visited_pages", []) for result in page.get("read_results", [])]
+    payload["pages_attempted"] = len(read_results)
+    payload["pages_succeeded"] = sum(1 for item in read_results if item.get("status") == "ok")
+    payload["pages_failed"] = sum(1 for item in read_results if item.get("status") != "ok")
+    payload["owner_interrupt_seen"] = bool(payload.get("owner_interrupt_seen") or any(item.get("owner_message_seen") for item in payload.get("interruption_checks", [])))
+    payload["degraded_mode"] = bool(payload.get("interrupted") or payload.get("timeout_events") or payload.get("pages_failed") or payload.get("fallback_chain"))
+    payload["debug_summary"] = {
+        "intent_type": payload.get("intent_type"),
+        "status": payload.get("status"),
+        "confidence": payload.get("confidence"),
+        "discovery_backend_used": payload.get("discovery_backend_used"),
+        "reading_backend_used": payload.get("reading_backend_used"),
+        "fallback_chain": payload.get("fallback_chain", []),
+        "pages_attempted": payload.get("pages_attempted", 0),
+        "pages_succeeded": payload.get("pages_succeeded", 0),
+        "pages_failed": payload.get("pages_failed", 0),
+        "timeout_event_types": [item.get("error_type") for item in payload.get("timeout_events", []) if item.get("error_type")],
+        "interruption_checks": len(payload.get("interruption_checks", [])),
+        "owner_interrupt_seen": payload.get("owner_interrupt_seen", False),
+        "degraded_mode": payload.get("degraded_mode", False),
+    }
     artifact = save_artifact(ctx, filename=f"research-run-{re.sub(r'-+', '-', re.sub(r'[^a-z0-9._-]+', '-', run.user_query.lower())).strip('-._') or 'query'}.json", content=json.dumps(payload, ensure_ascii=False, indent=2), content_kind="json", source="research_run", mime_type="application/json", caption="Research run trace", metadata={"tool": "research_run", "intent_type": run.intent_type, "policy": policy, "query_plan": run.query_plan})
     payload["intent_policy"] = policy
     payload["trace"] = artifact if isinstance(artifact, dict) else {"status": "error", "message": str(artifact)}

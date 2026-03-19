@@ -150,9 +150,9 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
             page_trace["ranked_sources"].append(entry)
             if entry["decision"] == "selected":
                 ranked_sources.append(entry)
-                page_trace["selected_to_read"].append({"url": url, "score": entry["score"], "reasons": entry["reasons"]})
+                page_trace["selected_to_read"].append({"url": url, "score": entry["score"], "reasons": entry["reasons"], "read_reason": [*entry["reasons"], f"selected-for-reading:score={entry['score']}"]})
             else:
-                page_trace["rejected"].append({"url": url, "score": entry["score"], "reasons": entry["reasons"]})
+                page_trace["rejected"].append({"url": url, "score": entry["score"], "reasons": entry["reasons"], "decision_reason": list(entry["reasons"])})
             seen_urls.add(url)
         page_trace["ranked_sources"].sort(key=lambda item: (READING_PRIORITY(item),), reverse=False)
         page_trace["selected_to_read"].sort(key=lambda item: READING_PRIORITY(next((row for row in page_trace["ranked_sources"] if row["url"] == item["url"]), item)))
@@ -176,6 +176,10 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
                 continue
             read_result = read_page_fn(run.user_query, ranked_entry)
             read_result.setdefault("transport", {"reading_backend": run.transport.get("reading_backend", "urllib"), "discovery_backend": page_trace.get("transport", {}).get("used_backend") or page_trace.get("backend")})
+            read_result.setdefault("read_reason", list(selected.get("read_reason") or selected.get("reasons") or ranked_entry.get("reasons") or []))
+            read_result.setdefault("selection_reason", list(ranked_entry.get("reasons") or []))
+            read_result.setdefault("browser_reason", "browser_not_used: default direct urllib reading path")
+            read_result.setdefault("browser_used", False)
             page_trace["read_results"].append(read_result)
             page_trace["budget"]["browse_depth_used"] += 1
             run.budget_trace["pages_read"] += 1

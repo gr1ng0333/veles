@@ -194,7 +194,7 @@ def capture_browser_failure_diagnostics(
     stamp = time.strftime("%Y%m%d-%H%M%S")
     task_id = str(getattr(ctx, "task_id", "task") or "task")
     slug = re.sub(r"[^a-zA-Z0-9_.-]+", "-", f"{stamp}-{task_id}-{operation}").strip("-")
-    base = ctx.drive_logs() / "browser_failures" / slug
+    base = ctx.drive_path("logs") / "browser_failures" / slug
     base.parent.mkdir(parents=True, exist_ok=True)
     html_path = str(base.with_suffix(".html"))
     text_path = str(base.with_suffix(".txt"))

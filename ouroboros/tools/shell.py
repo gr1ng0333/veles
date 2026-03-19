@@ -45,7 +45,7 @@ def _run_shell(ctx: ToolContext, cmd, cwd: str = "") -> str:
             warning = "run_shell_cmd_string_split_fallback"
 
         try:
-            append_jsonl(ctx.drive_logs() / "events.jsonl", {
+            append_jsonl(ctx.drive_path("logs") / "events.jsonl", {
                 "ts": utc_now_iso(),
                 "type": "tool_warning",
                 "tool": "run_shell",
