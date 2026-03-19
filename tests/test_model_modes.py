@@ -71,7 +71,7 @@ def test_runtime_policy_uses_active_mode_registry(monkeypatch) -> None:
     assert policy.main_model == "copilot/claude-haiku-4.5"
     assert policy.aux_light_model == "qwen/qwen3-coder:free"
     assert policy.background_model == "qwen/qwen3-coder:free"
-    assert policy.background_reasoning_effort == "low"
+    assert policy.background_reasoning_effort == "medium"
 
 
 def test_mode_summary_text_for_codex_includes_mode_details(monkeypatch) -> None:
