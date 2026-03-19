@@ -317,3 +317,71 @@ def test_llm_openrouter_model_is_left_unprefixed(monkeypatch):
     assert captured["model"] == "anthropic/claude-sonnet-4.6"
     assert msg["content"] == "ok"
     assert usage["cost"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 8. Session tracking
+# ---------------------------------------------------------------------------
+
+def test_session_tracking_counts_rounds():
+    """Session tracker must count rounds and tokens per interaction."""
+    from ouroboros.copilot_proxy import _track_session, get_session_stats, _active_sessions
+
+    # Clean state
+    _active_sessions.clear()
+
+    iid = "test-interaction-001"
+
+    # Round 1 — user initiated
+    stats = _track_session(iid, {"prompt_tokens": 1000, "completion_tokens": 200}, "user")
+    assert stats["rounds"] == 1
+    assert stats["premium_requests"] == 1
+    assert stats["total_prompt_tokens"] == 1000
+
+    # Round 2 — agent (free)
+    stats = _track_session(iid, {"prompt_tokens": 2000, "completion_tokens": 300}, "agent")
+    assert stats["rounds"] == 2
+    assert stats["premium_requests"] == 1  # still 1!
+    assert stats["total_prompt_tokens"] == 3000
+
+    # Round 3 — agent (free)
+    stats = _track_session(iid, {"prompt_tokens": 3000, "completion_tokens": 400}, "agent")
+    assert stats["rounds"] == 3
+    assert stats["premium_requests"] == 1  # still 1!
+
+    # Verify get_session_stats
+    retrieved = get_session_stats(iid)
+    assert retrieved is not None
+    assert retrieved["rounds"] == 3
+    assert retrieved["total_completion_tokens"] == 900
+
+    # Cleanup
+    _active_sessions.clear()
+
+
+def test_session_tracking_no_interaction_id():
+    """Session tracker must handle None interaction_id gracefully."""
+    from ouroboros.copilot_proxy import _track_session
+    stats = _track_session(None, {"prompt_tokens": 100}, "user")
+    assert stats == {}
+
+
+def test_stale_session_cleanup():
+    """Stale sessions must be cleaned up."""
+    from ouroboros.copilot_proxy import _track_session, cleanup_stale_sessions, _active_sessions
+    import time as _time
+
+    _active_sessions.clear()
+
+    _track_session("old-session", {"prompt_tokens": 100}, "user")
+    # Manually age the session
+    _active_sessions["old-session"]["last_activity"] = _time.time() - 7200  # 2 hours ago
+
+    _track_session("new-session", {"prompt_tokens": 100}, "user")
+
+    removed = cleanup_stale_sessions(max_age_seconds=3600)
+    assert removed == 1
+    assert "old-session" not in _active_sessions
+    assert "new-session" in _active_sessions
+
+    _active_sessions.clear()

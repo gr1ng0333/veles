@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import pathlib
 import queue
+import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -951,6 +952,27 @@ def run_llm_loop_impl(
             if result is not None:
                 return result
     finally:
+        # Log Copilot session summary if applicable
+        try:
+            from ouroboros.llm import model_transport
+            if model_transport(state["active_model"]) == "copilot":
+                from ouroboros.copilot_proxy import get_session_stats
+                interaction_id = state.get("interaction_id")
+                if interaction_id:
+                    stats = get_session_stats(interaction_id)
+                    if stats:
+                        log.info(
+                            "copilot_session_complete id=%s rounds=%d total_prompt=%d total_compl=%d premium_requests=%d duration=%.0fs",
+                            interaction_id[:8],
+                            stats["rounds"],
+                            stats["total_prompt_tokens"],
+                            stats["total_completion_tokens"],
+                            stats["premium_requests"],
+                            time.time() - stats.get("started", time.time()),
+                        )
+        except Exception:
+            log.debug("Failed to log Copilot session summary", exc_info=True)
+
         if owns_executor:
             try:
                 stateful_executor.shutdown(wait=False, cancel_futures=True)
