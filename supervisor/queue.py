@@ -228,7 +228,7 @@ def snapshot_interrupted_work_info(max_age_sec: int = 900) -> Dict[str, Any]:
         return info
 
 def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
-    """Restore PENDING queue from snapshot file."""
+    """Restore PENDING queue from snapshot file (both pending AND running tasks)."""
     if PENDING:
         return 0
     try:
@@ -251,6 +251,15 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
             if not task.get("id") or not task.get("chat_id"):
                 continue
             enqueue_task(task)
+            restored += 1
+        # Also restore RUNNING tasks as PENDING — workers are dead after restart
+        for row in (snap.get("running") or []):
+            task = row.get("task") if isinstance(row, dict) else None
+            if not isinstance(task, dict):
+                continue
+            if not task.get("id") or not task.get("chat_id"):
+                continue
+            enqueue_task(task, front=True)
             restored += 1
         if restored > 0:
             st = load_state()
