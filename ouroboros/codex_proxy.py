@@ -320,24 +320,39 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
                 result, quota = _do_request(access_token, payload)
                 log.info("Codex request succeeded via account #%d", idx)
                 _record_successful_request(idx)
+                _clear_last_error(idx)
                 _update_account_quota(idx, quota)
                 return result
             except urllib.error.HTTPError as e:
-                last_error = e
-                if e.code == 429:
-                    # Extract Retry-After header if present
-                    retry_after = 0
-                    try:
-                        ra = e.headers.get("Retry-After", "")
-                        if ra and ra.isdigit():
-                            retry_after = int(ra)
-                    except Exception:
-                        pass
-                    _on_rate_limit(idx, retry_after=retry_after)
+                body_preview = ""
+                try:
+                    body_preview = e.read().decode(errors="replace")
+                except Exception:
+                    pass
+                diagnostic = classify_codex_http_failure(
+                    e.code,
+                    dict(getattr(e, "headers", {}) or {}),
+                    body_preview,
+                )
+                last_error = RuntimeError(f"codex_http_failure account=#{idx} diagnostic={diagnostic}")
+                _set_last_error(idx, diagnostic)
+                if diagnostic["category"] == "rate_limit":
+                    _on_rate_limit(
+                        idx,
+                        retry_after=diagnostic.get("retry_after", 0),
+                        reason=diagnostic.get("reason", "rate_limited"),
+                    )
+                    quota = {
+                        k: diagnostic[k]
+                        for k in ("primary_used_percent", "secondary_used_percent")
+                        if diagnostic.get(k) is not None
+                    }
+                    if quota:
+                        _update_account_quota(idx, quota)
                     break  # break retry loop → outer while picks next account
-                if e.code in (401, 403):
+                if diagnostic["category"] == "auth":
                     if attempt < MAX_RETRIES:
-                        # Force refresh and retry
+                        # Force refresh and retry only for real auth failures
                         acc["expires"] = 0
                         access_token = _refresh_account(acc, idx)
                         if not access_token:
@@ -348,7 +363,6 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
                     _on_dead_account(idx)
                     break
                 if e.code in (500, 502, 503):
-                    last_error = e
                     if attempt < MAX_RETRIES:
                         log.warning(
                             "Codex server error %d (account #%d, attempt %d), retrying",
@@ -358,13 +372,7 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
                         continue
                     # All retries exhausted — rotate to next account
                     break
-                # Other HTTP errors — don't rotate, raise immediately
-                body_preview = ""
-                try:
-                    body_preview = e.read().decode(errors="replace")[:500]
-                except Exception:
-                    pass
-                log.error("Codex HTTP error %d: %s", e.code, body_preview)
+                log.error("Codex HTTP error account #%d: %s", idx, diagnostic)
                 raise
             except (urllib.error.URLError, OSError, TimeoutError) as e:
                 last_error = e

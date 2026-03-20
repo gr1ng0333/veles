@@ -18,6 +18,8 @@ REFRESH_THRESHOLD_SEC = 3600
 RATE_LIMIT_COOLDOWN_SEC = 600
 RATE_LIMIT_REPEAT_WINDOW = 1800
 RATE_LIMIT_ESCALATED_SEC = 3600
+RATE_LIMIT_EXHAUSTED_SEC = 7200
+AUTH_FAILURE_CODES = {401, 403}
 
 _accounts_lock = threading.Lock()
 _accounts: List[Dict[str, Any]] = []
@@ -175,6 +177,7 @@ def _load_accounts() -> List[Dict[str, Any]]:
                             "last_429_at": 0.0,
                             "request_timestamps": [],
                             "quota": {},
+                            "last_error": {},
                         })
             if accounts:
                 log.info("Loaded %d Codex accounts from CODEX_ACCOUNTS", len(accounts))
@@ -204,6 +207,8 @@ def _load_accounts() -> List[Dict[str, Any]]:
                         accounts[i]["last_429_at"] = float(s.get("last_429_at", 0))
                         if s.get("quota") and isinstance(s["quota"], dict):
                             accounts[i]["quota"] = s["quota"]
+                        if s.get("last_error") and isinstance(s["last_error"], dict):
+                            accounts[i]["last_error"] = s["last_error"]
                         raw_ts = s.get("request_timestamps", [])
                         if isinstance(raw_ts, list):
                             cutoff = time.time() - 604800
@@ -235,6 +240,7 @@ def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
                 "last_429_at": acc.get("last_429_at", 0),
                 "request_timestamps": pruned,
                 "quota": acc.get("quota", {}),
+                "last_error": acc.get("last_error", {}),
             })
         state_obj = {"active_idx": _active_idx, "accounts": serializable}
         ACCOUNTS_STATE_FILE.write_text(json.dumps(state_obj, indent=2), encoding="utf-8")
@@ -295,24 +301,26 @@ def _get_active_account() -> Optional[Tuple[Dict[str, Any], int]]:
         return None
 
 
-def _on_rate_limit(account_idx: int, retry_after: int = 0) -> None:
+def _on_rate_limit(account_idx: int, retry_after: int = 0, reason: str = "rate_limited") -> None:
     with _accounts_lock:
         if account_idx < len(_accounts):
             acc = _accounts[account_idx]
             now = time.time()
             last_429 = acc.get("last_429_at", 0)
             acc["last_429_at"] = now
+            repeated = (now - last_429) < RATE_LIMIT_REPEAT_WINDOW if last_429 else False
             if retry_after > 0:
                 cooldown = retry_after
-            elif (now - last_429) < RATE_LIMIT_REPEAT_WINDOW:
+            elif reason == "usage_limit_reached":
+                cooldown = RATE_LIMIT_EXHAUSTED_SEC
+            elif repeated:
                 cooldown = RATE_LIMIT_ESCALATED_SEC
             else:
                 cooldown = RATE_LIMIT_COOLDOWN_SEC
             acc["cooldown_until"] = now + cooldown
             log.warning(
-                "Codex account #%d rate-limited, cooldown %ds (retry_after=%d, repeated=%s)",
-                account_idx, cooldown, retry_after,
-                (now - last_429) < RATE_LIMIT_REPEAT_WINDOW if last_429 else False,
+                "Codex account #%d rate-limited, reason=%s, cooldown %ds (retry_after=%d, repeated=%s)",
+                account_idx, reason, cooldown, retry_after, repeated,
             )
             _save_accounts_state(_accounts)
 
@@ -363,6 +371,97 @@ def _record_successful_request(account_idx: int) -> None:
     with _accounts_lock:
         if account_idx < len(_accounts):
             _accounts[account_idx].setdefault("request_timestamps", []).append(time.time())
+            _accounts[account_idx]["last_error"] = {}
+            _save_accounts_state(_accounts)
+
+
+def _body_snippet(raw: Any, limit: int = 500) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode(errors="replace")[:limit]
+    return str(raw)[:limit]
+
+
+def _parse_json_body(raw: Any) -> Dict[str, Any]:
+    snippet = _body_snippet(raw, limit=4000)
+    if not snippet:
+        return {}
+    try:
+        parsed = json.loads(snippet)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def classify_codex_http_failure(status_code: int, headers: Optional[Dict[str, Any]] = None, body: Any = None) -> Dict[str, Any]:
+    hdrs = dict(headers or {})
+    lowered = {str(k).lower(): v for k, v in hdrs.items()}
+    parsed = _parse_json_body(body)
+    error_obj = parsed.get("error") if isinstance(parsed.get("error"), dict) else {}
+    error_code = str(parsed.get("error_code") or error_obj.get("code") or "").strip()
+    error_type = str(parsed.get("type") or error_obj.get("type") or "").strip()
+    error_message = str(
+        parsed.get("message")
+        or parsed.get("error") if isinstance(parsed.get("error"), str) else ""
+        or error_obj.get("message")
+        or ""
+    ).strip()
+
+    primary_used = lowered.get("x-codex-primary-used-percent")
+    secondary_used = lowered.get("x-codex-secondary-used-percent")
+
+    category = "http_error"
+    reason = "http_error"
+    retry_after = 0
+    ra = lowered.get("retry-after")
+    if isinstance(ra, str) and ra.isdigit():
+        retry_after = int(ra)
+
+    if status_code == 429:
+        category = "rate_limit"
+        exhausted = False
+        try:
+            exhausted = int(str(secondary_used)) >= 100 or int(str(primary_used)) >= 100
+        except Exception:
+            exhausted = False
+        lowered_blob = f"{error_code} {error_type} {error_message}".lower()
+        if exhausted or "usage_limit" in lowered_blob or "limit reached" in lowered_blob:
+            reason = "usage_limit_reached"
+        elif retry_after > 0:
+            reason = "retry_after"
+        else:
+            reason = "rate_limited"
+    elif status_code in AUTH_FAILURE_CODES:
+        category = "auth"
+        reason = "unauthorized" if status_code == 401 else "forbidden"
+
+    return {
+        "status_code": int(status_code),
+        "category": category,
+        "reason": reason,
+        "retry_after": retry_after,
+        "error_code": error_code,
+        "error_type": error_type,
+        "message": error_message[:500],
+        "body_preview": _body_snippet(body),
+        "primary_used_percent": primary_used,
+        "secondary_used_percent": secondary_used,
+        "classified_at": time.time(),
+    }
+
+
+def _set_last_error(account_idx: int, error: Dict[str, Any]) -> None:
+    with _accounts_lock:
+        if account_idx < len(_accounts):
+            _accounts[account_idx]["last_error"] = dict(error or {})
+            _save_accounts_state(_accounts)
+
+
+def _clear_last_error(account_idx: int) -> None:
+    with _accounts_lock:
+        if account_idx < len(_accounts) and _accounts[account_idx].get("last_error"):
+            _accounts[account_idx]["last_error"] = {}
             _save_accounts_state(_accounts)
 
 
@@ -524,6 +623,27 @@ def refresh_all_quotas() -> Dict[int, Optional[Dict[str, Any]]]:
                 log.info("Refreshed quota for account #%d: %s", idx, quota)
             else:
                 results[idx] = None
+        except urllib.error.HTTPError as e:
+            body_preview = ""
+            try:
+                body_preview = e.read().decode(errors="replace")
+            except Exception:
+                pass
+            diagnostic = classify_codex_http_failure(e.code, dict(getattr(e, "headers", {}) or {}), body_preview)
+            _set_last_error(idx, diagnostic)
+            if diagnostic["category"] == "rate_limit":
+                _on_rate_limit(idx, retry_after=diagnostic.get("retry_after", 0), reason=diagnostic.get("reason", "rate_limited"))
+                quota = {
+                    k: diagnostic[k]
+                    for k in ("primary_used_percent", "secondary_used_percent")
+                    if diagnostic.get(k) is not None
+                }
+                if quota:
+                    _update_account_quota(idx, quota)
+                log.warning("Quota refresh hit rate limit for account #%d: %s", idx, diagnostic)
+            else:
+                log.warning("Quota refresh HTTP failure for account #%d: %s", idx, diagnostic)
+            results[idx] = None
         except Exception as e:
             log.warning("Failed to refresh quota for account #%d: %s", idx, e)
             results[idx] = None
@@ -545,6 +665,7 @@ def get_accounts_status(force_reload: bool = False) -> List[Dict[str, Any]]:
             entry: Dict[str, Any] = {
                 "index": i,
                 "active": i == _active_idx,
+                "is_active": i == _active_idx,
                 "dead": acc.get("dead", False),
                 "cooldown_until": acc.get("cooldown_until", 0),
                 "in_cooldown": acc.get("cooldown_until", 0) > now,
@@ -553,8 +674,16 @@ def get_accounts_status(force_reload: bool = False) -> List[Dict[str, Any]]:
                 "has_refresh": bool(acc.get("refresh")),
                 "requests_5h": usage["5h"],
                 "requests_7d": usage["7d"],
+                "usage_5h": usage["5h"],
+                "usage_7d": usage["7d"],
                 "last_429_at": acc.get("last_429_at", 0),
             }
+            last_error = acc.get("last_error") or {}
+            if last_error:
+                entry["last_error"] = dict(last_error)
+                entry["last_error_category"] = last_error.get("category", "")
+                entry["last_error_reason"] = last_error.get("reason", "")
+                entry["last_error_status_code"] = last_error.get("status_code", 0)
             # Real OpenAI quota from x-codex-* headers
             if quota:
                 entry["quota_5h_used_pct"] = quota.get("primary_used_percent")

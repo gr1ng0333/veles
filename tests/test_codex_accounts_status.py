@@ -113,3 +113,67 @@ def test_bootstrap_refresh_missing_access_tokens(monkeypatch, tmp_path):
     assert statuses[0]["has_access"] is True
     assert statuses[1]["has_access"] is True
     assert statuses[2]["has_access"] is False
+
+
+
+def test_classify_codex_http_failure_distinguishes_usage_limit_from_auth() -> None:
+    from ouroboros import codex_proxy_accounts as cpa
+
+    limited = cpa.classify_codex_http_failure(
+        429,
+        headers={
+            "x-codex-secondary-used-percent": "100",
+            "x-codex-primary-used-percent": "0",
+        },
+        body='{"error_code":"usage_limit_reached","message":"The usage limit has been reached"}',
+    )
+    assert limited["category"] == "rate_limit"
+    assert limited["reason"] == "usage_limit_reached"
+    assert limited["secondary_used_percent"] == "100"
+
+    auth = cpa.classify_codex_http_failure(
+        401,
+        headers={},
+        body='{"message":"Unauthorized"}',
+    )
+    assert auth["category"] == "auth"
+    assert auth["reason"] == "unauthorized"
+
+
+
+def test_get_accounts_status_exposes_last_error_and_compat_aliases(monkeypatch) -> None:
+    from ouroboros import codex_proxy_accounts as cpa
+
+    now = 1_700_000_000.0
+    monkeypatch.setattr(cpa.time, "time", lambda: now)
+    cpa._accounts = [{
+        "access": "acc",
+        "refresh": "ref",
+        "expires": now + 3600,
+        "cooldown_until": now + 120,
+        "dead": False,
+        "last_429_at": now - 10,
+        "request_timestamps": [now - 100, now - 200],
+        "quota": {"primary_used_percent": 12, "secondary_used_percent": 34},
+        "last_error": {
+            "status_code": 429,
+            "category": "rate_limit",
+            "reason": "usage_limit_reached",
+        },
+    }]
+    cpa._active_idx = 0
+
+    statuses = cpa.get_accounts_status(force_reload=False)
+    assert len(statuses) == 1
+    entry = statuses[0]
+    assert entry["active"] is True
+    assert entry["is_active"] is True
+    assert entry["requests_5h"] == 2
+    assert entry["usage_5h"] == 2
+    assert entry["requests_7d"] == 2
+    assert entry["usage_7d"] == 2
+    assert entry["quota_5h_used_pct"] == 12
+    assert entry["quota_7d_used_pct"] == 34
+    assert entry["last_error_category"] == "rate_limit"
+    assert entry["last_error_reason"] == "usage_limit_reached"
+    assert entry["last_error_status_code"] == 429
