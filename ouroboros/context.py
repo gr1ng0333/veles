@@ -168,6 +168,16 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
     if supervisor_summary:
         sections.append("## Supervisor\n\n" + supervisor_summary)
 
+    # Execution reflections — process memory from previous tasks
+    try:
+        from ouroboros.reflection import format_recent_reflections
+        reflections_entries = memory.read_jsonl_tail("task_reflections.jsonl", 20)
+        reflections_text = format_recent_reflections(reflections_entries, limit=10)
+        if reflections_text:
+            sections.append("## Execution reflections\n\n" + reflections_text)
+    except Exception:
+        pass
+
     return sections
 
 
@@ -421,6 +431,19 @@ def build_llm_messages(
         kb_index = kb_index_path.read_text(encoding="utf-8")
         if kb_index.strip():
             semi_stable_parts.append("## Knowledge base\n\n" + clip_text(kb_index, 50000))
+
+    # Pattern Register — recurring error patterns from execution reflections
+    try:
+        patterns_path = env.drive_path("memory/knowledge/patterns.md")
+        if patterns_path.exists():
+            patterns_text = patterns_path.read_text(encoding="utf-8")
+            if patterns_text.strip():
+                semi_stable_parts.append(
+                    "## Known error patterns (Pattern Register)\n\n"
+                    + clip_text(patterns_text, 30000)
+                )
+    except Exception:
+        pass
 
     semi_stable_text = "\n\n".join(semi_stable_parts)
 
