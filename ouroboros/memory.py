@@ -17,6 +17,10 @@ from ouroboros.utils import utc_now_iso, read_text, write_text, append_jsonl, sh
 
 log = logging.getLogger(__name__)
 
+# Number of most recent Veles replies to include untruncated in chat context.
+# Older replies are clipped to 800 chars. Owner messages are never clipped.
+RECENT_FULL_REPLIES = 3
+
 
 class Memory:
     """Ouroboros memory management: scratchpad, identity, chat history, logs."""
@@ -105,14 +109,21 @@ class Memory:
             if not entries:
                 return "(no messages matching query)"
 
+            # Identify recent outgoing messages to keep untruncated
+            outgoing_indices = [
+                i for i, e in enumerate(entries)
+                if str(e.get("direction", "")).lower() in ("out", "outgoing")
+            ]
+            recent_outgoing = set(outgoing_indices[-RECENT_FULL_REPLIES:])
+
             lines = []
-            for e in entries:
+            for i, e in enumerate(entries):
                 dir_raw = str(e.get("direction", "")).lower()
                 direction = "→" if dir_raw in ("out", "outgoing") else "←"
                 ts = str(e.get("ts", ""))[:16]
                 raw_text = str(e.get("text", ""))
                 if dir_raw in ("out", "outgoing"):
-                    text = short(raw_text, 800)
+                    text = raw_text if i in recent_outgoing else short(raw_text, 800)
                 else:
                     text = raw_text  # never truncate creator's messages
                 lines.append(f"{direction} [{ts}] {text}")
@@ -151,17 +162,22 @@ class Memory:
     def summarize_chat(self, entries: List[Dict[str, Any]]) -> str:
         if not entries:
             return ""
+        recent = entries[-100:]
+        # Identify recent outgoing messages to keep untruncated
+        outgoing_indices = [
+            i for i, e in enumerate(recent)
+            if str(e.get("direction", "")).lower() in ("out", "outgoing")
+        ]
+        recent_outgoing = set(outgoing_indices[-RECENT_FULL_REPLIES:])
         lines = []
-        for e in entries[-100:]:
+        for i, e in enumerate(recent):
             dir_raw = str(e.get("direction", "")).lower()
             direction = "→" if dir_raw in ("out", "outgoing") else "←"
             ts_full = e.get("ts", "")
             ts_hhmm = ts_full[11:16] if len(ts_full) >= 16 else ""
-            # Creator messages: no truncation (most valuable context)
-            # Outgoing messages: truncate to 800 chars
             raw_text = str(e.get("text", ""))
             if dir_raw in ("out", "outgoing"):
-                text = short(raw_text, 800)
+                text = raw_text if i in recent_outgoing else short(raw_text, 800)
             else:
                 text = raw_text  # never truncate creator's messages
             lines.append(f"{direction} {ts_hhmm} {text}")
