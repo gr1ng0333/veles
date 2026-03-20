@@ -467,6 +467,38 @@ class OuroborosAgent:
 
             # Emit events for supervisor
             self._emit_task_results(task, text, usage, llm_trace, start_time, drive_logs)
+
+            # Execution reflection — auto-learning from task errors (non-blocking)
+            try:
+                from ouroboros.reflection import maybe_create_reflection
+                from ouroboros.model_modes import max_rounds_for_active_mode
+                n_tool_errors = sum(
+                    1 for tc in llm_trace.get("tool_calls", [])
+                    if isinstance(tc, dict) and tc.get("is_error")
+                )
+                task_eval = {
+                    "ok": True,
+                    "tool_calls": len(llm_trace.get("tool_calls", [])),
+                    "tool_errors": n_tool_errors,
+                }
+                try:
+                    mr = max_rounds_for_active_mode()
+                except Exception:
+                    mr = 200
+                maybe_create_reflection(
+                    task_id=str(task.get("id") or ""),
+                    task_text=str(task.get("text") or "")[:500],
+                    task_eval=task_eval,
+                    response_text=text,
+                    llm_trace=llm_trace,
+                    rounds=int(usage.get("rounds") or 0),
+                    max_rounds=mr,
+                    drive_root=pathlib.Path(self.env.drive_root),
+                    llm_client=self.llm,
+                )
+            except Exception:
+                log.debug("Execution reflection failed (non-critical)", exc_info=True)
+
             return list(self._pending_events)
 
         finally:
