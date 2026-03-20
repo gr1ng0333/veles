@@ -487,7 +487,6 @@ def refresh_all_quotas() -> Dict[int, Optional[Dict[str, Any]]]:
             "instructions": "Reply with one word.",
             "store": False,
             "stream": True,
-            "max_output_tokens": 1,
         }
         try:
             body = json.dumps(payload).encode()
