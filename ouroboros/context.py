@@ -141,21 +141,24 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
 
     progress_entries = memory.read_jsonl_tail("progress.jsonl", 200)
     if task_id:
-        progress_entries = [e for e in progress_entries if e.get("task_id") == task_id]
+        filtered = [e for e in progress_entries if str(e.get("task_id", "")).strip() == task_id]
+        progress_entries = filtered if filtered else progress_entries[-5:]
     progress_summary = memory.summarize_progress(progress_entries, limit=15)
     if progress_summary:
         sections.append("## Recent progress\n\n" + progress_summary)
 
     tools_entries = memory.read_jsonl_tail("tools.jsonl", 200)
     if task_id:
-        tools_entries = [e for e in tools_entries if e.get("task_id") == task_id]
+        filtered = [e for e in tools_entries if str(e.get("task_id", "")).strip() == task_id]
+        tools_entries = filtered if filtered else tools_entries[-5:]
     tools_summary = memory.summarize_tools(tools_entries)
     if tools_summary:
         sections.append("## Recent tools\n\n" + tools_summary)
 
     events_entries = memory.read_jsonl_tail("events.jsonl", 200)
     if task_id:
-        events_entries = [e for e in events_entries if e.get("task_id") == task_id]
+        filtered = [e for e in events_entries if str(e.get("task_id", "")).strip() == task_id]
+        events_entries = filtered if filtered else events_entries[-5:]
     events_summary = memory.summarize_events(events_entries)
     if events_summary:
         sections.append("## Recent events\n\n" + events_summary)
@@ -291,9 +294,60 @@ def _build_health_invariants(env: Any) -> str:
     except Exception:
         pass
 
+    # 6. Cache hit rate monitoring
+    try:
+        cache_rate = _compute_cache_hit_rate(env)
+        if cache_rate is not None:
+            if cache_rate < 0.30:
+                checks.append(
+                    f"WARNING: LOW CACHE HIT RATE — {cache_rate:.0%} cached. "
+                    "Context structure may be degrading prompt caching efficiency."
+                )
+            elif cache_rate >= 0.50:
+                checks.append(f"OK: cache hit rate ({cache_rate:.0%})")
+            else:
+                checks.append(f"INFO: cache hit rate moderate ({cache_rate:.0%})")
+    except Exception:
+        pass
+
     if not checks:
         return ""
     return "## Health Invariants\n\n" + "\n".join(f"- {c}" for c in checks)
+
+
+def _compute_cache_hit_rate(env: Any) -> Optional[float]:
+    """Compute prompt cache hit rate from recent llm_round events."""
+    events_path = env.drive_path("logs/events.jsonl")
+    if not events_path.exists():
+        return None
+    total_prompt = total_cached = count = 0
+    try:
+        file_size = events_path.stat().st_size
+        with events_path.open("r", encoding="utf-8") as f:
+            if file_size > 256_000:
+                f.seek(file_size - 256_000)
+                f.readline()
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                    if ev.get("type") != "llm_round":
+                        continue
+                    usage = ev.get("usage", ev)
+                    pt = int(usage.get("prompt_tokens", 0))
+                    if pt > 0:
+                        total_prompt += pt
+                        total_cached += int(usage.get("cached_tokens", 0))
+                        count += 1
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    continue
+    except Exception:
+        return None
+    if count < 5 or total_prompt == 0:
+        return None
+    return total_cached / total_prompt
 
 
 def build_llm_messages(
