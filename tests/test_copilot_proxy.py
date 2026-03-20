@@ -543,3 +543,45 @@ def test_track_usage_invalid_idx(monkeypatch, tmp_path):
     # Should not raise
     cpa.track_copilot_usage(99, "claude-sonnet-4.6")
     assert cpa._accounts[0]["usage_units"] == 0.0
+
+
+def test_load_accounts_bash_stripped_json(monkeypatch, tmp_path):
+    """Accounts should load even when bash 'source .env' strips inner JSON quotes."""
+    from ouroboros import copilot_proxy_accounts as cpa
+
+    state_path = tmp_path / "copilot_accounts_state.json"
+    monkeypatch.setattr(cpa, "ACCOUNTS_STATE_FILE", state_path)
+    # Simulate bash-stripped JSON: source .env removes double quotes from unquoted value
+    monkeypatch.setenv(
+        "COPILOT_ACCOUNTS",
+        "[{github_token:ghu_asg58igXXXXXXXX},{github_token:ghu_WnB25Q6YYYYYYYY}]",
+    )
+
+    cpa._accounts = []
+    cpa._active_idx = 0
+    cpa._init_accounts(force=True)
+
+    assert len(cpa._accounts) == 2
+    assert cpa._accounts[0]["github_token"] == "ghu_asg58igXXXXXXXX"
+    assert cpa._accounts[1]["github_token"] == "ghu_WnB25Q6YYYYYYYY"
+
+
+def test_load_accounts_outer_quotes_stripped(monkeypatch, tmp_path):
+    """Surrounding single/double quotes on COPILOT_ACCOUNTS should be stripped."""
+    from ouroboros import copilot_proxy_accounts as cpa
+
+    state_path = tmp_path / "copilot_accounts_state.json"
+    monkeypatch.setattr(cpa, "ACCOUNTS_STATE_FILE", state_path)
+    # Value wrapped in single quotes (some .env loaders pass them through)
+    monkeypatch.setenv(
+        "COPILOT_ACCOUNTS",
+        '\'[{"github_token":"ghu_testToken1"},{"github_token":"ghu_testToken2"}]\'',
+    )
+
+    cpa._accounts = []
+    cpa._active_idx = 0
+    cpa._init_accounts(force=True)
+
+    assert len(cpa._accounts) == 2
+    assert cpa._accounts[0]["github_token"] == "ghu_testToken1"
+    assert cpa._accounts[1]["github_token"] == "ghu_testToken2"

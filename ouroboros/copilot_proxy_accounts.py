@@ -11,6 +11,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -90,6 +91,9 @@ def _exchange_token(github_token: str, urlopen) -> Optional[Dict[str, Any]]:
 def _load_accounts() -> List[Dict[str, Any]]:
     """Load accounts from COPILOT_ACCOUNTS env var (or single COPILOT_GITHUB_TOKEN)."""
     raw = os.environ.get("COPILOT_ACCOUNTS", "")
+    # Strip surrounding quotes — bash source or .env loaders may leave them
+    if raw and len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        raw = raw[1:-1]
     accounts: List[Dict[str, Any]] = []
 
     if raw:
@@ -112,7 +116,27 @@ def _load_accounts() -> List[Dict[str, Any]]:
             else:
                 log.warning("COPILOT_ACCOUNTS parsed but contained 0 valid accounts (need 'github_token' key)")
         except (json.JSONDecodeError, ValueError) as e:
-            log.error("Failed to parse COPILOT_ACCOUNTS: %s  |  raw[:200]=%s", e, raw[:200])
+            log.warning("COPILOT_ACCOUNTS JSON parse failed: %s — trying token extraction", e)
+            # Fallback: extract GitHub tokens directly (handles bash-stripped JSON
+            # where 'source .env' removes inner double-quotes from unquoted values)
+            tokens = re.findall(r'gh[a-z]_[A-Za-z0-9_]+', raw)
+            for t in tokens:
+                accounts.append({
+                    "github_token": t,
+                    "copilot_token": "",
+                    "expires_at": 0,
+                    "cooldown_until": 0.0,
+                    "dead": False,
+                    "last_429_at": 0.0,
+                    "request_timestamps": [],
+                })
+            if accounts:
+                log.info("Extracted %d Copilot token(s) from COPILOT_ACCOUNTS (non-JSON fallback)", len(accounts))
+            else:
+                log.error(
+                    "COPILOT_ACCOUNTS set but no tokens found. "
+                    "Wrap JSON in single quotes in .env: COPILOT_ACCOUNTS='[{\"github_token\":\"ghu_...\"}]'"
+                )
 
     # Fallback: single account from COPILOT_GITHUB_TOKEN
     if not accounts:
