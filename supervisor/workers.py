@@ -514,7 +514,7 @@ def assign_tasks() -> None:
     from supervisor.state import budget_remaining, EVOLUTION_BUDGET_RESERVE
     with _queue_lock:
         for w in WORKERS.values():
-            if w.busy_task_id is None and PENDING:
+            if w.busy_task_id is None and PENDING and w.proc.is_alive():
                 # Find first suitable task (skip over-budget evolution tasks)
                 chosen_idx = None
                 for i, candidate in enumerate(PENDING):
@@ -554,34 +554,36 @@ def assign_tasks() -> None:
 
 def ensure_workers_healthy() -> None:
     from supervisor import queue
-    # Grace period: skip health check right after spawn — workers need time to initialize
-    if (time.time() - _LAST_SPAWN_TIME) < _SPAWN_GRACE_SEC:
-        return
+    in_grace = (time.time() - _LAST_SPAWN_TIME) < _SPAWN_GRACE_SEC
 
     # --- Excess worker culling: kill workers beyond MAX_WORKERS ---
-    alive_wids = sorted(wid for wid, w in WORKERS.items() if w.proc.is_alive())
-    if len(alive_wids) > MAX_WORKERS:
-        excess = alive_wids[MAX_WORKERS:]
-        for wid in excess:
-            w = WORKERS[wid]
-            append_jsonl(
-                DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "type": "excess_worker_killed",
-                    "worker_id": wid,
-                    "busy_task_id": w.busy_task_id,
-                },
-            )
-            if w.proc.is_alive():
-                w.proc.terminate()
-                w.proc.join(timeout=5)
-            WORKERS.pop(wid, None)
+    if not in_grace:
+        alive_wids = sorted(wid for wid, w in WORKERS.items() if w.proc.is_alive())
+        if len(alive_wids) > MAX_WORKERS:
+            excess = alive_wids[MAX_WORKERS:]
+            for wid in excess:
+                w = WORKERS[wid]
+                append_jsonl(
+                    DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                    {
+                        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "type": "excess_worker_killed",
+                        "worker_id": wid,
+                        "busy_task_id": w.busy_task_id,
+                    },
+                )
+                if w.proc.is_alive():
+                    w.proc.terminate()
+                    w.proc.join(timeout=5)
+                WORKERS.pop(wid, None)
 
     busy_crashes = 0
     dead_detections = 0
     for wid, w in list(WORKERS.items()):
         if not w.proc.is_alive():
+            # During grace period, only check workers with assigned tasks
+            if in_grace and w.busy_task_id is None:
+                continue
             dead_detections += 1
             if w.busy_task_id is not None:
                 busy_crashes += 1
@@ -599,7 +601,18 @@ def ensure_workers_healthy() -> None:
                 meta = RUNNING.pop(w.busy_task_id) or {}
                 task = meta.get("task") if isinstance(meta, dict) else None
                 if isinstance(task, dict):
-                    queue.enqueue_task(task, front=True)
+                    _att = int(task.get("_attempt") or 1)
+                    if _att <= QUEUE_MAX_RETRIES:
+                        retried = dict(task)
+                        retried["_attempt"] = _att + 1
+                        queue.enqueue_task(retried, front=True)
+                    else:
+                        st = load_state()
+                        if st.get("owner_chat_id"):
+                            send_with_budget(
+                                int(st["owner_chat_id"]),
+                                f"🛑 Task {task.get('id')} dropped after {_att} crash retries.",
+                            )
             respawn_worker(wid)
             queue.persist_queue_snapshot(reason="worker_respawn_after_crash")
 
