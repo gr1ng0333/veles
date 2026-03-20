@@ -174,6 +174,7 @@ def _load_accounts() -> List[Dict[str, Any]]:
                             "dead": False,
                             "last_429_at": 0.0,
                             "request_timestamps": [],
+                            "quota": {},
                         })
             if accounts:
                 log.info("Loaded %d Codex accounts from CODEX_ACCOUNTS", len(accounts))
@@ -201,6 +202,8 @@ def _load_accounts() -> List[Dict[str, Any]]:
                             accounts[i]["expires"] = float(s["expires"])
                         accounts[i]["cooldown_until"] = float(s.get("cooldown_until", 0))
                         accounts[i]["last_429_at"] = float(s.get("last_429_at", 0))
+                        if s.get("quota") and isinstance(s["quota"], dict):
+                            accounts[i]["quota"] = s["quota"]
                         raw_ts = s.get("request_timestamps", [])
                         if isinstance(raw_ts, list):
                             cutoff = time.time() - 604800
@@ -231,6 +234,7 @@ def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
                 "dead": acc.get("dead", False),
                 "last_429_at": acc.get("last_429_at", 0),
                 "request_timestamps": pruned,
+                "quota": acc.get("quota", {}),
             })
         state_obj = {"active_idx": _active_idx, "accounts": serializable}
         ACCOUNTS_STATE_FILE.write_text(json.dumps(state_obj, indent=2), encoding="utf-8")
@@ -362,6 +366,17 @@ def _record_successful_request(account_idx: int) -> None:
             _save_accounts_state(_accounts)
 
 
+def _update_account_quota(account_idx: int, quota: Dict[str, Any]) -> None:
+    """Store real Codex quota data (from x-codex-* response headers) for an account."""
+    if not quota:
+        return
+    with _accounts_lock:
+        if account_idx < len(_accounts):
+            quota["updated_at"] = time.time()
+            _accounts[account_idx]["quota"] = quota
+            _save_accounts_state(_accounts)
+
+
 def force_switch_account(target_idx: int = -1) -> Dict[str, Any]:
     global _active_idx
     with _accounts_lock:
@@ -424,14 +439,15 @@ def bootstrap_refresh_missing_access_tokens(auth_endpoint: str, urlopen) -> Dict
 
 
 
-def get_accounts_status(force_reload: bool = True) -> List[Dict[str, Any]]:
+def get_accounts_status(force_reload: bool = False) -> List[Dict[str, Any]]:
     with _accounts_lock:
         _init_accounts(force=force_reload)
         now = time.time()
         result = []
         for i, acc in enumerate(_accounts):
             usage = get_account_usage(acc)
-            result.append({
+            quota = acc.get("quota", {})
+            entry: Dict[str, Any] = {
                 "index": i,
                 "active": i == _active_idx,
                 "dead": acc.get("dead", False),
@@ -443,5 +459,14 @@ def get_accounts_status(force_reload: bool = True) -> List[Dict[str, Any]]:
                 "requests_5h": usage["5h"],
                 "requests_7d": usage["7d"],
                 "last_429_at": acc.get("last_429_at", 0),
-            })
+            }
+            # Real OpenAI quota from x-codex-* headers
+            if quota:
+                entry["quota_5h_used_pct"] = quota.get("primary_used_percent")
+                entry["quota_7d_used_pct"] = quota.get("secondary_used_percent")
+                entry["quota_plan"] = quota.get("plan_type", "")
+                entry["quota_5h_reset_at"] = quota.get("primary_reset_at")
+                entry["quota_7d_reset_at"] = quota.get("secondary_reset_at")
+                entry["quota_updated_at"] = quota.get("updated_at", 0)
+            result.append(entry)
         return result

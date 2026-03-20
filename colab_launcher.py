@@ -681,14 +681,23 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             if st_acc["dead"]:
                 icon, status = "💀", "dead"
             elif st_acc["in_cooldown"]:
-                icon, status = "⏳", f"cooldown ({st_acc['cooldown_remaining']}s)"
+                mins = st_acc["cooldown_remaining"] // 60
+                icon, status = "⏳", f"cooldown {mins}m"
             elif st_acc["has_access"]:
                 icon, status = "✅", "active"
             else:
-                icon, status = "⚠️", "no access token"
-            active_marker = " ← [active]" if st_acc["active"] else ""
-            usage = f"5h:{st_acc['requests_5h']} 7d:{st_acc['requests_7d']}"
-            lines.append(f"{icon} #{i}: {status} | {usage}{active_marker}")
+                icon, status = "⚠️", "no token"
+            active_marker = " ←" if st_acc["active"] else ""
+
+            # Real OpenAI quota (from x-codex-* headers)
+            q5 = st_acc.get("quota_5h_used_pct")
+            q7 = st_acc.get("quota_7d_used_pct")
+            if q5 is not None and q7 is not None:
+                quota_str = f"5h:{q5}% 7d:{q7}%"
+            else:
+                quota_str = f"5h:{st_acc['requests_5h']}req 7d:{st_acc['requests_7d']}req"
+
+            lines.append(f"{icon} #{i}: {status} | {quota_str}{active_marker}")
         send_with_budget(chat_id, "\n".join(lines))
         return True
     if lowered.startswith("/switch"):

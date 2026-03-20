@@ -106,6 +106,10 @@ def _record_successful_request(account_idx: int) -> None:
     _accounts_impl._record_successful_request(account_idx)
 
 
+def _update_account_quota(account_idx: int, quota: Dict[str, Any]) -> None:
+    _accounts_impl._update_account_quota(account_idx, quota)
+
+
 def force_switch_account(target_idx: int = -1) -> Dict[str, Any]:
     return _accounts_impl.force_switch_account(target_idx)
 
@@ -207,8 +211,30 @@ def _parse_sse_response(raw: str) -> Dict[str, Any]:
 # HTTP request
 # ---------------------------------------------------------------------------
 
-def _do_request(access_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Send POST to Codex endpoint and return parsed response.completed data."""
+def _extract_codex_quota(resp_headers: dict) -> Dict[str, Any]:
+    """Extract x-codex-* quota headers into a dict."""
+    quota: Dict[str, Any] = {}
+    for k, v in resp_headers.items():
+        kl = k.lower()
+        if not kl.startswith("x-codex-"):
+            continue
+        key = kl[len("x-codex-"):].replace("-", "_")  # e.g. primary_used_percent
+        # Coerce numeric values
+        if v.isdigit():
+            quota[key] = int(v)
+        else:
+            try:
+                quota[key] = float(v)
+            except (ValueError, TypeError):
+                quota[key] = v
+    return quota
+
+
+def _do_request(access_token: str, payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Send POST to Codex endpoint.
+
+    Returns (parsed_response_completed_data, codex_quota_headers).
+    """
     body = json.dumps(payload).encode()
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -220,7 +246,11 @@ def _do_request(access_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     )
     ctx = ssl.create_default_context()
     with urllib.request.urlopen(req, timeout=TIMEOUT_SEC, context=ctx) as resp:
+        resp_headers = dict(resp.headers)
         raw = resp.read().decode("utf-8")
+
+    # Extract quota from response headers
+    quota = _extract_codex_quota(resp_headers)
 
     # Debug: dump raw SSE response
     try:
@@ -243,7 +273,7 @@ def _do_request(access_token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return parsed
+    return parsed, quota
 
 
 # ---------------------------------------------------------------------------
@@ -283,9 +313,10 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         for attempt in range(MAX_RETRIES + 1):
             try:
-                result = _do_request(access_token, payload)
+                result, quota = _do_request(access_token, payload)
                 log.info("Codex request succeeded via account #%d", idx)
                 _record_successful_request(idx)
+                _update_account_quota(idx, quota)
                 return result
             except urllib.error.HTTPError as e:
                 last_error = e
@@ -462,6 +493,7 @@ def call_codex(
     if use_rotation:
         event_data = _call_with_rotation(payload)
     else:
+        _last_single_quota: Dict[str, Any] = {}
         # Determine correct env var for expires based on prefix
         expires_env_key = (
             "CODEX_TOKEN_EXPIRES" if token_prefix == "CODEX"
@@ -477,7 +509,7 @@ def call_codex(
                 )
 
             try:
-                event_data = _do_request(access_token, payload)
+                event_data, _last_single_quota = _do_request(access_token, payload)
                 break
             except urllib.error.HTTPError as e:
                 last_error = e
