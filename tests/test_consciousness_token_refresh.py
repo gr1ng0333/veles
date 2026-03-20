@@ -200,7 +200,7 @@ class TestCallCodexConsciousnessRouting:
                 "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
             }
         }
-        do_request_mock = MagicMock(return_value=fake_response)
+        do_request_mock = MagicMock(return_value=(fake_response, {}))
         monkeypatch.setattr(cp, "_do_request", do_request_mock)
 
         # Mock rotation to track if it gets called
@@ -242,7 +242,7 @@ class TestCallCodexConsciousnessRouting:
                 raise urllib.error.HTTPError(
                     "url", 401, "Unauthorized", {}, BytesIO(b"expired"),
                 )
-            return fake_response
+            return fake_response, {}
 
         monkeypatch.setattr(cp, "_do_request", side_effect)
 
