@@ -673,61 +673,14 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         return True
 
     if lowered.startswith("/accounts"):
+        from ouroboros.accounts_status_format import format_codex_accounts_status
         from ouroboros.codex_proxy import get_accounts_status, refresh_all_quotas
-        # Refresh quotas for all accounts before displaying
         try:
             refresh_all_quotas()
         except Exception as e:
             log.warning("refresh_all_quotas failed: %s", e)
         statuses = get_accounts_status()
-        lines = [f"📊 Codex Accounts: {len(statuses)} шт.\n"]
-        sum_5h, sum_7d, quota_count = 0.0, 0.0, 0
-        for st_acc in statuses:
-            i = st_acc["index"]
-            if st_acc["dead"]:
-                lines.append(f"💀 #{i}: dead")
-                continue
-
-            # Status prefix
-            if st_acc["in_cooldown"]:
-                mins = st_acc["cooldown_remaining"] // 60
-                icon = "⏳"
-                status_prefix = f"cooldown {mins}m"
-            elif st_acc["has_access"]:
-                icon = "✅"
-                status_prefix = ""
-            else:
-                icon = "⚠️"
-                status_prefix = "no token"
-
-            active_marker = " ← active" if st_acc["active"] else ""
-
-            # Real OpenAI quota — show % free (remaining)
-            q5 = st_acc.get("quota_5h_used_pct")
-            q7 = st_acc.get("quota_7d_used_pct")
-            if q5 is not None and q7 is not None:
-                free_5h = 100 - q5
-                free_7d = 100 - q7
-                quota_str = f"5h: {free_5h}% free | 7d: {free_7d}% free"
-                sum_5h += free_5h
-                sum_7d += free_7d
-                quota_count += 1
-            else:
-                quota_str = "5h: — | 7d: —"
-
-            parts = [f"{icon} #{i}:"]
-            if status_prefix:
-                parts.append(status_prefix + " |")
-            parts.append(quota_str + active_marker)
-            lines.append(" ".join(parts))
-
-        # Summary line
-        if quota_count > 0:
-            avg_5h = sum_5h / quota_count
-            avg_7d = sum_7d / quota_count
-            lines.append(f"\nΣ Средняя квота: 5h: {avg_5h:.0f}% free | 7d: {avg_7d:.0f}% free")
-
-        send_with_budget(chat_id, "\n".join(lines))
+        send_with_budget(chat_id, format_codex_accounts_status(statuses))
         return True
     if lowered.startswith("/switch"):
         from ouroboros.codex_proxy import force_switch_account
