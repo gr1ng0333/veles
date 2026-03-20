@@ -123,8 +123,10 @@ def _call_with_rotation(
     payload: Dict[str, Any],
     initiator: str = "user",
     interaction_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Execute request with multi-account rotation on errors."""
+) -> Tuple[Dict[str, Any], int]:
+    """Execute request with multi-account rotation on errors.
+    Returns (response_data, account_idx) tuple.
+    """
     tried: set = set()
     last_error: Optional[Exception] = None
     _exhaustion_retried = False
@@ -174,7 +176,7 @@ def _call_with_rotation(
                 )
                 log.info("Copilot request succeeded via account #%d", idx)
                 _accounts_impl._record_successful_request(idx)
-                return data
+                return data, idx
             except urllib.error.HTTPError as e:
                 last_error = e
                 if e.code == 429:
@@ -275,9 +277,10 @@ def call_copilot(
         )
 
     response_data: Dict[str, Any] = {}
+    used_account_idx: int = 0
 
     if _accounts_impl._is_multi_account():
-        response_data = _call_with_rotation(
+        response_data, used_account_idx = _call_with_rotation(
             payload, initiator=initiator, interaction_id=interaction_id,
         )
     else:
@@ -286,6 +289,7 @@ def call_copilot(
         if result is None:
             raise RuntimeError("No Copilot account configured")
         acc, idx = result
+        used_account_idx = idx
         last_error: Optional[Exception] = None
 
         for attempt in range(MAX_RETRIES + 1):
@@ -368,6 +372,12 @@ def call_copilot(
         "total_tokens": prompt_tokens + completion_tokens,
         "cost": 0.0,  # Free via Copilot Pro subscription
     }
+
+    # Track quota usage
+    try:
+        _accounts_impl.track_copilot_usage(used_account_idx, model)
+    except Exception as e:
+        log.warning("copilot_quota_track_error: %s", e)
 
     # Track session stats
     session_stats = _track_session(interaction_id, usage, initiator)

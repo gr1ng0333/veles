@@ -43,6 +43,7 @@ def test_payload_passes_messages_and_tools_as_is(monkeypatch):
     monkeypatch.setattr(cpa, "_is_multi_account", lambda: False)
     monkeypatch.setattr(cpa, "_ensure_copilot_token", lambda acc, idx, urlopen: "tok")
     monkeypatch.setattr(cpa, "_record_successful_request", lambda idx: None)
+    monkeypatch.setattr(cpa, "track_copilot_usage", lambda idx, model: None)
 
     messages = [{"role": "user", "content": "hello"}]
     tools = [{"type": "function", "function": {"name": "test_fn", "parameters": {}}}]
@@ -93,6 +94,7 @@ def test_parse_response_with_tool_calls(monkeypatch):
     monkeypatch.setattr(cpa, "_is_multi_account", lambda: False)
     monkeypatch.setattr(cpa, "_ensure_copilot_token", lambda acc, idx, urlopen: "tok")
     monkeypatch.setattr(cpa, "_record_successful_request", lambda idx: None)
+    monkeypatch.setattr(cpa, "track_copilot_usage", lambda idx, model: None)
 
     msg, usage = copilot_proxy.call_copilot(
         [{"role": "user", "content": "test"}], model="gpt-4o",
@@ -385,3 +387,159 @@ def test_stale_session_cleanup():
     assert "new-session" in _active_sessions
 
     _active_sessions.clear()
+
+
+# ---------------------------------------------------------------------------
+# 9. Quota tracking — model cost, monthly reset, persisted state
+# ---------------------------------------------------------------------------
+
+def test_model_cost_known_models():
+    """Known model cost multipliers should match spec."""
+    from ouroboros.copilot_proxy_accounts import _model_cost
+    assert _model_cost("claude-haiku-4.5") == 0.33
+    assert _model_cost("claude-sonnet-4.6") == 1.0
+    assert _model_cost("claude-opus-4.6") == 3.0
+
+
+def test_model_cost_fuzzy_match():
+    """Model names with dash/dot variations should match."""
+    from ouroboros.copilot_proxy_accounts import _model_cost
+    # claude-sonnet-4-5 should fuzzy-match claude-sonnet-4.5
+    cost = _model_cost("claude-sonnet-4-5")
+    assert cost == 1.0
+
+
+def test_model_cost_unknown_defaults_to_1():
+    """Unknown model names default to 1.0."""
+    from ouroboros.copilot_proxy_accounts import _model_cost
+    assert _model_cost("unknown-model-xyz") == 1.0
+
+
+def test_track_copilot_usage_adds_units(monkeypatch, tmp_path):
+    """track_copilot_usage should accumulate usage_units."""
+    from ouroboros import copilot_proxy_accounts as cpa
+
+    state_path = tmp_path / "copilot_accounts_state.json"
+    monkeypatch.setattr(cpa, "ACCOUNTS_STATE_FILE", state_path)
+    monkeypatch.setenv("COPILOT_ACCOUNTS", json.dumps([
+        {"github_token": "ghp_0"},
+    ]))
+
+    cpa._accounts = []
+    cpa._active_idx = 0
+    cpa._init_accounts(force=True)
+
+    assert cpa._accounts[0]["usage_units"] == 0.0
+
+    cpa.track_copilot_usage(0, "claude-opus-4.6")
+    assert cpa._accounts[0]["usage_units"] == 3.0
+
+    cpa.track_copilot_usage(0, "claude-haiku-4.5")
+    assert abs(cpa._accounts[0]["usage_units"] - 3.33) < 0.01
+
+    cpa.track_copilot_usage(0, "claude-sonnet-4.6")
+    assert abs(cpa._accounts[0]["usage_units"] - 4.33) < 0.01
+
+    # Check history
+    history = cpa._accounts[0]["usage_history"]
+    assert len(history) == 3
+    assert history[0]["model"] == "claude-opus-4.6"
+    assert history[0]["cost"] == 3.0
+    assert history[1]["cost"] == 0.33
+
+
+def test_track_copilot_usage_persists(monkeypatch, tmp_path):
+    """Usage data should be persisted to state file."""
+    from ouroboros import copilot_proxy_accounts as cpa
+
+    state_path = tmp_path / "copilot_accounts_state.json"
+    monkeypatch.setattr(cpa, "ACCOUNTS_STATE_FILE", state_path)
+    monkeypatch.setenv("COPILOT_ACCOUNTS", json.dumps([
+        {"github_token": "ghp_0"},
+    ]))
+
+    cpa._accounts = []
+    cpa._active_idx = 0
+    cpa._init_accounts(force=True)
+
+    cpa.track_copilot_usage(0, "claude-opus-4.6")
+
+    # Verify state file written
+    assert state_path.exists()
+    saved = json.loads(state_path.read_text())
+    assert saved["accounts"][0]["usage_units"] == 3.0
+    assert len(saved["accounts"][0]["usage_history"]) == 1
+
+
+def test_monthly_reset(monkeypatch, tmp_path):
+    """Usage should reset when month changes."""
+    import datetime as dt
+    from ouroboros import copilot_proxy_accounts as cpa
+
+    state_path = tmp_path / "copilot_accounts_state.json"
+    monkeypatch.setattr(cpa, "ACCOUNTS_STATE_FILE", state_path)
+    monkeypatch.setenv("COPILOT_ACCOUNTS", json.dumps([
+        {"github_token": "ghp_0"},
+    ]))
+
+    cpa._accounts = []
+    cpa._active_idx = 0
+    cpa._init_accounts(force=True)
+
+    # Simulate previous month usage
+    cpa._accounts[0]["usage_units"] = 150.0
+    cpa._accounts[0]["last_reset"] = "2025-01-01"
+    cpa._accounts[0]["usage_history"] = [{"ts": "old", "model": "x", "cost": 1}]
+
+    # track_copilot_usage should trigger reset since last_reset is old
+    cpa.track_copilot_usage(0, "claude-sonnet-4.6")
+
+    # After reset + 1 sonnet request = 1.0
+    assert cpa._accounts[0]["usage_units"] == 1.0
+    assert cpa._accounts[0]["last_reset"] == dt.date.today().strftime("%Y-%m-01")
+
+
+def test_copilot_accounts_status_text(monkeypatch, tmp_path):
+    """Status text should format correctly."""
+    from ouroboros import copilot_proxy_accounts as cpa
+
+    state_path = tmp_path / "copilot_accounts_state.json"
+    monkeypatch.setattr(cpa, "ACCOUNTS_STATE_FILE", state_path)
+    monkeypatch.setenv("COPILOT_ACCOUNTS", json.dumps([
+        {"github_token": "ghp_0"},
+        {"github_token": "ghp_1"},
+    ]))
+
+    cpa._accounts = []
+    cpa._active_idx = 0
+    cpa._init_accounts(force=True)
+
+    # Add some usage to account 0
+    cpa.track_copilot_usage(0, "claude-opus-4.6")
+    cpa.track_copilot_usage(0, "claude-opus-4.6")
+
+    text = cpa.copilot_accounts_status_text()
+    assert "🤖 Copilot Accounts: 2 шт." in text
+    assert "6.0/300 units" in text
+    assert "#0:" in text
+    assert "#1:" in text
+    assert "0.0/300 units" in text
+
+
+def test_track_usage_invalid_idx(monkeypatch, tmp_path):
+    """Tracking with out-of-range index should not crash."""
+    from ouroboros import copilot_proxy_accounts as cpa
+
+    state_path = tmp_path / "copilot_accounts_state.json"
+    monkeypatch.setattr(cpa, "ACCOUNTS_STATE_FILE", state_path)
+    monkeypatch.setenv("COPILOT_ACCOUNTS", json.dumps([
+        {"github_token": "ghp_0"},
+    ]))
+
+    cpa._accounts = []
+    cpa._active_idx = 0
+    cpa._init_accounts(force=True)
+
+    # Should not raise
+    cpa.track_copilot_usage(99, "claude-sonnet-4.6")
+    assert cpa._accounts[0]["usage_units"] == 0.0

@@ -2,10 +2,12 @@
 Ouroboros — Copilot Pro OAuth account management.
 
 Manages GitHub PAT → Copilot API token exchange and multi-account rotation.
+Tracks per-account usage quota (model cost multipliers).
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -22,6 +24,21 @@ REFRESH_THRESHOLD_SEC = 300  # re-exchange if < 5 min until expiry
 RATE_LIMIT_COOLDOWN_SEC = 600
 RATE_LIMIT_REPEAT_WINDOW = 1800
 RATE_LIMIT_ESCALATED_SEC = 3600
+
+# ---------------------------------------------------------------------------
+# Copilot Pro quota constants
+# ---------------------------------------------------------------------------
+
+COPILOT_MODEL_COST: Dict[str, float] = {
+    "claude-haiku-4.5": 0.33,
+    "claude-sonnet-4.6": 1.0,
+    "claude-opus-4.6": 3.0,
+}
+COPILOT_MONTHLY_QUOTA = 300  # units per account per month
+
+# Default subscription dates for existing accounts
+_DEFAULT_PURCHASED_AT = "2026-03-15"
+_DEFAULT_SUBSCRIPTION_UNTIL = "2026-04-15"
 
 _accounts_lock = threading.Lock()
 _accounts: List[Dict[str, Any]] = []
@@ -137,8 +154,22 @@ def _load_accounts() -> List[Dict[str, Any]]:
                             accounts[i]["request_timestamps"] = [
                                 t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff
                             ]
+                        # Restore quota tracking fields
+                        accounts[i]["purchased_at"] = s.get("purchased_at", _DEFAULT_PURCHASED_AT)
+                        accounts[i]["subscription_until"] = s.get("subscription_until", _DEFAULT_SUBSCRIPTION_UNTIL)
+                        accounts[i]["usage_units"] = float(s.get("usage_units", 0.0))
+                        accounts[i]["last_reset"] = s.get("last_reset", "")
+                        accounts[i]["usage_history"] = s.get("usage_history", [])
         except Exception as e:
             log.warning("Failed to load Copilot accounts state: %s", e)
+
+    # Ensure quota tracking fields exist with defaults
+    for acc in accounts:
+        acc.setdefault("purchased_at", _DEFAULT_PURCHASED_AT)
+        acc.setdefault("subscription_until", _DEFAULT_SUBSCRIPTION_UNTIL)
+        acc.setdefault("usage_units", 0.0)
+        acc.setdefault("last_reset", "")
+        acc.setdefault("usage_history", [])
 
     return accounts
 
@@ -150,7 +181,7 @@ def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
         now = time.time()
         cutoff_7d = now - 604800
         serializable = []
-        for acc in accounts:
+        for i, acc in enumerate(accounts):
             pruned = [t for t in acc.get("request_timestamps", [])
                       if isinstance(t, (int, float)) and t > cutoff_7d]
             acc["request_timestamps"] = pruned
@@ -161,6 +192,13 @@ def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
                 "dead": acc.get("dead", False),
                 "last_429_at": acc.get("last_429_at", 0),
                 "request_timestamps": pruned,
+                # Quota tracking fields
+                "idx": i,
+                "purchased_at": acc.get("purchased_at", _DEFAULT_PURCHASED_AT),
+                "subscription_until": acc.get("subscription_until", _DEFAULT_SUBSCRIPTION_UNTIL),
+                "usage_units": acc.get("usage_units", 0.0),
+                "last_reset": acc.get("last_reset", ""),
+                "usage_history": acc.get("usage_history", []),
             })
         state_obj = {"active_idx": _active_idx, "accounts": serializable}
         ACCOUNTS_STATE_FILE.write_text(json.dumps(state_obj, indent=2), encoding="utf-8")
@@ -341,5 +379,102 @@ def get_accounts_status(force_reload: bool = True) -> List[Dict[str, Any]]:
                 "requests_5h": usage["5h"],
                 "requests_7d": usage["7d"],
                 "last_429_at": acc.get("last_429_at", 0),
+                # Quota tracking
+                "usage_units": acc.get("usage_units", 0.0),
+                "purchased_at": acc.get("purchased_at", ""),
+                "subscription_until": acc.get("subscription_until", ""),
             })
         return result
+
+
+# ---------------------------------------------------------------------------
+# Quota tracking
+# ---------------------------------------------------------------------------
+
+def _model_cost(model: str) -> float:
+    """Return the cost multiplier for a Copilot model. Defaults to 1.0."""
+    # Exact match first
+    if model in COPILOT_MODEL_COST:
+        return COPILOT_MODEL_COST[model]
+    # Fuzzy match: strip version separators (claude-sonnet-4-5 → claude-sonnet-4.5)
+    normalized = model.replace("-", ".")
+    for key, cost in COPILOT_MODEL_COST.items():
+        if key.replace("-", ".") == normalized:
+            return cost
+        # Partial match on base name (e.g. "claude-sonnet-4" in "claude-sonnet-4-5")
+        if key.replace(".", "-") in model or model.replace(".", "-") in key.replace(".", "-"):
+            return cost
+    return 1.0
+
+
+def _check_monthly_reset(acc: Dict[str, Any]) -> None:
+    """Reset usage_units if we're in a new month since last_reset."""
+    today = datetime.date.today()
+    current_month_str = today.strftime("%Y-%m-01")
+    last_reset = acc.get("last_reset", "")
+    if last_reset != current_month_str:
+        old_units = acc.get("usage_units", 0.0)
+        acc["usage_units"] = 0.0
+        acc["usage_history"] = []
+        acc["last_reset"] = current_month_str
+        if old_units > 0:
+            log.info(
+                "copilot_quota_reset: reset %.1f units (last_reset %s → %s)",
+                old_units, last_reset or "none", current_month_str,
+            )
+
+
+def track_copilot_usage(account_idx: int, model: str) -> None:
+    """Call after each successful Copilot request to track quota usage."""
+    with _accounts_lock:
+        if account_idx >= len(_accounts):
+            return
+        acc = _accounts[account_idx]
+        _check_monthly_reset(acc)
+        cost = _model_cost(model)
+        acc["usage_units"] = acc.get("usage_units", 0.0) + cost
+        history = acc.setdefault("usage_history", [])
+        history.append({
+            "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "model": model,
+            "cost": cost,
+        })
+        # Keep history bounded — last 2000 entries
+        if len(history) > 2000:
+            acc["usage_history"] = history[-1000:]
+        _save_accounts_state(_accounts)
+    log.debug(
+        "copilot_usage_tracked account=#%d model=%s cost=%.2f total=%.1f/%d",
+        account_idx, model, cost, acc.get("usage_units", 0), COPILOT_MONTHLY_QUOTA,
+    )
+
+
+def copilot_accounts_status_text() -> str:
+    """Format Copilot accounts status for Telegram display."""
+    statuses = get_accounts_status(force_reload=True)
+    if not statuses:
+        return "🤖 Copilot Accounts: не настроены"
+    lines = [f"🤖 Copilot Accounts: {len(statuses)} шт."]
+    for st in statuses:
+        i = st["index"]
+        if st["dead"]:
+            lines.append(f"💀 #{i}: dead")
+            continue
+        units = st.get("usage_units", 0.0)
+        free_pct = max(0, (1 - units / COPILOT_MONTHLY_QUOTA) * 100) if COPILOT_MONTHLY_QUOTA else 0
+        sub_until = st.get("subscription_until", "")
+        sub_label = ""
+        if sub_until:
+            try:
+                dt = datetime.date.fromisoformat(sub_until)
+                sub_label = f" | sub until {dt.strftime('%b %d')}"
+            except ValueError:
+                sub_label = f" | sub until {sub_until}"
+        if st["in_cooldown"]:
+            mins = st["cooldown_remaining"] // 60
+            icon = "⏳"
+            lines.append(f"{icon} #{i}: {units:.1f}/{COPILOT_MONTHLY_QUOTA} units ({free_pct:.0f}% free) | cooldown {mins}m{sub_label}")
+        else:
+            icon = "✅"
+            lines.append(f"{icon} #{i}: {units:.1f}/{COPILOT_MONTHLY_QUOTA} units ({free_pct:.0f}% free){sub_label}")
+    return "\n".join(lines)
