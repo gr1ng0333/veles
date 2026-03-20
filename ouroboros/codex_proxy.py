@@ -122,6 +122,10 @@ def get_accounts_status() -> List[Dict[str, Any]]:
     return _accounts_impl.get_accounts_status()
 
 
+def refresh_all_quotas() -> Dict[int, Optional[Dict[str, Any]]]:
+    return _accounts_impl.refresh_all_quotas()
+
+
 # Tool-call recovery moved to ouroboros/codex_recovery.py
 from ouroboros.codex_recovery import _try_extract_tool_calls_from_text  # noqa: F401
 
