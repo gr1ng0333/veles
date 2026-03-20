@@ -119,9 +119,13 @@ class Memory:
             lines = []
             for i, e in enumerate(entries):
                 dir_raw = str(e.get("direction", "")).lower()
-                direction = "→" if dir_raw in ("out", "outgoing") else "←"
                 ts = str(e.get("ts", ""))[:16]
                 raw_text = str(e.get("text", ""))
+                if dir_raw == "system":
+                    entry_type = str(e.get("type", "")).strip() or "system"
+                    lines.append(f"📋 [{ts}] [{entry_type}] {raw_text}")
+                    continue
+                direction = "→" if dir_raw in ("out", "outgoing") else "←"
                 if dir_raw in ("out", "outgoing"):
                     text = raw_text if i in recent_outgoing else short(raw_text, 800)
                 else:
@@ -172,10 +176,14 @@ class Memory:
         lines = []
         for i, e in enumerate(recent):
             dir_raw = str(e.get("direction", "")).lower()
-            direction = "→" if dir_raw in ("out", "outgoing") else "←"
             ts_full = e.get("ts", "")
             ts_hhmm = ts_full[11:16] if len(ts_full) >= 16 else ""
             raw_text = str(e.get("text", ""))
+            if dir_raw == "system":
+                entry_type = str(e.get("type", "")).strip() or "system"
+                lines.append(f"📋 {ts_hhmm} [{entry_type}] {raw_text}")
+                continue
+            direction = "→" if dir_raw in ("out", "outgoing") else "←"
             if dir_raw in ("out", "outgoing"):
                 text = raw_text if i in recent_outgoing else short(raw_text, 800)
             else:

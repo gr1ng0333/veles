@@ -171,13 +171,13 @@ def _apply_context_overrides_and_compaction(
         messages = compact_tool_history_llm(messages, keep_recent=pending_compaction)
         ctx._pending_compaction = None
     elif task_type == "evolution" and round_idx > 4:
-        messages = compact_tool_history(messages, keep_recent=6)
+        messages = compact_tool_history(messages, keep_recent=50)
     elif task_type == "evolution" and round_idx > 2 and len(messages) > 30:
-        messages = compact_tool_history(messages, keep_recent=6)
-    elif round_idx > 8:
-        messages = compact_tool_history(messages, keep_recent=6)
+        messages = compact_tool_history(messages, keep_recent=50)
+    elif round_idx > 12:
+        messages = compact_tool_history(messages, keep_recent=50)
     elif round_idx > 3 and len(messages) > 60:
-        messages = compact_tool_history(messages, keep_recent=6)
+        messages = compact_tool_history(messages, keep_recent=50)
 
     return messages, active_model, active_effort
 
