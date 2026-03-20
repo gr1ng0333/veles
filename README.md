@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.70.2-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.71.3-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.70.2 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.71.3 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -43,6 +43,22 @@
 Слабее всего пока ведут себя **fresh timeline** и **comparison**, если SERP переполнен вторичными обзорами и не отдаёт первичку наверх.
 
 ## Changelog
+
+### 6.71.3
+- Re-synced release metadata after the review/plan/worker-dispatch line: `VERSION`, `pyproject.toml`, README version markers, and git tag now match again.
+- Revalidated the release contour to separate a real version desync from the unrelated structural smoke tail (`function_count_reasonable`).
+
+### 6.71.2
+- Fixed worker task dispatch so queued review tasks are actually claimed from the supervisor queue instead of hanging in limbo.
+- Added regression coverage for worker dispatch / review pickup behavior.
+
+### 6.71.1
+- Routed multi-model code review through the shared `LLMClient` instead of a hardcoded OpenRouter-only path.
+- Review tools now work across Codex, Copilot, and OpenRouter transports with dedicated tests.
+
+### 6.71.0
+- Added a structured plan system with persistent multi-step execution state and explicit plan tools.
+- Exposed plan context to consciousness/context building so long-running work can retain intent across steps.
 
 ### 6.70.1
 - Auto-refresh for consciousness Codex token: reuses existing OAuth refresh mechanism for `CODEX_CONSCIOUSNESS_*` env vars.
