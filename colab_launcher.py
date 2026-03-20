@@ -681,6 +681,16 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
             log.warning("refresh_all_quotas failed: %s", e)
         statuses = get_accounts_status()
         send_with_budget(chat_id, format_codex_accounts_status(statuses))
+
+        # Copilot accounts block
+        try:
+            from ouroboros.copilot_proxy_accounts import copilot_accounts_status_text
+            copilot_text = copilot_accounts_status_text()
+            if copilot_text:
+                send_with_budget(chat_id, copilot_text)
+        except Exception as e:
+            log.warning("copilot_accounts_status failed: %s", e)
+
         return True
     if lowered.startswith("/switch"):
         from ouroboros.codex_proxy import force_switch_account
