@@ -439,6 +439,102 @@ def bootstrap_refresh_missing_access_tokens(auth_endpoint: str, urlopen) -> Dict
 
 
 
+QUOTA_REFRESH_MIN_INTERVAL = 300  # 5 minutes — skip if fresher
+
+
+def refresh_all_quotas() -> Dict[int, Optional[Dict[str, Any]]]:
+    """Send a minimal request through each live account to capture fresh quota headers.
+
+    Returns {account_idx: quota_dict or None if failed}.
+    """
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+    AUTH_ENDPOINT = "https://auth.openai.com/oauth/token"
+
+    with _accounts_lock:
+        _init_accounts()
+        snapshot = [(i, dict(acc)) for i, acc in enumerate(_accounts)]
+
+    now = time.time()
+    results: Dict[int, Optional[Dict[str, Any]]] = {}
+
+    for idx, acc in snapshot:
+        if acc.get("dead"):
+            results[idx] = None
+            continue
+        if acc.get("cooldown_until", 0) > now:
+            results[idx] = None
+            continue
+        # Skip if quota was updated recently
+        existing_q = acc.get("quota") or {}
+        if existing_q.get("updated_at", 0) > now - QUOTA_REFRESH_MIN_INTERVAL:
+            results[idx] = existing_q
+            continue
+
+        # Refresh token if needed
+        access = _refresh_account(acc, idx, AUTH_ENDPOINT, urllib.request.urlopen)
+        if not access:
+            results[idx] = None
+            continue
+
+        # Minimal Codex request
+        payload = {
+            "model": "gpt-5.4",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+            "instructions": "Reply with one word.",
+            "store": False,
+            "stream": True,
+            "max_output_tokens": 1,
+        }
+        try:
+            body = json.dumps(payload).encode()
+            headers = {
+                "Authorization": f"Bearer {access}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            }
+            req = __import__("urllib.request").request.Request(
+                CODEX_ENDPOINT, data=body, headers=headers, method="POST",
+            )
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
+                resp_headers = dict(resp.headers)
+                resp.read()  # drain body
+
+            # Extract quota from headers
+            quota: Dict[str, Any] = {}
+            for k, v in resp_headers.items():
+                kl = k.lower()
+                if not kl.startswith("x-codex-"):
+                    continue
+                key = kl[len("x-codex-"):].replace("-", "_")
+                if v.isdigit():
+                    quota[key] = int(v)
+                else:
+                    try:
+                        quota[key] = float(v)
+                    except (ValueError, TypeError):
+                        quota[key] = v
+
+            if quota:
+                _update_account_quota(idx, quota)
+                results[idx] = quota
+                log.info("Refreshed quota for account #%d: %s", idx, quota)
+            else:
+                results[idx] = None
+        except Exception as e:
+            log.warning("Failed to refresh quota for account #%d: %s", idx, e)
+            results[idx] = None
+
+        # Pause between accounts to avoid rate limits
+        time.sleep(1.5)
+
+    return results
+
+
 def get_accounts_status(force_reload: bool = False) -> List[Dict[str, Any]]:
     with _accounts_lock:
         _init_accounts(force=force_reload)
