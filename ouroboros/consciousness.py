@@ -567,6 +567,8 @@ class BackgroundConsciousness:
         "list_github_issues", "get_github_issue",
         # Code awareness
         "git_status", "git_diff", "codebase_health",
+        # Plan awareness (read-only)
+        "plan_status",
     })
 
     def _build_registry(self) -> "ToolRegistry":
