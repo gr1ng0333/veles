@@ -106,6 +106,10 @@ def _record_successful_request(account_idx: int) -> None:
     _accounts_impl._record_successful_request(account_idx)
 
 
+def _clear_last_error(account_idx: int) -> None:
+    _accounts_impl._clear_last_error(account_idx)
+
+
 def _update_account_quota(account_idx: int, quota: Dict[str, Any]) -> None:
     _accounts_impl._update_account_quota(account_idx, quota)
 
