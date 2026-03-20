@@ -455,14 +455,26 @@ def call_codex(
     last_error: Optional[Exception] = None
     event_data: Dict[str, Any] = {}
 
-    # Multi-account rotation or single-account fallback
-    if _is_multi_account():
+    # Multi-account rotation only for main CODEX prefix;
+    # consciousness and other prefixes always use single-account path.
+    use_rotation = _is_multi_account() and token_prefix == "CODEX"
+
+    if use_rotation:
         event_data = _call_with_rotation(payload)
     else:
+        # Determine correct env var for expires based on prefix
+        expires_env_key = (
+            "CODEX_TOKEN_EXPIRES" if token_prefix == "CODEX"
+            else f"{token_prefix}_EXPIRES"
+        )
+        is_consciousness = token_prefix != "CODEX"
+
         for attempt in range(MAX_RETRIES + 1):
             access_token = refresh_token_if_needed(token_prefix)
             if not access_token:
-                raise RuntimeError("No Codex access token available")
+                raise RuntimeError(
+                    f"No Codex access token available (prefix={token_prefix})"
+                )
 
             try:
                 event_data = _do_request(access_token, payload)
@@ -471,24 +483,30 @@ def call_codex(
                 last_error = e
                 if e.code in (401, 403) and attempt < MAX_RETRIES:
                     log.warning(
-                        "Codex returned %d, forcing token refresh (attempt %d)",
-                        e.code, attempt + 1,
+                        "Codex returned %d, forcing token refresh (prefix=%s, attempt %d)",
+                        e.code, token_prefix, attempt + 1,
                     )
-                    os.environ["CODEX_TOKEN_EXPIRES"] = "0"
+                    os.environ[expires_env_key] = "0"
                     continue
                 body_preview = ""
                 try:
                     body_preview = e.read().decode(errors="replace")[:500]
                 except Exception:
                     pass
-                log.error("Codex HTTP error %d: %s", e.code, body_preview)
+                if is_consciousness:
+                    log.error(
+                        "consciousness_codex_http_error code=%d body=%s",
+                        e.code, body_preview,
+                    )
+                else:
+                    log.error("Codex HTTP error %d: %s", e.code, body_preview)
                 raise
             except (urllib.error.URLError, OSError, TimeoutError) as e:
                 last_error = e
                 if attempt < MAX_RETRIES:
                     log.warning(
-                        "Codex network error, retrying (attempt %d): %s",
-                        attempt + 1, e,
+                        "Codex network error, retrying (prefix=%s, attempt %d): %s",
+                        token_prefix, attempt + 1, e,
                     )
                     time.sleep(2 ** attempt)
                     continue
@@ -498,14 +516,15 @@ def call_codex(
                 last_error = e
                 if attempt < MAX_RETRIES:
                     log.warning(
-                        "Codex SSE parse error, retrying (attempt %d): %s",
-                        attempt + 1, e,
+                        "Codex SSE parse error, retrying (prefix=%s, attempt %d): %s",
+                        token_prefix, attempt + 1, e,
                     )
                     continue
                 raise
         else:
             raise RuntimeError(
-                f"Codex request failed after {MAX_RETRIES + 1} attempts: {last_error}"
+                f"Codex request failed after {MAX_RETRIES + 1} attempts "
+                f"(prefix={token_prefix}): {last_error}"
             )
 
     # Extract response from event data

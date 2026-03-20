@@ -107,18 +107,33 @@ def refresh_token_if_needed(auth_endpoint: str, urlopen, prefix: str = "CODEX") 
     tokens = _load_tokens(prefix)
     expires = float(tokens.get("expires") or 0)
     now = time.time()
+    remaining = max(0, expires - now)
+    is_consciousness = prefix != "CODEX"
+
     if tokens["access_token"] and (expires - now) > REFRESH_THRESHOLD_SEC:
         return tokens["access_token"]
     if not tokens["refresh_token"]:
         log.warning("Codex token expired and no refresh token available (prefix=%s)", prefix)
         return tokens["access_token"]
-    log.info("Refreshing Codex OAuth token (prefix=%s, expires in %.0fs)", prefix, max(0, expires - now))
+
+    if is_consciousness:
+        log.info("consciousness_token_proactive_refresh expires_in=%ds", int(remaining))
+    else:
+        log.info("Refreshing Codex OAuth token (prefix=%s, expires in %.0fs)", prefix, remaining)
+
     result = _do_refresh(tokens["refresh_token"], auth_endpoint, urlopen)
     if result:
         tokens.update(result)
         _save_tokens(tokens, prefix)
-        log.info("Codex OAuth token refreshed successfully (prefix=%s)", prefix)
+        new_expires = float(result.get("expires", 0))
+        if is_consciousness:
+            log.info("consciousness_token_refreshed expires_in=%ds", int(new_expires - time.time()))
+        else:
+            log.info("Codex OAuth token refreshed successfully (prefix=%s)", prefix)
         return tokens["access_token"]
+
+    if is_consciousness:
+        log.error("consciousness_token_refresh_failed error=refresh_returned_none")
     return tokens["access_token"]
 
 
