@@ -143,6 +143,9 @@ CORE_TOOL_NAMES = {
     "knowledge_read", "knowledge_write",
     "browse_page", "browser_action", "analyze_screenshot", "solve_simple_captcha",
     "send_browser_screenshot",
+    # Plan management
+    "plan_create", "plan_approve", "plan_reject", "plan_step_done",
+    "plan_update", "plan_complete", "plan_status",
 }
 
 

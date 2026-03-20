@@ -102,7 +102,7 @@ def _build_runtime_section(env: Any, task: Dict[str, Any]) -> str:
 
 
 def _build_memory_sections(memory: Memory) -> List[str]:
-    """Build scratchpad, identity, dialogue summary sections."""
+    """Build scratchpad, identity, active plan, dialogue summary sections."""
     sections = []
 
     scratchpad_raw = memory.load_scratchpad()
@@ -110,6 +110,15 @@ def _build_memory_sections(memory: Memory) -> List[str]:
 
     identity_raw = memory.load_identity()
     sections.append("## Identity\n\n" + clip_text(identity_raw, 80000))
+
+    # Active plan (if any)
+    try:
+        from ouroboros.plans import get_active_plan, format_plan_for_context
+        active_plan = get_active_plan(memory.drive_root)
+        if active_plan:
+            sections.append(format_plan_for_context(active_plan))
+    except Exception:
+        pass
 
     # Dialogue summary (key moments from chat history)
     summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
