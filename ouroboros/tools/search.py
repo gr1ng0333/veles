@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 from ouroboros.artifacts import save_artifact
+from ouroboros.circuit_breaker import CircuitBreaker
 from ouroboros.llm import LLMClient
 from ouroboros.tools.search_ranking import DOC_QUERY_MARKERS, POLICY_QUERY_MARKERS, READING_PRIORITY, collect_research_sources
 from ouroboros.tools.search_transport import READING_BACKEND, classify_timeout_error, run_discovery_transport, timeout_profile
@@ -23,6 +24,14 @@ log = logging.getLogger(__name__)
 SEARXNG_DEFAULT = "http://localhost:8888"
 SERPER_DEFAULT_URL = "https://google.serper.dev/search"
 MAX_RESULTS = 5
+
+# ---------------------------------------------------------------------------
+# Circuit breakers — one per search backend
+# ---------------------------------------------------------------------------
+_searxng_breaker = CircuitBreaker("searxng", failure_threshold=3, recovery_timeout=60)
+_serper_breaker = CircuitBreaker("serper", failure_threshold=5, recovery_timeout=120)
+_ddg_breaker = CircuitBreaker("duckduckgo", failure_threshold=3, recovery_timeout=60)
+_openai_breaker = CircuitBreaker("openai", failure_threshold=5, recovery_timeout=120)
 
 
 _timeout_like = lambda exc: isinstance(exc, TimeoutError | socket.timeout) or exc.__class__.__name__ in {"TimeoutError", "ReadTimeout", "ConnectTimeout"}
@@ -591,10 +600,106 @@ def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_
     run.answer_mode = output_mode_override if output_mode_override in {"short_factual", "analyst_memo", "comparison_brief", "timeline"} else mode_by_intent.get(run.intent_type, "short_factual")
     _render_synthesis(run, policy)
 
+# ---------------------------------------------------------------------------
+# DuckDuckGo HTML scraper helpers (stdlib only)
+# ---------------------------------------------------------------------------
+_DDG_URL = "https://html.duckduckgo.com/html/"
+_DDG_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+_DDG_LINK_RE = re.compile(
+    r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', re.DOTALL,
+)
+_DDG_SNIPPET_RE = re.compile(
+    r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL,
+)
+
+
+def _parse_ddg_html(raw_html: str, limit: int = MAX_RESULTS) -> list[dict[str, str]]:
+    """Extract search results from DuckDuckGo HTML page."""
+    import urllib.parse
+
+    links = _DDG_LINK_RE.findall(raw_html)
+    snippets = _DDG_SNIPPET_RE.findall(raw_html)
+    results: list[dict[str, str]] = []
+    for i, (href, title_html) in enumerate(links[:limit * 2]):
+        title = re.sub(r"<[^>]+>", "", html.unescape(title_html)).strip()
+        snippet = re.sub(r"<[^>]+>", "", html.unescape(snippets[i])).strip() if i < len(snippets) else ""
+        url = href
+        if "duckduckgo.com" in href:
+            parsed = urllib.parse.urlparse(href)
+            uddg = urllib.parse.parse_qs(parsed.query).get("uddg")
+            if uddg:
+                url = urllib.parse.unquote(uddg[0])
+            else:
+                continue
+        if not url.startswith(("http://", "https://")):
+            continue
+        results.append({"title": title or url, "url": url, "snippet": snippet})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _search_duckduckgo(q: str, timeout_sec: int = 10) -> dict[str, Any]:
+    """DuckDuckGo HTML scrape search backend (stdlib only, zero deps)."""
+    import urllib.parse
+    import urllib.request
+
+    encoded = urllib.parse.quote_plus(q)
+    url = f"{_DDG_URL}?q={encoded}"
+    req = urllib.request.Request(url, headers={"User-Agent": _DDG_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:  # noqa: S310
+            raw = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        log.warning("DuckDuckGo search failed: %s", exc)
+        if _timeout_like(exc):
+            timeout_info = classify_timeout_error(exc, "discovery")
+            return {"query": q, "status": "timeout", "backend": "duckduckgo", "sources": [], "answer": "", "error": timeout_info["type"], "error_detail": timeout_info["detail"], "timeout_limit": timeout_sec}
+        return {"query": q, "status": "error", "backend": "duckduckgo", "sources": [], "answer": "", "error": repr(exc)}
+    sources = clean_sources(_parse_ddg_html(raw))
+    if not sources:
+        return {"query": q, "status": "no_results", "backend": "duckduckgo", "sources": [], "answer": "", "error": "DuckDuckGo returned no usable results."}
+    return {"query": q, "status": "ok", "backend": "duckduckgo", "sources": sources, "answer": "", "error": None}
+
+
+# ---------------------------------------------------------------------------
+# Circuit-breaker-aware backend dispatcher
+# ---------------------------------------------------------------------------
+_BACKEND_BREAKERS: dict[str, CircuitBreaker] = {
+    "searxng": _searxng_breaker,
+    "serper": _serper_breaker,
+    "duckduckgo": _ddg_breaker,
+    "openai": _openai_breaker,
+}
+
+
 def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) -> str:
     del ctx
     timeout_sec = max(int(timeout_sec or 20), 1)
     def run_backend(name: str, q: str) -> Dict[str, Any]:
+        breaker = _BACKEND_BREAKERS.get(name)
+        if breaker and not breaker.allow_request():
+            log.debug("Circuit breaker OPEN for %s, skipping", name)
+            return {"query": q, "status": "error", "backend": name, "sources": [], "answer": "", "error": f"Circuit breaker open for {name}."}
+        try:
+            result = _run_backend_inner(name, q, timeout_sec)
+        except Exception:
+            if breaker:
+                breaker.record_failure()
+            raise
+        if result.get("status") == "ok":
+            if breaker:
+                breaker.record_success()
+        else:
+            if breaker:
+                breaker.record_failure()
+        return result
+
+    def _run_backend_inner(name: str, q: str, tmo: int) -> Dict[str, Any]:
         if name == "searxng":
             if not SEARXNG_DEFAULT:
                 return {"query": q, "status": "error", "backend": "searxng", "sources": [], "answer": "", "error": "SEARXNG_URL missing."}
@@ -605,15 +710,17 @@ def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) ->
                 params = urllib.parse.urlencode({"q": q, "format": "json", "language": "ru", "safesearch": 0})
                 url = f"{SEARXNG_DEFAULT.rstrip('/')}/search?{params}"
                 req = urllib.request.Request(url, headers={"Accept": "application/json"})
-                with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                with urllib.request.urlopen(req, timeout=tmo) as resp:
                     data = json.loads(resp.read())
                 return {"query": q, "status": "ok", "backend": "searxng", "sources": clean_sources(data.get("results", [])), "answer": "", "error": None}
             except Exception as exc:
                 log.warning("SearXNG search failed: %s", exc)
                 if _timeout_like(exc):
                     timeout_info = classify_timeout_error(exc, "discovery")
-                    return {"query": q, "status": "timeout", "backend": "searxng", "sources": [], "answer": "", "error": timeout_info["type"], "error_detail": timeout_info["detail"], "timeout_limit": timeout_sec}
+                    return {"query": q, "status": "timeout", "backend": "searxng", "sources": [], "answer": "", "error": timeout_info["type"], "error_detail": timeout_info["detail"], "timeout_limit": tmo}
                 return {"query": q, "status": "error", "backend": "searxng", "sources": [], "answer": "", "error": repr(exc)}
+        if name == "duckduckgo":
+            return _search_duckduckgo(q, timeout_sec=tmo)
         if name == "openai":
             if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")):
                 return {"query": q, "status": "error", "backend": "openai", "sources": [], "answer": "", "error": "Web search backend unavailable: no OPENAI_API_KEY or OPENROUTER_API_KEY configured."}
@@ -647,6 +754,7 @@ def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) ->
                 except Exception:
                     payload = {"answer": text.strip(), "sources": []}
             return {"query": q, "status": "ok", "backend": "openai", "sources": clean_sources(payload.get("sources", [])), "answer": str(payload.get("answer") or "").strip(), "error": None}
+        # Default: serper
         api_key = os.environ.get("SERPER_API_KEY", "").strip()
         if not api_key:
             return {"query": q, "status": "error", "backend": "serper", "sources": [], "answer": "", "error": "SERPER_API_KEY missing."}
@@ -660,7 +768,7 @@ def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) ->
                 headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            with urllib.request.urlopen(req, timeout=tmo) as resp:
                 data = json.loads(resp.read())
             organic = data.get("organic") or []
             answer_box = data.get("answerBox") or {}
@@ -689,10 +797,19 @@ def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) ->
             log.warning("Serper search failed: %s", exc)
             if _timeout_like(exc):
                 timeout_info = classify_timeout_error(exc, "discovery")
-                return {"query": q, "status": "timeout", "backend": "serper", "sources": [], "answer": "", "error": timeout_info["type"], "error_detail": timeout_info["detail"], "timeout_limit": timeout_sec}
+                return {"query": q, "status": "timeout", "backend": "serper", "sources": [], "answer": "", "error": timeout_info["type"], "error_detail": timeout_info["detail"], "timeout_limit": tmo}
             return {"query": q, "status": "error", "backend": "serper", "sources": [], "answer": "", "error": repr(exc)}
 
-    result = run_discovery_transport(query, lambda q: run_backend("serper", q), (("searxng", lambda q: run_backend("searxng", q)), ("openai", lambda q: run_backend("openai", q))))
+    # Fallback chain: searxng → serper → duckduckgo → openai
+    result = run_discovery_transport(
+        query,
+        lambda q: run_backend("searxng", q),
+        (
+            ("serper", lambda q: run_backend("serper", q)),
+            ("duckduckgo", lambda q: run_backend("duckduckgo", q)),
+            ("openai", lambda q: run_backend("openai", q)),
+        ),
+    )
     result["sources"] = clean_sources(result.get("sources", []))
     transport = dict(result.get("transport") or {})
     if transport:
@@ -720,9 +837,9 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     policy = asdict(policy_obj)
     run.intent_policy = policy
     run.budget_profile = budget
-    run.transport = {"discovery_backend": "serper", "reading_backend": READING_BACKEND, "fallback_backend": None, "fallback_backends": [], "events": []}
+    run.transport = {"discovery_backend": "searxng", "reading_backend": READING_BACKEND, "fallback_backend": None, "fallback_backends": [], "events": []}
     run.timeout_profile = timeout_profile(run.budget_mode)
-    run.discovery_backend_used = "serper"
+    run.discovery_backend_used = "searxng"
     run.reading_backend_used = READING_BACKEND
     deadline = time.monotonic() + max(int(run.timeout_profile.get("overall_run_timeout_sec", 90)), 1)
     plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)
