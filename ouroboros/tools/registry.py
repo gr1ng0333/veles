@@ -193,12 +193,15 @@ class ToolRegistry:
 
     def schemas(self, core_only: bool = False) -> List[Dict[str, Any]]:
         if not core_only:
-            return [{"type": "function", "function": e.schema} for e in self._entries.values()]
+            return [
+                {"type": "function", "function": e.schema, "name": e.name}
+                for e in self._entries.values()
+            ]
         # Core tools + meta-tools for discovering/enabling extended tools
         result = []
         for e in self._entries.values():
             if e.name in CORE_TOOL_NAMES or e.name in ("list_available_tools", "enable_tools"):
-                result.append({"type": "function", "function": e.schema})
+                result.append({"type": "function", "function": e.schema, "name": e.name})
         return result
 
     def list_non_core_tools(self) -> List[Dict[str, str]]:
