@@ -391,113 +391,28 @@ def _codebase_digest(ctx: ToolContext) -> str:
 # ---------------------------------------------------------------------------
 
 def _summarize_dialogue(ctx: ToolContext, last_n: int = 200) -> str:
-    """Summarize dialogue history into key moments, decisions, and creator preferences."""
-    from ouroboros.llm import LLMClient
-    from ouroboros.model_modes import get_aux_light_model
+    """Force immediate dialogue consolidation (normally automatic after each task).
 
-    # Read last_n messages from chat.jsonl
-    chat_path = ctx.drive_root / "logs" / "chat.jsonl"
-    if not chat_path.exists():
-        return "⚠️ chat.jsonl not found"
+    Dialogue consolidation is now automatic — runs after each task completion.
+    This tool forces an immediate consolidation regardless of message threshold.
+    """
+    from ouroboros.llm import LLMClient
+    from ouroboros.consolidator import DialogueConsolidator
 
     try:
-        entries = []
-        with chat_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        log.debug("Failed to parse chat.jsonl line in summarize_dialogue", exc_info=True)
-                        continue
-
-        # Take last N entries
-        entries = entries[-last_n:] if len(entries) > last_n else entries
-
-        if not entries:
-            return "⚠️ No chat entries found"
-
-        # Format entries as text
-        dialogue_text = []
-        for entry in entries:
-            ts = entry.get("ts", "")
-            direction = entry.get("direction", "")
-            role = "Creator" if direction == "in" else "Veles"
-            text = entry.get("text", "")
-            dialogue_text.append(f"[{ts}] {role}: {text}")
-
-        formatted_dialogue = "\n".join(dialogue_text)
-
-        # Build summarization prompt
-        prompt = f"""Summarize the following dialogue history between the creator and Veles.
-
-Extract:
-1. Key decisions made (technical, architectural, strategic)
-2. Creator's preferences and communication style
-3. Important technical choices and their rationale
-4. Recurring themes or patterns
-
-For each key moment, include the timestamp.
-
-Format as markdown with clear sections.
-
-Dialogue history ({len(entries)} messages):
-
-{formatted_dialogue}
-
-Now write a comprehensive summary:"""
-
-        # Call LLM
         llm = LLMClient()
-        model = get_aux_light_model()
+        consolidator = DialogueConsolidator(drive_root=ctx.drive_root, llm_client=llm)
+        did_consolidate = consolidator.maybe_consolidate(force=True)
 
-        messages = [
-            {"role": "user", "content": prompt}
-        ]
-
-        response, usage = llm.chat(
-            messages=messages,
-            model=model,
-            max_tokens=4096,
-        )
-
-        # Track cost in budget system
-        if usage:
-            usage_event = {
-                "type": "llm_usage",
-                "ts": utc_now_iso(),
-                "task_id": ctx.task_id if ctx.task_id else "",
-                "usage": {
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
-                    "cost": usage.get("cost", 0),
-                },
-                "category": "summarize",
-            }
-            if ctx.event_queue is not None:
-                try:
-                    ctx.event_queue.put_nowait(usage_event)
-                except Exception:
-                    if hasattr(ctx, "pending_events"):
-                        ctx.pending_events.append(usage_event)
-            elif hasattr(ctx, "pending_events"):
-                ctx.pending_events.append(usage_event)
-
-        summary = response.get("content", "")
-        if not summary:
-            return "⚠️ LLM returned empty summary"
-
-        # Write to memory/dialogue_summary.md
-        summary_path = ctx.drive_root / "memory" / "dialogue_summary.md"
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        summary_path.write_text(summary, encoding="utf-8")
-
-        cost = float(usage.get("cost", 0))
-        return f"OK: Summarized {len(entries)} messages. Written to memory/dialogue_summary.md. Cost: ${cost:.4f}\n\n{summary[:500]}..."
+        if did_consolidate:
+            blocks = consolidator._load_blocks()
+            return f"OK: Forced dialogue consolidation. Total blocks: {len(blocks)}."
+        else:
+            blocks = consolidator._load_blocks()
+            return f"OK: No new messages to consolidate. Existing blocks: {len(blocks)}."
 
     except Exception as e:
-        log.warning("Failed to summarize dialogue", exc_info=True)
+        log.warning("Failed to force dialogue consolidation", exc_info=True)
         return f"⚠️ Error: {repr(e)}"
 
 
@@ -661,9 +576,9 @@ def get_tools() -> List[ToolEntry]:
         }, _codebase_digest),
         ToolEntry("summarize_dialogue", {
             "name": "summarize_dialogue",
-            "description": "Summarize dialogue history into key moments, decisions, and creator preferences. Writes to memory/dialogue_summary.md.",
+            "description": "Force immediate dialogue consolidation (normally automatic after each task). Creates episode summaries from recent messages.",
             "parameters": {"type": "object", "properties": {
-                "last_n": {"type": "integer", "description": "Number of recent messages to summarize (default 200)"},
+                "last_n": {"type": "integer", "description": "Deprecated, ignored. Consolidation processes all new messages since last run."},
             }, "required": []},
         }, _summarize_dialogue),
         ToolEntry("forward_to_worker", {

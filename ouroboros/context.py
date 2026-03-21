@@ -120,12 +120,27 @@ def _build_memory_sections(memory: Memory) -> List[str]:
     except Exception:
         pass
 
-    # Dialogue summary (key moments from chat history)
-    summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
-    if summary_path.exists():
-        summary_text = read_text(summary_path)
-        if summary_text.strip():
-            sections.append("## Dialogue Summary\n\n" + clip_text(summary_text, 20000))
+    # Dialogue history (block-based consolidator replaces legacy dialogue_summary.md)
+    try:
+        from ouroboros.consolidator import DialogueConsolidator
+        consolidator = DialogueConsolidator(drive_root=memory.drive_root, llm_client=None)
+        blocks_text = consolidator.render_for_context()
+        if blocks_text.strip():
+            sections.append("## Dialogue History\n\n" + clip_text(blocks_text, 20000))
+        else:
+            # Fallback to legacy dialogue_summary.md during migration
+            summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
+            if summary_path.exists():
+                summary_text = read_text(summary_path)
+                if summary_text.strip():
+                    sections.append("## Dialogue Summary\n\n" + clip_text(summary_text, 20000))
+    except Exception:
+        # Ultimate fallback if consolidator import fails
+        summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
+        if summary_path.exists():
+            summary_text = read_text(summary_path)
+            if summary_text.strip():
+                sections.append("## Dialogue Summary\n\n" + clip_text(summary_text, 20000))
 
     return sections
 

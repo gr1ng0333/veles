@@ -499,6 +499,24 @@ class OuroborosAgent:
             except Exception:
                 log.debug("Execution reflection failed (non-critical)", exc_info=True)
 
+            # Dialogue consolidation — non-blocking daemon thread
+            try:
+                from ouroboros.consolidator import DialogueConsolidator
+                _dr = pathlib.Path(self.env.drive_root)
+                _llm_ref = self.llm
+
+                def _run_consolidation():
+                    try:
+                        c = DialogueConsolidator(drive_root=_dr, llm_client=_llm_ref)
+                        if c.maybe_consolidate():
+                            log.info("dialogue_consolidated blocks=%d", len(c._load_blocks()))
+                    except Exception:
+                        log.warning("dialogue_consolidation_failed", exc_info=True)
+
+                threading.Thread(target=_run_consolidation, daemon=True).start()
+            except Exception:
+                log.debug("Dialogue consolidation setup failed (non-critical)", exc_info=True)
+
             return list(self._pending_events)
 
         finally:
