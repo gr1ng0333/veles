@@ -405,6 +405,7 @@ def build_llm_messages(
     )
     bible_md = _safe_read(env.repo_path("BIBLE.md"))
     readme_md = _safe_read(env.repo_path("README.md"))
+    safety_md = _safe_read(env.repo_path("prompts/SAFETY.md"), fallback="")
     state_json = _safe_read(env.drive_path("state/state.json"), fallback="{}")
 
     # --- Load memory ---
@@ -432,6 +433,8 @@ def build_llm_messages(
         + base_prompt + "\n\n"
         + "## BIBLE.md\n\n" + clip_text(bible_md, 180000)
     )
+    if safety_md.strip():
+        static_text += "\n\n## Safety Policy\n\n" + clip_text(safety_md, 5000)
     if needs_full_context:
         readme_limit = 2000 if task_type == "evolution" else 180000
         static_text += "\n\n## README.md\n\n" + clip_text(readme_md, readme_limit)
