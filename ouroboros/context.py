@@ -435,6 +435,12 @@ def build_llm_messages(
     )
     if safety_md.strip():
         static_text += "\n\n## Safety Policy\n\n" + clip_text(safety_md, 5000)
+
+    # Pre-commit review checklist — always visible so agent self-checks commits
+    checklists_md = _safe_read(env.repo_path("prompts/CHECKLISTS.md"), fallback="")
+    if checklists_md.strip():
+        static_text += "\n\n" + clip_text(checklists_md, 2500)
+
     if needs_full_context:
         readme_limit = 2000 if task_type == "evolution" else 180000
         static_text += "\n\n## README.md\n\n" + clip_text(readme_md, readme_limit)

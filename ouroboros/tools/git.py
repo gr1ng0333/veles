@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import re
 import subprocess
 import time
 from typing import Any, Dict, List, Optional
@@ -148,6 +149,60 @@ def _git_push_with_tests(ctx: ToolContext) -> Optional[str]:
     return None
 
 
+# --- Pre-commit checks (advisory) ---
+
+_SECRET_PATTERNS = re.compile(
+    r"(?:OPENROUTER_API_KEY|CODEX_ACCESS|COPILOT_GITHUB_TOKEN|Bearer\s+[A-Za-z0-9\-_.]+|sk-[A-Za-z0-9]{20,})"
+)
+
+
+def _pre_commit_checks(repo_dir: pathlib.Path, files_changed: List[str]) -> List[str]:
+    """Run fast programmatic pre-commit checks. Returns list of advisory warnings."""
+    issues: List[str] = []
+
+    # Check 1: VERSION ↔ pyproject.toml sync
+    try:
+        version_file = (repo_dir / "VERSION").read_text(encoding="utf-8").strip()
+        pyproject_text = (repo_dir / "pyproject.toml").read_text(encoding="utf-8")
+        if f'version = "{version_file}"' not in pyproject_text:
+            issues.append(f"\u26a0\ufe0f VERSION ({version_file}) and pyproject.toml out of sync")
+    except Exception:
+        pass
+
+    # Check 2: No secrets in changed files
+    for f in files_changed:
+        if f.endswith((".py", ".md", ".toml", ".json", ".yaml", ".yml")):
+            try:
+                content = (repo_dir / f).read_text(encoding="utf-8")
+                for match in _SECRET_PATTERNS.finditer(content):
+                    issues.append(f"\u26a0\ufe0f Possible secret in {f}: '{match.group()[:30]}...'")
+                    break  # one warning per file
+            except Exception:
+                pass
+
+    # Check 3: Import check for changed .py files
+    for f in files_changed:
+        if f.endswith(".py") and not f.startswith("tests/") and not f.startswith("test_"):
+            module = f.replace("/", ".").replace("\\", ".").removesuffix(".py")
+            try:
+                import importlib
+                importlib.import_module(module)
+            except Exception as exc:
+                issues.append(f"\u26a0\ufe0f Import error in {f}: {exc}")
+
+    return issues
+
+
+def _get_changed_files(repo_dir: pathlib.Path) -> List[str]:
+    """Get list of staged + unstaged changed files relative to repo root."""
+    try:
+        out = run_cmd(["git", "diff", "--cached", "--name-only"], cwd=str(repo_dir))
+        out += run_cmd(["git", "diff", "--name-only"], cwd=str(repo_dir))
+        return list(set(line.strip() for line in out.splitlines() if line.strip()))
+    except Exception:
+        return []
+
+
 # --- Tool implementations ---
 
 def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message: str) -> str:
@@ -186,7 +241,14 @@ def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message
     finally:
         _release_git_lock(lock)
     ctx.last_push_succeeded = True
-    return f"OK: committed and pushed to {ctx.branch_dev}: {commit_message}"
+    result = f"OK: committed and pushed to {ctx.branch_dev}: {commit_message}"
+
+    # Advisory pre-commit checks (non-blocking)
+    warnings = _pre_commit_checks(pathlib.Path(ctx.repo_dir), [safe_relpath(path)])
+    if warnings:
+        result += "\n" + "\n".join(warnings)
+
+    return result
 
 
 def _repo_commit_push(ctx: ToolContext, commit_message: str, paths: Optional[List[str]] = None) -> str:
@@ -229,6 +291,15 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str, paths: Optional[Lis
         _release_git_lock(lock)
     ctx.last_push_succeeded = True
     result = f"OK: committed and pushed to {ctx.branch_dev}: {commit_message}"
+
+    # Advisory pre-commit checks (non-blocking)
+    changed = _get_changed_files(pathlib.Path(ctx.repo_dir))
+    if not changed and paths:
+        changed = [safe_relpath(p) for p in paths if str(p).strip()]
+    warnings = _pre_commit_checks(pathlib.Path(ctx.repo_dir), changed)
+    if warnings:
+        result += "\n" + "\n".join(warnings)
+
     if paths is not None:
         try:
             untracked = run_cmd(["git", "ls-files", "--others", "--exclude-standard"], cwd=ctx.repo_dir)

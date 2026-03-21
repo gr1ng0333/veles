@@ -9,6 +9,7 @@ Any model accepted by LLMClient.chat() works: codex/*, copilot/*, or plain OpenR
 
 import json
 import logging
+import pathlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ouroboros.utils import utc_now_iso
@@ -142,8 +143,27 @@ def _multi_model_review(content: str, prompt: str, models: list, ctx: ToolContex
     from ouroboros.llm import LLMClient
     llm_client = LLMClient()
 
+    # Enrich review prompt with CHECKLISTS.md if available
+    enriched_prompt = prompt
+    try:
+        repo_dir = pathlib.Path(ctx.repo_dir) if ctx and hasattr(ctx, "repo_dir") else None
+        if repo_dir:
+            checklists_path = repo_dir / "prompts" / "CHECKLISTS.md"
+            if checklists_path.exists():
+                checklists_text = checklists_path.read_text(encoding="utf-8")
+                if checklists_text.strip():
+                    enriched_prompt = (
+                        enriched_prompt
+                        + "\n\n## Review Checklist\n"
+                        + checklists_text
+                        + "\n\nFor each checklist item, assess: PASS, FAIL, or N/A.\n"
+                        "At the end, give overall verdict: PASS or FAIL."
+                    )
+    except Exception:
+        log.debug("Failed to load CHECKLISTS.md for review", exc_info=True)
+
     messages = [
-        {"role": "system", "content": prompt},
+        {"role": "system", "content": enriched_prompt},
         {"role": "user", "content": content},
     ]
 
