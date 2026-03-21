@@ -82,8 +82,8 @@ def _get_active_account() -> Optional[Tuple[Dict[str, Any], int]]:
     return _accounts_impl._get_active_account()
 
 
-def _on_rate_limit(account_idx: int, retry_after: int = 0) -> None:
-    _accounts_impl._on_rate_limit(account_idx, retry_after)
+def _on_rate_limit(account_idx: int, retry_after: int = 0, reason: str = "rate_limited") -> None:
+    _accounts_impl._on_rate_limit(account_idx, retry_after, reason=reason)
 
 
 def _on_dead_account(account_idx: int) -> None:
@@ -112,6 +112,18 @@ def _clear_last_error(account_idx: int) -> None:
 
 def _update_account_quota(account_idx: int, quota: Dict[str, Any]) -> None:
     _accounts_impl._update_account_quota(account_idx, quota)
+
+
+def _set_last_error(account_idx: int, error: Dict[str, Any]) -> None:
+    _accounts_impl._set_last_error(account_idx, error)
+
+
+def classify_codex_http_failure(
+    status_code: int,
+    headers: Optional[Dict[str, Any]] = None,
+    body: Any = None,
+) -> Dict[str, Any]:
+    return _accounts_impl.classify_codex_http_failure(status_code, headers, body)
 
 
 def force_switch_account(target_idx: int = -1) -> Dict[str, Any]:
@@ -413,6 +425,7 @@ def call_codex(
     system_prompt: Optional[str] = None,
     model: str = "gpt-5.3-codex",
     token_prefix: str = "CODEX",
+    reasoning_effort: str = "medium",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Call Codex via ChatGPT OAuth endpoint.
@@ -479,7 +492,7 @@ def call_codex(
         )
         payload["instructions"] += codex_tool_hint
 
-    payload["reasoning"] = {"effort": "medium"}
+    payload["reasoning"] = {"effort": reasoning_effort}
 
     converted_tools = _tools_to_responses_format(tools)
     if converted_tools:
