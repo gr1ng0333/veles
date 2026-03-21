@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from ouroboros.artifacts import save_artifact
 from ouroboros.circuit_breaker import CircuitBreaker
 from ouroboros.llm import LLMClient
+from ouroboros.search_utils import shorten_query, expand_search_queries
 from ouroboros.tools.search_ranking import DOC_QUERY_MARKERS, POLICY_QUERY_MARKERS, READING_PRIORITY, collect_research_sources
 from ouroboros.tools.search_transport import READING_BACKEND, classify_timeout_error, run_discovery_transport, timeout_profile
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -679,6 +680,11 @@ _BACKEND_BREAKERS: dict[str, CircuitBreaker] = {
 
 def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) -> str:
     del ctx
+    # Shorten overly long queries for better search results
+    original_query = str(query or "").strip()
+    query = shorten_query(original_query)
+    if query != original_query:
+        log.debug("Query shortened: %r → %r", original_query, query)
     timeout_sec = max(int(timeout_sec or 20), 1)
     def run_backend(name: str, q: str) -> Dict[str, Any]:
         breaker = _BACKEND_BREAKERS.get(name)
@@ -843,7 +849,14 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     run.reading_backend_used = READING_BACKEND
     deadline = time.monotonic() + max(int(run.timeout_profile.get("overall_run_timeout_sec", 90)), 1)
     plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)
-    run.subqueries = list(plan.subqueries)
+    # Expand queries for broader research coverage
+    merged_subqueries = list(plan.subqueries)
+    seen_sq = {sq.casefold() for sq in merged_subqueries}
+    for eq in expand_search_queries(run.user_query):
+        if eq.casefold() not in seen_sq:
+            merged_subqueries.append(eq)
+            seen_sq.add(eq.casefold())
+    run.subqueries = merged_subqueries
     run.query_plan = asdict(plan)
     try:
         ranked_sources = collect_research_sources(
