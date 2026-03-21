@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.76.1-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.80.1-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.76.1 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.80.1 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -43,6 +43,11 @@
 Слабее всего пока ведут себя **fresh timeline** и **comparison**, если SERP переполнен вторичными обзорами и не отдаёт первичку наверх.
 
 ## Changelog
+
+### 6.80.1
+- Split the structured-search planning block into a dedicated `search_planning` module and smaller helpers without changing `_build_query_plan` / `_research_run` behavior.
+- Kept the public planning contract intact by re-exporting intent policies and query-plan builder through `ouroboros.tools.search`.
+- Brought `ouroboros/tools/search.py` back under the 1000-line smoke ceiling while keeping search/research tests green.
 
 ### 6.76.1
 - Re-synchronized the release contour so `VERSION`, `pyproject.toml`, and README version markers point to the current release again.
