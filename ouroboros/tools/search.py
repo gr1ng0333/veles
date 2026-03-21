@@ -806,15 +806,25 @@ def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) ->
                 return {"query": q, "status": "timeout", "backend": "serper", "sources": [], "answer": "", "error": timeout_info["type"], "error_detail": timeout_info["detail"], "timeout_limit": tmo}
             return {"query": q, "status": "error", "backend": "serper", "sources": [], "answer": "", "error": repr(exc)}
 
-    # Fallback chain: searxng → serper → duckduckgo → openai
-    result = run_discovery_transport(
-        query,
-        lambda q: run_backend("searxng", q),
-        (
-            ("serper", lambda q: run_backend("serper", q)),
+    # Fallback chain: serper (if API key) → searxng → duckduckgo → openai
+    _has_serper_key = bool(os.environ.get("SERPER_API_KEY", "").strip())
+    if _has_serper_key:
+        _primary_fn = lambda q: run_backend("serper", q)
+        _fallbacks = (
+            ("searxng", lambda q: run_backend("searxng", q)),
             ("duckduckgo", lambda q: run_backend("duckduckgo", q)),
             ("openai", lambda q: run_backend("openai", q)),
-        ),
+        )
+    else:
+        _primary_fn = lambda q: run_backend("searxng", q)
+        _fallbacks = (
+            ("duckduckgo", lambda q: run_backend("duckduckgo", q)),
+            ("openai", lambda q: run_backend("openai", q)),
+        )
+    result = run_discovery_transport(
+        query,
+        _primary_fn,
+        _fallbacks,
     )
     result["sources"] = clean_sources(result.get("sources", []))
     transport = dict(result.get("transport") or {})
@@ -843,9 +853,10 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     policy = asdict(policy_obj)
     run.intent_policy = policy
     run.budget_profile = budget
-    run.transport = {"discovery_backend": "searxng", "reading_backend": READING_BACKEND, "fallback_backend": None, "fallback_backends": [], "events": []}
+    _research_primary = "serper" if bool(os.environ.get("SERPER_API_KEY", "").strip()) else "searxng"
+    run.transport = {"discovery_backend": _research_primary, "reading_backend": READING_BACKEND, "fallback_backend": None, "fallback_backends": [], "events": []}
     run.timeout_profile = timeout_profile(run.budget_mode)
-    run.discovery_backend_used = "searxng"
+    run.discovery_backend_used = _research_primary
     run.reading_backend_used = READING_BACKEND
     deadline = time.monotonic() + max(int(run.timeout_profile.get("overall_run_timeout_sec", 90)), 1)
     plan = _build_query_plan(run.user_query, run.intent_type, max_subqueries=budget.max_subqueries, freshness_priority_override=policy_obj.freshness_priority)

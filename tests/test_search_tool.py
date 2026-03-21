@@ -112,9 +112,10 @@ from ouroboros.tools.registry import ToolContext
         ),
     ],
 )
+@patch('ouroboros.tools.search.expand_search_queries', return_value=[])
 @patch('ouroboros.tools.search.save_artifact')
 @patch('ouroboros.tools.search._web_search')
-def test_research_run_policy_trace_and_scored_candidates(_web, _save, query, side_effect, expected_intent, expected_policy, expected_subqueries, expected_first_url):
+def test_research_run_policy_trace_and_scored_candidates(_web, _save, _expand, query, side_effect, expected_intent, expected_policy, expected_subqueries, expected_first_url):
     _web.side_effect = side_effect
     _save.return_value = {"relative_path": "artifacts/outbox/2026/03/17/task/json/research-run.json", "bytes": 123}
 
