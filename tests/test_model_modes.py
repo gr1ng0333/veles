@@ -161,6 +161,7 @@ def test_background_reasoning_effort_reads_explicit_env(monkeypatch) -> None:
 def test_runtime_diagnostics_exposes_requested_transport_and_actual_models(monkeypatch) -> None:
     monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "qwen/qwen3-coder:free")
     monkeypatch.setenv("OUROBOROS_MODEL_BACKGROUND", "google/gemini-2.5-pro-preview")
+    monkeypatch.setenv("CODEX_CONSCIOUSNESS_ACCESS", "token")
     diagnostics = get_runtime_diagnostics({"active_model_mode": "sonnet"})
     assert diagnostics["mode_key"] == "sonnet"
     assert diagnostics["main"]["requested_model"] == "copilot/claude-sonnet-4.6"

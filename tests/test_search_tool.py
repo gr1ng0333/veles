@@ -138,7 +138,7 @@ def test_research_run_policy_trace_and_scored_candidates(_web, _save, _expand, q
     assert data['query_plan']['branch_budget'] == expected_subqueries
     assert any('selected_to_read' in page and 'rejected' in page for page in data['visited_pages'])
     assert any(page['ranked_sources'] for page in data['visited_pages'] if page['source_count'])
-    assert data['transport']['discovery_backend'] == 'searxng'
+    assert data['transport']['discovery_backend'] == 'serper'
     assert data['transport']['reading_backend'] == 'urllib'
     assert isinstance(data['transport']['fallback_backends'], list)
 
@@ -1136,7 +1136,7 @@ def test_research_run_records_timeout_events(_web, _fetch, _save, timeout_kind):
     expected_error = 'discovery_timeout' if timeout_kind == 'discovery' else 'page_read_timeout'
     assert any(item['error_type'] == expected_error for item in data['timeout_events'])
     assert data['timeout_profile']['overall_run_timeout_sec'] >= data['timeout_profile']['discovery_timeout_sec']
-    assert data['discovery_backend_used'] == 'searxng'
+    assert data['discovery_backend_used'] == 'serper'
     if timeout_kind == 'discovery':
         assert any(event.get('status') == 'timeout' for event in data['transport']['events'])
     else:
@@ -1150,7 +1150,7 @@ def test_research_run_records_timeout_events(_web, _fetch, _save, timeout_kind):
         assert data['owner_interrupt_seen'] is False
         assert len(data['interruption_checks']) >= 2
         summary = data['debug_summary']
-        assert summary['discovery_backend_used'] == 'searxng'
+        assert summary['discovery_backend_used'] == 'serper'
         assert summary['reading_backend_used'] == 'urllib'
         assert summary['pages_attempted'] == 1
         assert summary['pages_succeeded'] == 0
