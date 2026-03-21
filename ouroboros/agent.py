@@ -434,7 +434,7 @@ class OuroborosAgent:
             elif task_type_str == "evolution":
                 initial_effort = "medium"
             else:
-                initial_effort = "medium"
+                initial_effort = os.environ.get("OUROBOROS_REASONING_EFFORT", "").strip().lower() or "high"
 
             try:
                 text, usage, llm_trace = run_llm_loop(

@@ -206,13 +206,15 @@ class LLMClient:
         # Codex proxy: explicit OAuth-backed transport
         if transport == "codex":
             from ouroboros.codex_proxy import call_codex
-            return call_codex(messages, tools=tools, model=actual_model)
+            return call_codex(messages, tools=tools, model=actual_model,
+                              reasoning_effort=reasoning_effort)
 
         # Consciousness Codex: separate account tokens
         if transport == "codex-consciousness":
             from ouroboros.codex_proxy import call_codex
             return call_codex(messages, tools=tools, model=actual_model,
-                              token_prefix="CODEX_CONSCIOUSNESS")
+                              token_prefix="CODEX_CONSCIOUSNESS",
+                              reasoning_effort=reasoning_effort)
 
         # Copilot proxy: explicit Claude-only transport
         if transport == "copilot":
