@@ -267,7 +267,7 @@ class DialogueConsolidator:
                 messages=[{"role": "user", "content": prompt}],
                 model=model,
                 tools=None,
-                reasoning_effort="low",
+                reasoning_effort="medium",
                 max_tokens=4096,
             )
             content = msg.get("content", "")
@@ -320,7 +320,7 @@ class DialogueConsolidator:
                 messages=[{"role": "user", "content": prompt}],
                 model=model,
                 tools=None,
-                reasoning_effort="low",
+                reasoning_effort="medium",
                 max_tokens=4096,
             )
             return msg.get("content", ""), usage

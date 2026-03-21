@@ -468,7 +468,7 @@ class OuroborosAgent:
             # Emit events for supervisor
             self._emit_task_results(task, text, usage, llm_trace, start_time, drive_logs)
 
-            # Execution reflection — auto-learning from task errors (non-blocking)
+            # Execution reflection — auto-learning from task errors (non-blocking daemon thread)
             try:
                 from ouroboros.reflection import maybe_create_reflection
                 from ouroboros.model_modes import max_rounds_for_active_mode
@@ -485,19 +485,36 @@ class OuroborosAgent:
                     mr = max_rounds_for_active_mode()
                 except Exception:
                     mr = 200
-                maybe_create_reflection(
-                    task_id=str(task.get("id") or ""),
-                    task_text=str(task.get("text") or "")[:500],
-                    task_eval=task_eval,
-                    response_text=text,
-                    llm_trace=llm_trace,
-                    rounds=int(usage.get("rounds") or 0),
-                    max_rounds=mr,
-                    drive_root=pathlib.Path(self.env.drive_root),
-                    llm_client=self.llm,
-                )
+                # Capture all values for the closure before launching the thread
+                _refl_task_id = str(task.get("id") or "")
+                _refl_task_text = str(task.get("text") or "")[:500]
+                _refl_task_eval = task_eval
+                _refl_response_text = text
+                _refl_llm_trace = llm_trace
+                _refl_rounds = int(usage.get("rounds") or 0)
+                _refl_max_rounds = mr
+                _refl_drive_root = pathlib.Path(self.env.drive_root)
+                _refl_llm = self.llm
+
+                def _run_reflection():
+                    try:
+                        maybe_create_reflection(
+                            task_id=_refl_task_id,
+                            task_text=_refl_task_text,
+                            task_eval=_refl_task_eval,
+                            response_text=_refl_response_text,
+                            llm_trace=_refl_llm_trace,
+                            rounds=_refl_rounds,
+                            max_rounds=_refl_max_rounds,
+                            drive_root=_refl_drive_root,
+                            llm_client=_refl_llm,
+                        )
+                    except Exception:
+                        log.debug("Execution reflection failed (non-critical)", exc_info=True)
+
+                threading.Thread(target=_run_reflection, daemon=True, name="reflection").start()
             except Exception:
-                log.debug("Execution reflection failed (non-critical)", exc_info=True)
+                log.debug("Execution reflection setup failed (non-critical)", exc_info=True)
 
             # Dialogue consolidation — non-blocking daemon thread
             try:
