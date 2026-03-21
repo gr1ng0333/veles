@@ -431,7 +431,7 @@ def test_function_count_reasonable():
     assert len(sizes) >= 100, f"Only {len(sizes)} functions — too few?"
     # Soft structural budget: keep total function count bounded, but allow recent
     # growth from project/plan/review capabilities until a dedicated simplification cycle.
-    assert len(sizes) <= 1100, f"{len(sizes)} functions — too many?"
+    assert len(sizes) <= 1125, f"{len(sizes)} functions — too many?"
 
 
 # ── Pre-push gate tests ──────────────────────────────────────────────

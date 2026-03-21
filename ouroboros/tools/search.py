@@ -17,6 +17,21 @@ from ouroboros.artifacts import save_artifact
 from ouroboros.circuit_breaker import CircuitBreaker
 from ouroboros.llm import LLMClient
 from ouroboros.search_utils import shorten_query, expand_search_queries
+from ouroboros.tools.search_planning import (
+    BUDGET_PROFILES,
+    DEFAULT_INTENT,
+    INTENT_KEYWORDS,
+    INTENT_POLICIES,
+    MAX_BROWSE_DEPTH,
+    MAX_PAGES_READ,
+    MAX_SUBQUERIES,
+    MAX_SYNTHESIS_ROUNDS,
+    IntentPolicy,
+    QueryPlan,
+    ResearchBudgetProfile,
+    _build_query_plan,
+    detect_intent_type,
+)
 from ouroboros.tools.search_ranking import DOC_QUERY_MARKERS, POLICY_QUERY_MARKERS, READING_PRIORITY, collect_research_sources
 from ouroboros.tools.search_transport import READING_BACKEND, classify_timeout_error, run_discovery_transport, timeout_profile
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -61,169 +76,6 @@ def clean_sources(rows: Any) -> List[Dict[str, str]]:
         if len(cleaned) >= MAX_RESULTS:
             break
     return cleaned
-
-@dataclass(frozen=True)
-class IntentPolicy:
-    freshness_priority: str
-    search_branches: int
-    min_sources_before_synthesis: int
-    require_official_source: bool
-
-@dataclass(frozen=True)
-class ResearchBudgetProfile:
-    max_subqueries: int
-    max_pages_read: int
-    max_browse_depth: int
-    max_synthesis_rounds: int
-    early_stop_min_read_pages: int
-    early_stop_min_findings: int
-
-@dataclass(frozen=True)
-class QueryPlan:
-    primary_query: str
-    freshness_query: str
-    official_docs_query: str
-    alternative_wording_query: str
-    contradiction_check_query: str
-    subqueries: List[str]
-    branch_budget: int
-
-BUDGET_PROFILES: Dict[str, ResearchBudgetProfile] = {
-    "cheap": ResearchBudgetProfile(3, 2, 1, 1, 1, 2),
-    "balanced": ResearchBudgetProfile(4, 4, 2, 1, 2, 2),
-    "deep": ResearchBudgetProfile(MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS, 3, 4),
-}
-ANTI_SYCOPHANCY_PHRASES = (
-    "отличный вопрос",
-    "классный вопрос",
-    "крутой вопрос",
-    "great question",
-    "awesome question",
-    "you are right",
-)
-INTENT_POLICIES: Dict[str, IntentPolicy] = {
-    "breaking_news": IntentPolicy("high", 4, 3, False),
-    "fact_lookup": IntentPolicy("medium", 3, 2, False),
-    "product_docs_api_lookup": IntentPolicy("medium", 4, 2, True),
-    "comparison_evaluation": IntentPolicy("medium", 4, 3, False),
-    "background_explainer": IntentPolicy("low", 3, 2, False),
-    "people_company_ecosystem_tracking": IntentPolicy("high", 4, 3, False),
-}
-INTENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "breaking_news",
-        (
-            "breaking news",
-            "latest news",
-            "latest updates",
-            "today",
-            "сегодня",
-            "что случилось",
-            "только что",
-            "recent news",
-            "announcement today",
-            "new release today",
-        ),
-    ),
-    (
-        "comparison_evaluation",
-        (
-            "compare",
-            "comparison",
-            "vs",
-            "versus",
-            "better",
-            "best for",
-            "tradeoff",
-            "benchmark",
-            "pros and cons",
-            "сравни",
-            "разница",
-            "лучше",
-            "против",
-        ),
-    ),
-    (
-        "product_docs_api_lookup",
-        (
-            "api",
-            "sdk",
-            "documentation",
-            "docs",
-            "reference",
-            "endpoint",
-            "rate limit",
-            "oauth",
-            "quickstart",
-            "guide",
-            "install",
-            "лимит api",
-            "документац",
-            "эндпоинт",
-            "справк",
-        ),
-    ),
-    (
-        "people_company_ecosystem_tracking",
-        (
-            "founder",
-            "ceo",
-            "company",
-            "startup",
-            "funding",
-            "layoffs",
-            "hiring",
-            "team",
-            "maintainer",
-            "community",
-            "ecosystem",
-            "roadmap",
-            "компан",
-            "основател",
-            "экосистем",
-            "инвест",
-            "уволь",
-            "команда",
-        ),
-    ),
-    (
-        "background_explainer",
-        (
-            "explain",
-            "overview",
-            "background",
-            "history",
-            "why",
-            "how does",
-            "what is",
-            "что такое",
-            "объясни",
-            "история",
-            "почему",
-            "как работает",
-        ),
-    ),
-    (
-        "fact_lookup",
-        (
-            "when did",
-            "how many",
-            "exact",
-            "exactly",
-            "maximum",
-            "default",
-            "version",
-            "release date",
-            "сколько",
-            "какой",
-            "точн",
-            "максим",
-            "дефолт",
-            "версия",
-            "дата релиза",
-        ),
-    ),
-)
 
 @dataclass
 class ResearchRun:
@@ -377,83 +229,6 @@ def _render_synthesis(run: ResearchRun, policy: IntentPolicy) -> None:
     if unique_source_rows:
         final_blocks += ["", "Sources:", *(f"- {item['url']} [{item['source_type']}, {item['authority']}]" for item in unique_source_rows)]
     run.final_answer = "\n".join(final_blocks)
-
-def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SUBQUERIES, freshness_priority_override: str | None = None) -> QueryPlan:
-    base = re.sub(r"\s+", " ", str(query or "").strip())
-    lowered = base.lower()
-    policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT]); comparison_benchmark = bool(intent_type == "comparison_evaluation" and re.search(r"\b(benchmark|latency|throughput|eval|evaluation|head[- ]?to[- ]?head|leaderboard|arena)\b", lowered)); comparison_ecosystem = bool(intent_type == "comparison_evaluation" and re.search(r"\b(ecosystem|tooling|workflow|integration|integrations|maintainer|plugin|extension|community)\b", lowered)); policy_sensitive = bool(re.search(r"\b(policy|privacy|retention|data usage|data retention|artifact retention|training|legal|terms)\b", lowered)); docs_sensitive = bool(re.search(r"\b(docs|documentation|api|reference|sdk|guide|quickstart|manual|endpoint|rate limit)\b", lowered))
-    freshness_priority = freshness_priority_override if freshness_priority_override in {"low", "medium", "high"} else policy.freshness_priority
-    freshness_suffix = {
-        "high": "latest updates",
-        "medium": "recent",
-        "low": "overview",
-    }[freshness_priority]
-    vendor_hints = [hint for needle, hint in (("openai", "platform.openai.com openai"), ("anthropic", "docs.anthropic.com anthropic"), ("github actions", "docs.github.com github actions"), ("github", "docs.github.com github"), ("cursor", "docs.cursor.com cursor"), ("huggingface", "huggingface docs huggingface")) if needle in lowered]
-    vendor_hint = " ".join(dict.fromkeys(vendor_hints))
-    official_suffix = "official benchmark methodology maintainers" if comparison_benchmark else ("official policy data usage retention privacy docs" if policy_sensitive else ((f"{vendor_hint} official docs api reference vendor documentation".strip()) if docs_sensitive or policy.require_official_source else "official source"))
-    if comparison_ecosystem:
-        official_suffix = f"{vendor_hint} official docs integrations maintainer repo pricing".strip() or "official docs integrations maintainer repo pricing"
-    elif intent_type == "comparison_evaluation" and not comparison_benchmark:
-        official_suffix = f"{vendor_hint} official compare pricing feature matrix vendor docs".strip() or "official compare pricing feature matrix vendor docs"
-    alternative_suffix = {
-        "comparison_evaluation": "tradeoffs benchmark methodology independent results" if comparison_benchmark else ("integrations plugin maintainer repo workflow docs" if comparison_ecosystem else "tradeoffs official compare pricing feature matrix"),
-        "breaking_news": "timeline and reactions",
-        "product_docs_api_lookup": ((f"{vendor_hint} reference guide vendor documentation api reference".strip()) if not policy_sensitive else (f"{vendor_hint} privacy policy data retention help center official guidance".strip())),
-        "people_company_ecosystem_tracking": "ecosystem map",
-        "fact_lookup": "exact value reference",
-        "background_explainer": "overview",
-    }.get(intent_type, "alternative wording")
-    contradiction_suffix = {
-        "breaking_news": "conflicting reports",
-        "fact_lookup": "contradicting value",
-        "product_docs_api_lookup": "limitations exceptions" if not policy_sensitive else "conflicting policy statement retention training opt out",
-        "comparison_evaluation": "benchmark disagreement counterarguments" if comparison_benchmark else "counterarguments maintainer disagreements",
-        "people_company_ecosystem_tracking": "controversy changes",
-        "background_explainer": "common misconceptions",
-    }.get(intent_type, "contradictions")
-
-    primary_query = base
-    freshness_query = f"{base} {freshness_suffix}" if base else freshness_suffix
-    official_docs_query = f"{base} {official_suffix}" if base else official_suffix
-    alternative_wording_query = f"{base} {alternative_suffix}" if base else alternative_suffix
-    contradiction_check_query = f"{base} {contradiction_suffix}" if base else contradiction_suffix
-
-    candidates = [primary_query]
-    if freshness_priority in {"high", "medium"}:
-        candidates.append(freshness_query)
-    if policy.require_official_source or comparison_benchmark:
-        candidates.append(official_docs_query)
-    candidates.append(alternative_wording_query)
-    if policy.search_branches >= 4 or freshness_priority == "low":
-        candidates.append(contradiction_check_query)
-    if policy.search_branches >= 5 and not policy.require_official_source and not comparison_benchmark:
-        candidates.append(official_docs_query)
-
-    branch_budget = max(1, min(policy.search_branches, max_subqueries, MAX_SUBQUERIES))
-    subqueries: List[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        value = re.sub(r"\s+", " ", str(candidate or "").strip())
-        if not value:
-            continue
-        dedupe_key = value.casefold()
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-        subqueries.append(value)
-        if len(subqueries) >= branch_budget:
-            break
-    branch_budget = len(subqueries)
-
-    return QueryPlan(
-        primary_query=primary_query,
-        freshness_query=freshness_query,
-        official_docs_query=official_docs_query,
-        alternative_wording_query=alternative_wording_query,
-        contradiction_check_query=contradiction_check_query,
-        subqueries=subqueries,
-        branch_budget=branch_budget,
-    )
 
 def _read_page_findings(query: str, source: Dict[str, Any], timeout_sec: int = 12) -> Dict[str, Any]:
     url = str(source.get("url") or "")
@@ -842,10 +617,7 @@ def _research_run(ctx: ToolContext, query: str, budget_mode: str = "balanced", o
     run.budget_limits = asdict(budget)
     run.budget_trace = {"subqueries_executed": 0, "pages_read": 0, "browse_depth_used": 0, "synthesis_rounds_used": 0, "early_stop_triggered": False, "early_stop_reason": "", "search_calls": 0, "selected_sources_considered": 0}
     lowered = run.user_query.lower()
-    if not lowered:
-        run.intent_type = DEFAULT_INTENT
-    else:
-        run.intent_type = next((intent_type for intent_type, keywords in INTENT_KEYWORDS if any(keyword in lowered for keyword in keywords)), ("fact_lookup" if any(ch.isdigit() for ch in lowered) else DEFAULT_INTENT))
+    run.intent_type = detect_intent_type(run.user_query)
     base_policy = INTENT_POLICIES.get(run.intent_type, INTENT_POLICIES[DEFAULT_INTENT])
     effective_freshness = str(freshness_bias or "").strip().lower() or base_policy.freshness_priority
     official_sensitive_query = any(marker in lowered for marker in POLICY_QUERY_MARKERS) or any(marker in lowered for marker in ("docs", "documentation", "api", "reference", "guide", "sdk", "rate limit"))
