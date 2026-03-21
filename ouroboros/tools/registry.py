@@ -65,6 +65,9 @@ class ToolContext:
     # True when running inside handle_chat_direct (not a queued worker task)
     is_direct_chat: bool = False
 
+    # Current conversation messages (set by loop for safety checks)
+    messages: Optional[List[Dict[str, Any]]] = None
+
     def repo_path(self, rel: str) -> pathlib.Path:
         return (self.repo_dir / safe_relpath(rel)).resolve()
 
@@ -182,6 +185,14 @@ class ToolRegistry:
     def set_context(self, ctx: ToolContext) -> None:
         self._ctx = ctx
 
+    def _get_llm_client(self) -> Optional[Any]:
+        """Lazy-load LLM client for safety checks."""
+        try:
+            from ouroboros.llm import LLMClient
+            return LLMClient()
+        except Exception:
+            return None
+
     def register(self, entry: ToolEntry) -> None:
         """Register a new tool (for extension by Ouroboros)."""
         self._entries[entry.name] = entry
@@ -229,12 +240,45 @@ class ToolRegistry:
         entry = self._entries.get(name)
         if entry is None:
             return f"⚠️ Unknown tool: {name}. Available: {', '.join(sorted(self._entries.keys()))}"
+
+        # --- Safety Agent: pre-execution check ---
         try:
-            return entry.handler(self._ctx, **args)
+            from ouroboros.safety import check_tool_safety
+
+            drive_logs = self._ctx.drive_root / "logs" if self._ctx.drive_root else None
+            verdict = check_tool_safety(
+                tool_name=name,
+                arguments=args,
+                messages=self._ctx.messages,
+                llm_client=self._get_llm_client(),
+                event_queue=self._ctx.event_queue,
+                task_id=self._ctx.task_id or "",
+                drive_logs=drive_logs,
+            )
+            if verdict.action == "block":
+                return f"🚫 BLOCKED by safety agent: {verdict.reason}"
+        except Exception as exc:
+            # Fail-open: safety crash → tool executes normally
+            import logging
+            logging.getLogger(__name__).warning(
+                "Safety check failed for %s, allowing (fail-open): %s", name, exc,
+            )
+
+        try:
+            result = entry.handler(self._ctx, **args)
         except TypeError as e:
             return f"⚠️ TOOL_ARG_ERROR ({name}): {e}"
         except Exception as e:
             return f"⚠️ TOOL_ERROR ({name}): {e}"
+
+        # Append safety warning if verdict was "warn"
+        try:
+            if verdict.action == "warn" and verdict.reason:
+                return f"{verdict.reason}\n\n---\n{result}"
+        except (NameError, AttributeError):
+            pass
+
+        return result
 
     def override_handler(self, name: str, handler) -> None:
         """Override the handler for a registered tool (used for closure injection)."""
