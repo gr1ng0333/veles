@@ -74,6 +74,32 @@ def test_health_invariants_budget_drift_ok_under_or_equal_20(monkeypatch, tmp_pa
     assert "WARNING: BUDGET DRIFT" not in text
 
 
+
+
+def test_agent_version_sync_recognizes_russian_readme_marker(monkeypatch, tmp_path):
+    monkeypatch.setattr(supervisor_state, "per_task_cost_summary", lambda n=5: [])
+    env = _make_env(tmp_path, drift_pct=0.0, identity_age_hours=1.0)
+    env.repo_dir = tmp_path / "repo"
+    (tmp_path / "repo" / "README.md").write_text("**Версия:** 1.0.0\n", encoding="utf-8")
+
+    class _Proc:
+        returncode = 0
+        stdout = "v1.0.0\n"
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _Proc())
+
+    from ouroboros.agent import OuroborosAgent
+
+    agent = OuroborosAgent.__new__(OuroborosAgent)
+    agent.env = env
+    result, issues = agent._check_version_sync()
+
+    assert result["readme_version"] == "1.0.0"
+    assert result["version_file"] == "1.0.0"
+    assert result["latest_tag"] == "1.0.0"
+    assert issues == 0
+
+
 def test_health_invariants_identity_stale_after_4_hours(monkeypatch, tmp_path):
     monkeypatch.setattr(supervisor_state, "per_task_cost_summary", lambda n=5: [])
     env = _make_env(tmp_path, drift_pct=0.0, identity_age_hours=5.1)
