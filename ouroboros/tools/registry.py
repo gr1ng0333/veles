@@ -133,6 +133,46 @@ class ToolEntry:
     timeout_sec: int = 120
 
 
+# Per-tool timeout overrides (seconds).
+# Applies when a ToolEntry uses the default 120s.
+# Tools that set explicit timeout_sec in their ToolEntry keep their value.
+TOOL_TIMEOUT_OVERRIDES: Dict[str, int] = {
+    # Fast read tools — 15s
+    "repo_read": 15, "repo_list": 15,
+    "drive_read": 15, "drive_list": 15,
+    "knowledge_read": 15, "knowledge_list": 15,
+    "git_status": 15, "git_diff": 15,
+    "chat_history": 15, "list_available_tools": 15,
+    "plan_status": 15, "get_task_result": 15,
+    "codebase_digest": 15,
+    # Medium write/search tools — 30s
+    "repo_write_commit": 30, "repo_commit_push": 30,
+    "drive_write": 30, "knowledge_write": 30,
+    "run_shell": 30, "web_search": 30, "academic_search": 30,
+    "update_scratchpad": 30, "update_identity": 30,
+    "plan_create": 30, "plan_step_done": 30, "plan_update": 30,
+    "plan_approve": 30, "plan_reject": 30, "plan_complete": 30,
+    "send_owner_message": 30, "send_document": 30, "send_local_file": 30,
+    "schedule_task": 30, "cancel_task": 30,
+    "toggle_evolution": 30, "toggle_consciousness": 30,
+    "switch_model": 30, "switch_codex_account": 30,
+    "enable_tools": 30, "save_artifact": 30,
+    # Slow browser/research tools — 60s
+    "browse_page": 60, "browser_action": 60,
+    "browser_fill_login_form": 60, "browser_check_login_state": 60,
+    "browser_solve_captcha": 60, "send_browser_screenshot": 60,
+    "analyze_screenshot": 60, "solve_simple_captcha": 60,
+    "vlm_query": 60,
+    "compact_context": 60, "request_review": 60,
+    "codebase_health": 60, "vps_health_check": 60,
+    "monitor_snapshot": 60, "doctor": 60,
+    # Very slow tools — 120s+
+    "multi_model_review": 120, "wait_for_task": 120,
+    # research_run and deep_research have 180s in their ToolEntry
+    # browser_run_actions has 120s in its ToolEntry
+}
+
+
 CORE_TOOL_NAMES = {
     "repo_read", "repo_list", "repo_write_commit", "repo_commit_push",
     "drive_read", "drive_list", "drive_write",
@@ -232,9 +272,20 @@ class ToolRegistry:
         return None
 
     def get_timeout(self, name: str) -> int:
-        """Return timeout_sec for the named tool (default 120)."""
+        """Return timeout_sec for the named tool.
+
+        Priority: explicit ToolEntry.timeout_sec (if not default 120)
+        → TOOL_TIMEOUT_OVERRIDES → fallback 30s.
+        """
         entry = self._entries.get(name)
-        return entry.timeout_sec if entry is not None else 120
+        if entry is not None and entry.timeout_sec != 120:
+            # Tool module set an explicit non-default timeout
+            return entry.timeout_sec
+        if name in TOOL_TIMEOUT_OVERRIDES:
+            return TOOL_TIMEOUT_OVERRIDES[name]
+        if entry is not None:
+            return entry.timeout_sec  # default 120
+        return 30  # unknown tool default
 
     def execute(self, name: str, args: Dict[str, Any]) -> str:
         entry = self._entries.get(name)
