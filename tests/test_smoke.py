@@ -93,7 +93,7 @@ EXPECTED_TOOLS = [
     "git_status", "git_diff",
     "run_shell",
     "browse_page", "browser_action", "browser_run_actions", "browser_fill_login_form", "browser_save_session", "browser_restore_session", "browser_persist_session", "browser_restore_persisted_session", "browser_get_persisted_session", "browser_check_login_state", "browser_solve_captcha",
-    "web_search", "research_run", "deep_research",
+    "web_search", "research_run", "deep_research", "academic_search",
     "chat_history", "update_scratchpad", "update_identity",
     "request_restart", "promote_to_stable", "request_review",
     "schedule_task", "cancel_task",
