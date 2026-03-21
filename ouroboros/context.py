@@ -603,6 +603,34 @@ def apply_message_token_soft_cap(
     return pruned, info
 
 
+# --- Protected compaction tools ---
+
+_COMPACTION_PROTECTED_TOOLS = frozenset({
+    "repo_commit_push",
+    "repo_write_commit",
+    "knowledge_read",
+    "knowledge_write",
+    "knowledge_list",
+    "plan_step_done",
+    "plan_create",
+    "plan_complete",
+})
+
+
+def _find_tool_name_for_result(tool_msg: dict, messages: list) -> str:
+    """Find the tool name that produced a given tool result by matching tool_call_id."""
+    tid = tool_msg.get("tool_call_id", "")
+    if not tid:
+        return ""
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if tc.get("id") == tid:
+                return tc.get("function", {}).get("name", "")
+    return ""
+
+
 def _compact_tool_result(msg: dict, content: str) -> dict:
     """
     Compact a single tool result message.
@@ -714,10 +742,13 @@ def compact_tool_history(messages: list, keep_recent: int = 6) -> list:
                     break
 
             if parent_round is not None and parent_round in rounds_to_compact:
-                # Compact this tool result
-                content = str(msg.get("content") or "")
-                result.append(_compact_tool_result(msg, content))
-                continue
+                # Protected tools: keep result intact
+                tool_name = _find_tool_name_for_result(msg, messages)
+                if tool_name not in _COMPACTION_PROTECTED_TOOLS:
+                    # Compact this tool result
+                    content = str(msg.get("content") or "")
+                    result.append(_compact_tool_result(msg, content))
+                    continue
 
         # For compacted assistant messages, also trim the content (progress notes)
         # AND compact tool_call arguments
@@ -756,6 +787,10 @@ def compact_tool_history_llm(messages: list, keep_recent: int = 6) -> list:
                 parent_round = rs
                 break
         if parent_round is not None and parent_round in rounds_to_compact:
+            # Skip protected tools from LLM compaction
+            tool_name = _find_tool_name_for_result(msg, messages)
+            if tool_name in _COMPACTION_PROTECTED_TOOLS:
+                continue
             content = str(msg.get("content") or "")
             if len(content) > 120:
                 tool_call_id = msg.get("tool_call_id", "")
@@ -830,9 +865,12 @@ def compact_tool_history_llm(messages: list, keep_recent: int = 6) -> list:
                     parent_round = rs
                     break
             if parent_round is not None and parent_round in rounds_to_compact:
-                content = str(msg.get("content") or "")
-                result.append(_compact_tool_result(msg, content))
-                continue
+                # Protected tools: keep result intact
+                tool_name = _find_tool_name_for_result(msg, messages)
+                if tool_name not in _COMPACTION_PROTECTED_TOOLS:
+                    content = str(msg.get("content") or "")
+                    result.append(_compact_tool_result(msg, content))
+                    continue
         if i in rounds_to_compact and msg.get("role") == "assistant":
             result.append(_compact_assistant_msg(msg))
             continue

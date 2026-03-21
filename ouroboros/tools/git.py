@@ -14,6 +14,35 @@ from ouroboros.utils import utc_now_iso, write_text, safe_relpath, run_cmd
 
 log = logging.getLogger(__name__)
 
+# --- Shrink guard ---
+
+SHRINK_GUARD_THRESHOLD = 0.30  # block if new content < 30% of original
+SHRINK_GUARD_MIN_SIZE = 100    # skip guard for files < 100 bytes
+_SHRINK_GUARD_SKIP_EXT = frozenset({".md"})
+
+
+def _check_shrink_guard(file_path: pathlib.Path, new_content: str) -> Optional[str]:
+    """Return warning string if writing new_content would shrink a tracked file by >70%. None if OK."""
+    if not file_path.exists():
+        return None  # new file — no restriction
+    try:
+        old_size = file_path.stat().st_size
+    except OSError:
+        return None
+    if old_size < SHRINK_GUARD_MIN_SIZE:
+        return None  # tiny file — skip
+    if file_path.suffix.lower() in _SHRINK_GUARD_SKIP_EXT:
+        return None  # markdown — skip
+    new_size = len(new_content.encode("utf-8"))
+    if old_size > 0 and new_size < old_size * SHRINK_GUARD_THRESHOLD:
+        pct = round(new_size / old_size * 100)
+        return (
+            f"⚠️ SHRINK GUARD: new content for '{file_path.name}' is {pct}% of original "
+            f"({new_size} bytes vs {old_size} bytes). This looks like accidental truncation. "
+            f"If intentional, delete the file first with run_shell, then write the new version."
+        )
+    return None
+
 
 # --- Git lock ---
 
@@ -125,6 +154,13 @@ def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message
     ctx.last_push_succeeded = False
     if not commit_message.strip():
         return "⚠️ ERROR: commit_message must be non-empty."
+
+    # Shrink guard — block accidental truncation
+    target = ctx.repo_path(path)
+    guard_msg = _check_shrink_guard(target, content)
+    if guard_msg:
+        return guard_msg
+
     lock = _acquire_git_lock(ctx)
     try:
         try:
@@ -132,7 +168,7 @@ def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message
         except Exception as e:
             return f"⚠️ GIT_ERROR (checkout): {e}"
         try:
-            write_text(ctx.repo_path(path), content)
+            write_text(target, content)
         except Exception as e:
             return f"⚠️ FILE_WRITE_ERROR: {e}"
         try:
@@ -226,7 +262,7 @@ def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("repo_write_commit", {
             "name": "repo_write_commit",
-            "description": "Write one file + commit + push to veles branch. For small deterministic edits.",
+            "description": "Write one file + commit + push to veles branch. For small deterministic edits. Has shrink guard: blocks writes that reduce file size by >70% (prevents accidental truncation).",
             "parameters": {"type": "object", "properties": {
                 "path": {"type": "string"},
                 "content": {"type": "string"},
