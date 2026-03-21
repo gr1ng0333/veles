@@ -216,7 +216,7 @@ class OuroborosAgent:
             # Check README.md version (Bible P7: VERSION == README version)
             try:
                 readme_content = read_text(self.env.repo_path("README.md"))
-                readme_match = re.search(r'\*\*Version:\*\*\s*(\d+\.\d+\.\d+)', readme_content)
+                readme_match = re.search(r'\*\*(?:Version|Версия):\*\*\s*(\d+\.\d+\.\d+)', readme_content)
                 if readme_match:
                     readme_version = readme_match.group(1)
                     result_data["readme_version"] = readme_version
