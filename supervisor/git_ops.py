@@ -198,7 +198,35 @@ def _create_rescue_snapshot(branch: str, reason: str,
 
     atomic_write_text(rescue_dir / "rescue_meta.json",
                       json.dumps(info, ensure_ascii=False, indent=2))
+
+    # Auto-cleanup old snapshots
+    _cleanup_old_rescue_snapshots()
+
     return info
+
+
+MAX_RESCUE_SNAPSHOTS = 20
+
+
+def _cleanup_old_rescue_snapshots() -> None:
+    """Remove oldest rescue snapshots when count exceeds MAX_RESCUE_SNAPSHOTS."""
+    rescue_root = DRIVE_ROOT / "archive" / "rescue"
+    if not rescue_root.exists():
+        return
+    try:
+        dirs = sorted(
+            [d for d in rescue_root.iterdir() if d.is_dir()],
+            key=lambda d: d.name,
+        )
+        if len(dirs) <= MAX_RESCUE_SNAPSHOTS:
+            return
+        to_remove = dirs[:len(dirs) - MAX_RESCUE_SNAPSHOTS]
+        for d in to_remove:
+            shutil.rmtree(d, ignore_errors=True)
+            log.info("rescue_cleanup removed=%s remaining=%d",
+                     d.name, len(dirs) - len(to_remove))
+    except Exception:
+        log.debug("rescue_cleanup failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

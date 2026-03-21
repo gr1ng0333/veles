@@ -30,3 +30,6 @@ venv/
 # Local scratch/untracked artifacts
 ouroboros/codex_responses.py
 research/
+
+# Rescue snapshots (runtime, not tracked)
+archive/rescue/

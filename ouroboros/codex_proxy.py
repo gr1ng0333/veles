@@ -586,13 +586,13 @@ def call_codex(
     completion_tokens = int(usage_raw.get("output_tokens", 0))
     cached_tokens = int(usage_raw.get("cached_tokens", 0))
 
-    # Shadow cost — what this would cost at GPT-5.3 Codex API prices
-    # Non-cached input tokens charged at full price, cached at discount
-    non_cached_input = max(0, prompt_tokens - cached_tokens)
-    shadow_cost = (
-        (non_cached_input / 1_000_000) * 1.75
-        + (cached_tokens / 1_000_000) * 0.175
-        + (completion_tokens / 1_000_000) * 14.00
+    # Shadow cost via centralized pricing module
+    from ouroboros.pricing import estimate_cost
+    shadow_cost = estimate_cost(
+        model=model if model else "gpt-5.3-codex",
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cached_tokens=cached_tokens,
     )
 
     usage = {

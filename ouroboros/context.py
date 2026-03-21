@@ -433,6 +433,13 @@ def build_llm_messages(
         + base_prompt + "\n\n"
         + "## BIBLE.md\n\n" + clip_text(bible_md, 180000)
     )
+
+    # Architecture map — agent needs to know the system before safety rules
+    arch_path = env.repo_path("prompts/ARCHITECTURE.md")
+    arch_text = _safe_read(arch_path, fallback="")
+    if arch_text.strip():
+        static_text += "\n\n## ARCHITECTURE.md\n\n" + clip_text(arch_text, 20000)
+
     if safety_md.strip():
         static_text += "\n\n## Safety Policy\n\n" + clip_text(safety_md, 5000)
 
