@@ -41,16 +41,44 @@ READ_ONLY_PARALLEL_TOOLS = frozenset({
 # Stateful browser tools require thread-affinity (Playwright sync uses greenlet)
 STATEFUL_BROWSER_TOOLS = frozenset({"browse_page", "browser_action", "send_browser_screenshot"})
 
-def _truncate_tool_result(result: Any) -> str:
+# Default tool result cap (used for Copilot, OpenRouter, and unknown transports)
+_TOOL_RESULT_MAX = 15_000
+
+# Aggressive caps for Codex transport (no prompt caching → every token costs full price every round)
+_CODEX_TOOL_RESULT_CAPS = {
+    "run_shell":          2_000,
+    "git_diff":           4_000,
+    "git_status":         1_500,
+    "repo_read":          3_000,
+    "repo_list":          1_500,
+    "repo_write_commit":  1_000,
+    "repo_commit_push":   1_000,
+    "web_search":         3_000,
+    "research_run":       3_000,
+    "deep_research":      4_000,
+    "browse_page":        3_000,
+    "codebase_digest":    4_000,
+    "codebase_health":    2_000,
+    "vps_health_check":   2_000,
+    "multi_model_review": 4_000,
+    "_default":           2_500,
+}
+
+def _truncate_tool_result(result: Any, tool_name: str = "", transport: str = "") -> str:
     """
-    Hard-cap tool result string to 15000 characters.
-    If truncated, append a note with the original length.
+    Hard-cap tool result string.
+    For Codex transport uses per-tool aggressive caps (no prompt caching).
+    For other transports uses the default 15,000 char cap.
     """
     result_str = str(result)
-    if len(result_str) <= 15000:
+    if transport == "codex":
+        cap = _CODEX_TOOL_RESULT_CAPS.get(tool_name, _CODEX_TOOL_RESULT_CAPS["_default"])
+    else:
+        cap = _TOOL_RESULT_MAX
+    if len(result_str) <= cap:
         return result_str
     original_len = len(result_str)
-    return result_str[:15000] + f"\n... (truncated from {original_len} chars)"
+    return result_str[:cap] + f"\n... (truncated from {original_len} to {cap} chars [{transport or 'default'}])"
 
 def _execute_single_tool(
     tools: ToolRegistry,
@@ -350,6 +378,7 @@ def _handle_tool_calls(
     messages: List[Dict[str, Any]],
     llm_trace: Dict[str, Any],
     emit_progress: Callable[[str], None],
+    transport: str = "",
 ) -> Tuple[int, bool]:
     """Execute tool calls and append results to messages."""
     # Parallelize only for a strict read-only whitelist; all calls wrapped with timeout.
@@ -404,7 +433,7 @@ def _handle_tool_calls(
             executor.shutdown(wait=False, cancel_futures=True)
 
     # Process results in original order
-    return _process_tool_results(results, messages, llm_trace, emit_progress)
+    return _process_tool_results(results, messages, llm_trace, emit_progress, transport=transport)
 
 def _handle_text_response(
     content: Optional[str],
@@ -828,6 +857,7 @@ def _process_tool_results(
     messages: List[Dict[str, Any]],
     llm_trace: Dict[str, Any],
     emit_progress: Callable[[str], None],
+    transport: str = "",
 ) -> Tuple[int, bool]:
     error_count = 0
     made_progress = False
@@ -853,7 +883,7 @@ def _process_tool_results(
             if not seen_same:
                 made_progress = True
 
-        messages.append({"role": "tool", "tool_call_id": exec_result["tool_call_id"], "content": _truncate_tool_result(exec_result["result"])})
+        messages.append({"role": "tool", "tool_call_id": exec_result["tool_call_id"], "content": _truncate_tool_result(exec_result["result"], tool_name=fn_name, transport=transport)})
         trace_calls.append({
             "tool": fn_name,
             "args": _safe_args(exec_result["args_for_log"]),

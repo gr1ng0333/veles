@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 PROMPT_TOKEN_GUARD_THRESHOLD = 40000
 
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
-from ouroboros.llm import LLMClient, normalize_reasoning_effort
+from ouroboros.llm import LLMClient, normalize_reasoning_effort, model_transport
 from ouroboros.model_modes import execution_style_for_active_mode, get_runtime_diagnostics, max_rounds_for_active_mode, tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl, utc_now_iso
@@ -167,17 +167,19 @@ def _apply_context_overrides_and_compaction(
 
     pending_compaction = getattr(ctx, "_pending_compaction", None)
     task_type = getattr(ctx, "current_task_type", None) or ""
+    transport = model_transport(active_model)
+    # Copilot has prefix caching — less aggressive compaction
+    keep_recent = 30 if transport == "copilot" else 16
+
     if pending_compaction is not None:
         messages = compact_tool_history_llm(messages, keep_recent=pending_compaction)
         ctx._pending_compaction = None
     elif task_type == "evolution" and round_idx > 4:
-        messages = compact_tool_history(messages, keep_recent=50)
-    elif task_type == "evolution" and round_idx > 2 and len(messages) > 30:
-        messages = compact_tool_history(messages, keep_recent=50)
-    elif round_idx > 12:
-        messages = compact_tool_history(messages, keep_recent=50)
-    elif round_idx > 3 and len(messages) > 60:
-        messages = compact_tool_history(messages, keep_recent=50)
+        messages = compact_tool_history(messages, keep_recent=keep_recent)
+    elif round_idx >= 8 and round_idx % 8 == 0:
+        messages = compact_tool_history(messages, keep_recent=keep_recent)
+    elif round_idx > 3 and len(messages) > 40:
+        messages = compact_tool_history(messages, keep_recent=keep_recent)
 
     return messages, active_model, active_effort
 
@@ -715,6 +717,7 @@ def _process_llm_response_or_continue(
         messages,
         state["llm_trace"],
         emit_progress,
+        transport=model_transport(state["active_model"]),
     )
     state["recent_progress"], state["no_progress_rounds"] = _update_progress_windows(
         recent_progress=state["recent_progress"],
