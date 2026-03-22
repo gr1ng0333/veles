@@ -685,8 +685,8 @@ def _compact_assistant_msg(msg: dict) -> dict:
 
     # Trim content (progress notes)
     content = msg.get("content") or ""
-    if len(content) > 200:
-        content = content[:200] + "..."
+    if len(content) > 150:
+        content = content[:150] + "... (compacted)"
     compacted_msg["content"] = content
 
     # Compact tool_call arguments
@@ -767,10 +767,15 @@ def compact_tool_history(messages: list, keep_recent: int = 6) -> list:
                     continue
 
         # For compacted assistant messages, also trim the content (progress notes)
-        # AND compact tool_call arguments
+        # AND compact tool_call arguments — but skip if any tool_call is protected
         if i in rounds_to_compact and msg.get("role") == "assistant":
-            result.append(_compact_assistant_msg(msg))
-            continue
+            has_protected = any(
+                tc.get("function", {}).get("name", "") in _COMPACTION_PROTECTED_TOOLS
+                for tc in (msg.get("tool_calls") or [])
+            )
+            if not has_protected:
+                result.append(_compact_assistant_msg(msg))
+                continue
 
         result.append(msg)
 
@@ -888,8 +893,13 @@ def compact_tool_history_llm(messages: list, keep_recent: int = 6) -> list:
                     result.append(_compact_tool_result(msg, content))
                     continue
         if i in rounds_to_compact and msg.get("role") == "assistant":
-            result.append(_compact_assistant_msg(msg))
-            continue
+            has_protected = any(
+                tc.get("function", {}).get("name", "") in _COMPACTION_PROTECTED_TOOLS
+                for tc in (msg.get("tool_calls") or [])
+            )
+            if not has_protected:
+                result.append(_compact_assistant_msg(msg))
+                continue
         result.append(msg)
 
     return result
@@ -926,9 +936,9 @@ def _compact_tool_call_arguments(tool_name: str, args_json: str) -> Dict[str, An
                 args[large_field] = {"_truncated": True}
                 return {"name": tool_name, "arguments": json.dumps(args, ensure_ascii=False)}
 
-        # For other tools, if args JSON is > 500 chars, truncate
-        if len(args_json) > 500:
-            truncated = args_json[:200] + "..."
+        # For other tools, if args JSON is > 100 chars, truncate
+        if len(args_json) > 100:
+            truncated = args_json[:100] + "... (compacted)"
             return {"name": tool_name, "arguments": truncated}
 
         # Otherwise return unchanged
@@ -937,8 +947,8 @@ def _compact_tool_call_arguments(tool_name: str, args_json: str) -> Dict[str, An
     except (json.JSONDecodeError, Exception):
         # If we can't parse JSON, leave it unchanged
         # But still truncate if too long
-        if len(args_json) > 500:
-            return {"name": tool_name, "arguments": args_json[:200] + "..."}
+        if len(args_json) > 100:
+            return {"name": tool_name, "arguments": args_json[:100] + "... (compacted)"}
         return {"name": tool_name, "arguments": args_json}
 
 

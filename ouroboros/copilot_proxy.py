@@ -365,11 +365,14 @@ def call_copilot(
     usage_raw = response_data.get("usage", {})
     prompt_tokens = int(usage_raw.get("prompt_tokens", 0))
     completion_tokens = int(usage_raw.get("completion_tokens", 0))
+    prompt_details = usage_raw.get("prompt_tokens_details", {})
+    cached_tokens = int(prompt_details.get("cached_tokens", 0))
 
     usage = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
+        "cached_tokens": cached_tokens,
         "cost": 0.0,  # Free via Copilot Pro subscription
     }
 
