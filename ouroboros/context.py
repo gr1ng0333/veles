@@ -405,7 +405,6 @@ def build_llm_messages(
     )
     bible_md = _safe_read(env.repo_path("BIBLE.md"))
     readme_md = _safe_read(env.repo_path("README.md"))
-    safety_md = _safe_read(env.repo_path("prompts/SAFETY.md"), fallback="")
     state_json = _safe_read(env.drive_path("state/state.json"), fallback="{}")
 
     # --- Load memory ---
@@ -439,9 +438,6 @@ def build_llm_messages(
     arch_text = _safe_read(arch_path, fallback="")
     if arch_text.strip():
         static_text += "\n\n## ARCHITECTURE.md\n\n" + clip_text(arch_text, 20000)
-
-    if safety_md.strip():
-        static_text += "\n\n## Safety Policy\n\n" + clip_text(safety_md, 5000)
 
     # Pre-commit review checklist — always visible so agent self-checks commits
     checklists_md = _safe_read(env.repo_path("prompts/CHECKLISTS.md"), fallback="")

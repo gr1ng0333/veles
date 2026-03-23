@@ -706,8 +706,6 @@ def _process_llm_response_or_continue(
         return final_text, final_usage, final_trace
 
     _append_assistant_with_tool_calls(messages, content, tool_calls, emit_progress, state["llm_trace"])
-    # Expose messages to ToolContext for safety agent
-    tools._ctx.messages = messages
     _, tool_progress = _handle_tool_calls(
         tool_calls,
         tools,
