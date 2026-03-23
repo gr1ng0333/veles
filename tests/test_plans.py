@@ -3,6 +3,16 @@
 import json
 import pathlib
 import pytest
+
+from ouroboros.tools.registry import ToolContext
+from ouroboros.tools.plans import (
+    _plan_approve,
+    _plan_complete,
+    _plan_create,
+    _plan_reject,
+    _plan_step_done,
+    _plan_update,
+)
 from ouroboros.plans import (
     create_plan, approve_plan, reject_plan, step_done,
     update_plan, complete_plan, get_active_plan, get_plan,
@@ -156,3 +166,98 @@ def test_format_plan_summary(drive_root, sample_steps):
     text = format_plan_summary(plan)
     assert "Test Plan" in text
     assert "0/3" in text
+
+
+
+def _make_tool_ctx(drive_root, progress_messages):
+    return ToolContext(
+        repo_dir=drive_root,
+        drive_root=drive_root,
+        emit_progress_fn=progress_messages.append,
+    )
+
+
+def test_plan_tool_create_emits_progress(drive_root, sample_steps):
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+
+    result = _plan_create(ctx, "Test Plan", sample_steps, notes="Test notes")
+
+    assert "Test Plan" in result
+    assert progress
+    assert "План собран" in progress[-1]
+    assert "Test Plan" in progress[-1]
+
+
+def test_plan_tool_approve_emits_progress(drive_root, sample_steps):
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+    plan = create_plan(drive_root, "Test", sample_steps)
+
+    result = _plan_approve(ctx, plan["id"])
+
+    assert "Status: active" in result
+    assert progress
+    assert "Перевожу план" in progress[-1]
+    assert "шаг 1/3" in progress[-1]
+
+
+def test_plan_tool_step_done_emits_progress_and_next_step(drive_root, sample_steps):
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approve_plan(drive_root, plan["id"])
+
+    result = _plan_step_done(ctx, plan["id"], result="Implemented thing A", commit="abc123")
+
+    assert "Status: active" in result
+    assert progress
+    message = progress[-1]
+    assert "Шаг 1/3 завершён" in message
+    assert "Commit: `abc123`" in message
+    assert "Результат: Implemented thing A" in message
+    assert "Перехожу к следующему шагу 2/3" in message
+
+
+def test_plan_tool_update_emits_progress(drive_root, sample_steps):
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approve_plan(drive_root, plan["id"])
+
+    result = _plan_update(ctx, plan["id"], notes="New notes", add_steps=[{"title": "Step 4"}])
+
+    assert "Status: active" in result
+    assert progress
+    assert "Подправил план" in progress[-1]
+    assert "добавил 1 шаг(а/ов)" in progress[-1]
+
+
+def test_plan_tool_complete_emits_progress(drive_root, sample_steps):
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approve_plan(drive_root, plan["id"])
+    step_done(drive_root, plan["id"], result="A")
+    step_done(drive_root, plan["id"], result="B")
+    step_done(drive_root, plan["id"], result="C")
+
+    result = _plan_complete(ctx, plan["id"], summary="Everything done")
+
+    assert "Status: completed" in result
+    assert progress
+    assert "План **Test** завершён" in progress[-1]
+    assert "Итог: Everything done" in progress[-1]
+
+
+def test_plan_tool_reject_emits_progress(drive_root, sample_steps):
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+    plan = create_plan(drive_root, "Test", sample_steps)
+
+    result = _plan_reject(ctx, plan["id"], reason="Owner stopped it")
+
+    assert "rejected" in result
+    assert progress
+    assert "Останавливаю план" in progress[-1]
+    assert "Owner stopped it" in progress[-1]
