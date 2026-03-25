@@ -34,6 +34,10 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
         "cost": evt.get("cost", 0),
         "shadow_cost": evt.get("shadow_cost", 0),
     }
+    # Inject transport from event so state.py can route shadow_cost to the right counter
+    if evt.get("transport") and not usage.get("provider"):
+        usage = dict(usage)
+        usage["provider"] = evt["transport"]
     ctx.update_budget_from_usage(usage)
 
     # Log to events.jsonl for audit trail

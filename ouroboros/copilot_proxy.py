@@ -368,12 +368,22 @@ def call_copilot(
     prompt_details = usage_raw.get("prompt_tokens_details", {})
     cached_tokens = int(prompt_details.get("cached_tokens", 0))
 
+    # Shadow cost: estimate API equivalent cost for budget tracking
+    from ouroboros.pricing import estimate_cost as _estimate_cost
+    _shadow_cost = _estimate_cost(
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cached_tokens=cached_tokens,
+    )
+
     usage = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
         "cached_tokens": cached_tokens,
         "cost": 0.0,  # Free via Copilot Pro subscription
+        "shadow_cost": round(_shadow_cost, 6),
     }
 
     # Track quota usage
