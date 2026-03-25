@@ -19,7 +19,7 @@ class AntiStagnationConfig:
     extension_progress_window: int = 5
     task_max_rounds: int = 75
     small_completion_threshold: int = 100
-    small_completion_max_rounds: int = 3
+    small_completion_max_rounds: int = 8
     context_drop_pct: int = 30
 
 
@@ -45,7 +45,7 @@ def load_antistagnation_config() -> AntiStagnationConfig:
         extension_progress_window=_env_int("OUROBOROS_TASK_PROGRESS_WINDOW", 5),
         task_max_rounds=_env_int("OUROBOROS_TASK_MAX_ROUNDS", 75),
         small_completion_threshold=_env_int("OUROBOROS_SMALL_COMPLETION_THRESHOLD", 100),
-        small_completion_max_rounds=_env_int("OUROBOROS_SMALL_COMPLETION_MAX_ROUNDS", 3),
+        small_completion_max_rounds=_env_int("OUROBOROS_SMALL_COMPLETION_MAX_ROUNDS", 8),
         context_drop_pct=_env_int("OUROBOROS_CONTEXT_DROP_PCT", 30, minimum=5),
     )
 
@@ -107,10 +107,11 @@ def is_small_completion_stagnation(
 ) -> bool:
     """Return True if the last N rounds all had completion_tokens below threshold.
 
-    For evolution tasks: threshold is halved (50 instead of 100),
-    and rounds with tool_calls are never considered stagnant.
+    Rounds with tool_calls are never considered stagnant (tool work is real work).
+    For evolution tasks: threshold is halved (50 instead of 100).
     """
-    if task_type == "evolution" and has_tool_calls:
+    # Any round with tool calls = real work, not stagnation
+    if has_tool_calls:
         return False
     n = cfg.small_completion_max_rounds
     if len(recent_completion_tokens) < n:
