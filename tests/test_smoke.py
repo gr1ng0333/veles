@@ -306,10 +306,11 @@ def test_no_hardcoded_replies():
     [
         ("VERSION", lambda version, _: len(version.split(".")) == 3 and all(part.isdigit() for part in version.split("."))),
         ("README.md", lambda version, readme: version in readme),
+        ("pyproject.toml", lambda version, pyproject: f'version = "{version}"' in pyproject),
     ],
 )
 def test_version_artifacts(target, check):
-    """VERSION stays semver-valid and synchronized with README."""
+    """VERSION stays semver-valid and synchronized with README and pyproject."""
     version = (REPO / "VERSION").read_text().strip()
     payload = version if target == "VERSION" else (REPO / target).read_text()
     assert check(version, payload), f"Version artifact check failed for {target}"
