@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.82.0-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.82.1-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.82.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.82.1 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -47,6 +47,10 @@
 Слабее всего пока ведут себя **fresh timeline** и **comparison**, если SERP переполнен вторичными обзорами и не отдаёт первичку наверх.
 
 ## Changelog
+
+### 6.82.1
+- Telegram supervisor now handles `/low`, `/medium`, `/high`, `/xhigh` as real slash-commands instead of forwarding them into the LLM chat contour.
+- Codex reasoning effort switching now persists through the shared `set_codex_reasoning_effort()` path in both supervisor and tool-level `switch_model`.
 
 ### 6.82.0
 - Added `short_video_pack_download`: a manifest-driven batch downloader for curated short-video URLs with partial success reporting and Telegram delivery as documents or zip.

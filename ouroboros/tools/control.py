@@ -159,11 +159,15 @@ def _toggle_consciousness(ctx: ToolContext, action: str = "status") -> str:
 
 
 def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:
-    """LLM-driven model/effort switch (Constitution P3: LLM-first).
+    """LLM-driven model/effort switch.
 
-    Stored in ToolContext, applied on the next LLM call in the loop.
+    Model override is still applied to the current loop context for the next round.
+    Codex reasoning effort is additionally persisted to shared state/env so the
+    switch survives task boundaries and matches supervisor slash-commands.
     """
     from ouroboros.llm import LLMClient, normalize_reasoning_effort
+    from ouroboros.model_modes import set_codex_reasoning_effort
+
     available = LLMClient().available_models()
     changes = []
 
@@ -176,7 +180,8 @@ def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:
     if effort:
         normalized = normalize_reasoning_effort(effort, default="medium")
         ctx.active_effort_override = normalized
-        changes.append(f"effort={normalized}")
+        persisted = set_codex_reasoning_effort(normalized)
+        changes.append(f"effort={persisted}")
 
     if not changes:
         return f"Current available models: {', '.join(available)}. Pass model and/or effort to switch."

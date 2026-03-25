@@ -11,7 +11,7 @@ def install_launcher_deps() -> None:
 install_launcher_deps()
 from ouroboros.apply_patch import install as install_apply_patch
 from ouroboros.llm import DEFAULT_LIGHT_MODEL
-from ouroboros.model_modes import bootstrap_mode_env, get_active_mode, mode_summary_text, persist_active_mode
+from ouroboros.model_modes import bootstrap_mode_env, get_active_mode, mode_summary_text, persist_active_mode, set_codex_reasoning_effort
 from ouroboros.artifacts import save_incoming_artifact, schedule_inbox_confirmation
 from ouroboros.doc_ingest import ingest_legacy_word_document
 install_apply_patch()
@@ -667,6 +667,18 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
     if lowered.startswith("/codex"):
         persist_active_mode("codex")
         send_with_budget(chat_id, "✅ Switched to codex mode\n" + mode_summary_text())
+        return True
+    if lowered in {"/low", "/medium", "/high", "/xhigh"}:
+        active_mode = get_active_mode()
+        if active_mode.key != "codex":
+            send_with_budget(
+                chat_id,
+                f"⚠️ Reasoning effort slash-commands work only in codex mode. Current mode: {active_mode.key}\n" + mode_summary_text(),
+            )
+            return True
+        effort = lowered[1:]
+        persisted = set_codex_reasoning_effort(effort)
+        send_with_budget(chat_id, f"✅ Reasoning effort switched to {persisted}\n" + mode_summary_text())
         return True
     if lowered.startswith("/model"):
         send_with_budget(chat_id, mode_summary_text())
