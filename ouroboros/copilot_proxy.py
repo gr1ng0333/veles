@@ -384,6 +384,7 @@ def call_copilot(
         "cached_tokens": cached_tokens,
         "cost": 0.0,  # Free via Copilot Pro subscription
         "shadow_cost": round(_shadow_cost, 6),
+        "provider": "copilot",
     }
 
     # Track quota usage
