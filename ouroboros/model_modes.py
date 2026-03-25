@@ -11,6 +11,11 @@ DEFAULT_AUX_LIGHT_MODEL = "qwen/qwen3-coder:free"
 DEFAULT_BACKGROUND_OPENROUTER_MODEL = DEFAULT_AUX_LIGHT_MODEL
 DEFAULT_CONSCIOUSNESS_CODEX_MODEL = "gpt-5.4-codex-mini"
 
+# Valid reasoning effort levels (Codex API)
+VALID_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+DEFAULT_REASONING_EFFORT = "medium"
+REASONING_EFFORT_STATE_KEY = "codex_reasoning_effort"
+
 
 @dataclass(frozen=True)
 class ModelMode:
@@ -22,6 +27,7 @@ class ModelMode:
     tools_enabled: bool
     intended_use: str
     execution_style: str
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT  # only meaningful for codex transport
 
 
 @dataclass(frozen=True)
@@ -35,6 +41,7 @@ class ModeRuntimePolicy:
     aux_light_model: str
     background_model: str
     background_reasoning_effort: str
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT
 
 
 MODEL_MODES: Dict[str, ModelMode] = {
@@ -47,6 +54,7 @@ MODEL_MODES: Dict[str, ModelMode] = {
         tools_enabled=True,
         intended_use="основная рабочая модель",
         execution_style="loop",
+        reasoning_effort=DEFAULT_REASONING_EFFORT,
     ),
     "haiku": ModelMode(
         key="haiku",
@@ -94,6 +102,25 @@ def get_active_mode(st: Optional[Dict[str, Any]] = None) -> ModelMode:
     return MODEL_MODES[_state_mode_key(st)]
 
 
+def get_codex_reasoning_effort(st: Optional[Dict[str, Any]] = None) -> str:
+    """Return persisted codex reasoning effort (independent from model mode)."""
+    state = st if isinstance(st, dict) else load_state()
+    effort = str(state.get(REASONING_EFFORT_STATE_KEY) or "").strip().lower()
+    return effort if effort in VALID_REASONING_EFFORTS else DEFAULT_REASONING_EFFORT
+
+
+def set_codex_reasoning_effort(effort: str) -> str:
+    """Persist codex reasoning effort and update env. Returns normalized effort."""
+    effort = str(effort or "").strip().lower()
+    if effort not in VALID_REASONING_EFFORTS:
+        raise ValueError(f"Unknown reasoning effort: {effort!r}. Valid: {VALID_REASONING_EFFORTS}")
+    st = load_state()
+    st[REASONING_EFFORT_STATE_KEY] = effort
+    save_state(st)
+    os.environ["OUROBOROS_REASONING_EFFORT"] = effort
+    return effort
+
+
 def persist_active_mode(mode_key: str) -> ModelMode:
     key = str(mode_key or "").strip().lower()
     if key not in MODEL_MODES:
@@ -112,6 +139,9 @@ def apply_mode_env(mode: Optional[ModelMode] = None) -> ModelMode:
     os.environ["OUROBOROS_MAX_ROUNDS"] = str(active.max_rounds)
     os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] = "1" if active.tools_enabled else "0"
     os.environ.setdefault("OUROBOROS_MODEL_LIGHT", DEFAULT_AUX_LIGHT_MODEL)
+    # Apply codex reasoning effort: use persisted value, fall back to mode default
+    effort = get_codex_reasoning_effort()
+    os.environ["OUROBOROS_REASONING_EFFORT"] = effort
     return active
 
 
@@ -145,6 +175,7 @@ def get_background_reasoning_effort() -> str:
 
 def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy:
     mode = get_active_mode(st)
+    effort = get_codex_reasoning_effort(st)
     return ModeRuntimePolicy(
         mode_key=mode.key,
         main_model=mode.model,
@@ -155,6 +186,7 @@ def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy
         aux_light_model=get_aux_light_model(),
         background_model=get_background_model(),
         background_reasoning_effort=get_background_reasoning_effort(),
+        reasoning_effort=effort,
     )
 
 
@@ -178,6 +210,7 @@ def get_runtime_diagnostics(st: Optional[Dict[str, Any]] = None) -> Dict[str, An
         "max_rounds": policy.max_rounds,
         "intended_use": policy.intended_use,
         "background_reasoning_effort": policy.background_reasoning_effort,
+        "reasoning_effort": policy.reasoning_effort,
         "main": _model_diagnostics(policy.main_model),
         "aux_light": _model_diagnostics(policy.aux_light_model),
         "background": _model_diagnostics(policy.background_model),
@@ -207,7 +240,9 @@ def mode_summary_text() -> str:
         _format_model_line("Background", diagnostics["background"]),
         f"• Background reasoning: {policy.background_reasoning_effort}",
     ]
+    # Show reasoning effort for codex transport
     if policy.mode_key == "codex":
+        lines.append(f"• Reasoning effort: {policy.reasoning_effort}  (change: /low /medium /high /xhigh)")
         try:
             from ouroboros.codex_proxy import get_accounts_status
             statuses = get_accounts_status()
