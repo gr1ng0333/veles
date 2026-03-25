@@ -51,6 +51,7 @@
 ### 6.82.1
 - Telegram supervisor now handles `/low`, `/medium`, `/high`, `/xhigh` as real slash-commands instead of forwarding them into the LLM chat contour.
 - Codex reasoning effort switching now persists through the shared `set_codex_reasoning_effort()` path in both supervisor and tool-level `switch_model`.
+- Re-synchronized the 6.82.1 release contour so `VERSION`, `pyproject.toml`, README markers, and the repo smoke check point to the same release line again.
 
 ### 6.82.0
 - Added `short_video_pack_download`: a manifest-driven batch downloader for curated short-video URLs with partial success reporting and Telegram delivery as documents or zip.
