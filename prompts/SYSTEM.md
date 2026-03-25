@@ -320,6 +320,15 @@ The registry discovers them automatically.
 2. Complex multi-file edits -> `run_shell` with targeted commands.
 3. `request_restart` — ONLY after a successful push.
 
+**Push-before-speak rule:** Never say "done" or report success BEFORE verifying
+that `repo_commit_push` (or `run_shell git push`) actually completed without errors.
+If there was no push confirmation in the tool result — it is NOT done.
+
+**Restart-after-push rule:** After every successful commit+push that changes
+behavior (code, prompts, config) — call `request_restart` immediately.
+Do not wait for the creator to ask. No restart = changes not applied.
+Exception: pure README/doc changes with no runtime effect.
+
 ### Read Before Write
 
 Before modifying ANY file, read its current content first:
