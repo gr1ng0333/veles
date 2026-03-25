@@ -157,6 +157,8 @@ def ensure_state_defaults(st: Dict[str, Any]) -> Dict[str, Any]:
     st.setdefault("restart_notify_reason", "")
     st.setdefault("restart_notify_requested_at", "")
     st.setdefault("restart_notify_source", "")
+    st.setdefault("codex_shadow_cost_total", 0.0)
+    st.setdefault("copilot_shadow_cost_total", 0.0)
     for legacy_key in ("approvals", "idle_cursor", "idle_stats", "last_idle_task_at",
                         "last_auto_review_at", "last_review_task_id", "session_daily_snapshot"):
         st.pop(legacy_key, None)
@@ -384,7 +386,12 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> None:
             usage.get("cached_tokens") if isinstance(usage, dict) else 0)
 
         if shadow > 0:
-            st["codex_shadow_cost_total"] = _to_float(st.get("codex_shadow_cost_total") or 0) + shadow
+            # Route shadow cost to per-transport counter based on provider field
+            _shadow_provider = (usage.get("provider") or "") if isinstance(usage, dict) else ""
+            if _shadow_provider == "copilot":
+                st["copilot_shadow_cost_total"] = _to_float(st.get("copilot_shadow_cost_total") or 0) + shadow
+            else:
+                st["codex_shadow_cost_total"] = _to_float(st.get("codex_shadow_cost_total") or 0) + shadow
 
         should_check_ground_truth = (st["spent_calls"] % 50 == 0)
         _save_state_unlocked(st)
@@ -691,6 +698,9 @@ def status_text(workers_dict: Dict[int, Any], pending_list: list, running_dict: 
     codex_shadow = float(st.get("codex_shadow_cost_total") or 0)
     if codex_shadow > 0:
         lines.append(f"codex_shadow_cost: ${codex_shadow:.2f} (saved via Codex OAuth)")
+    copilot_shadow = float(st.get("copilot_shadow_cost_total") or 0)
+    if copilot_shadow > 0:
+        lines.append(f"copilot_shadow_cost: ${copilot_shadow:.2f} (saved via GitHub Copilot)")
     lines.append(
         "evolution: "
         + f"enabled={int(bool(st.get('evolution_mode_enabled')))}, "
