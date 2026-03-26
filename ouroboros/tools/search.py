@@ -9,9 +9,8 @@ import os
 import time
 import re
 import socket
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from typing import Any, Dict, List
-from urllib.parse import urlparse
 
 from ouroboros.artifacts import save_artifact
 from ouroboros.circuit_breaker import CircuitBreaker
@@ -33,10 +32,35 @@ from ouroboros.tools.search_planning import (
     detect_intent_type,
 )
 from ouroboros.tools.search_ranking import DOC_QUERY_MARKERS, POLICY_QUERY_MARKERS, READING_PRIORITY, collect_research_sources
+from ouroboros.tools import search_reading as _search_reading
+from ouroboros.tools import search_synthesis as _search_synthesis
 from ouroboros.tools.search_transport import READING_BACKEND, classify_timeout_error, run_discovery_transport, timeout_profile
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
+ResearchInterrupted = _search_synthesis.ResearchInterrupted
+ResearchRun = _search_synthesis.ResearchRun
+_checkpoint_inline = _search_synthesis._checkpoint_inline
+_detect_contradictions = _search_synthesis._detect_contradictions
+
+
+def _render_synthesis(run: ResearchRun, policy: IntentPolicy) -> None:
+    return _search_synthesis._render_synthesis(run, policy, save_artifact_fn=save_artifact)
+
+
+def _read_page_findings(query: str, source: Dict[str, Any], timeout_sec: int = 12) -> Dict[str, Any]:
+    return _search_reading._read_page_findings(query, source, timeout_sec=timeout_sec)
+
+
+def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_override: str | None = None) -> None:
+    return _search_reading._apply_research_quality(
+        run,
+        policy,
+        output_mode_override,
+        detect_contradictions_fn=_detect_contradictions,
+        render_synthesis_fn=_render_synthesis,
+    )
+
 SEARXNG_DEFAULT = "http://localhost:8888"
 SERPER_DEFAULT_URL = "https://google.serper.dev/search"
 MAX_RESULTS = 5
@@ -49,12 +73,7 @@ _serper_breaker = CircuitBreaker("serper", failure_threshold=5, recovery_timeout
 _ddg_breaker = CircuitBreaker("duckduckgo", failure_threshold=3, recovery_timeout=60)
 _openai_breaker = CircuitBreaker("openai", failure_threshold=5, recovery_timeout=120)
 
-
 _timeout_like = lambda exc: isinstance(exc, TimeoutError | socket.timeout) or exc.__class__.__name__ in {"TimeoutError", "ReadTimeout", "ConnectTimeout"}
-
-DEFAULT_INTENT = "background_explainer"
-MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS = 6, 6, 2, 1
-
 
 _normalize_text_block = lambda text: re.sub(r"\s+", " ", html.unescape(str(text or "")).replace(" ", " ")).strip()
 
@@ -77,305 +96,6 @@ def clean_sources(rows: Any) -> List[Dict[str, str]]:
             break
     return cleaned
 
-@dataclass
-class ResearchRun:
-    user_query: str
-    intent_type: str = DEFAULT_INTENT
-    subqueries: List[str] = field(default_factory=list)
-    candidate_sources: List[Dict[str, Any]] = field(default_factory=list)
-    visited_pages: List[Dict[str, Any]] = field(default_factory=list)
-    findings: List[Dict[str, Any]] = field(default_factory=list)
-    final_answer: str = ""
-    confidence: str = "low"
-    query_plan: Dict[str, Any] = field(default_factory=dict)
-    freshness_summary: Dict[str, Any] = field(default_factory=dict)
-    contradictions: List[Dict[str, Any]] = field(default_factory=list)
-    uncertainty_notes: List[str] = field(default_factory=list)
-    answer_mode: str = "short_factual"
-    synthesis: Dict[str, Any] = field(default_factory=dict)
-    budget_mode: str = "balanced"
-    budget_limits: Dict[str, Any] = field(default_factory=dict)
-    budget_trace: Dict[str, Any] = field(default_factory=dict)
-    transport: Dict[str, Any] = field(default_factory=dict)
-    timeout_profile: Dict[str, int] = field(default_factory=dict)
-    timeout_events: List[Dict[str, Any]] = field(default_factory=list)
-    interruption_checks: List[Dict[str, Any]] = field(default_factory=list)
-    owner_interrupt_seen: bool = False
-    discovery_backend_used: str = ""
-    reading_backend_used: str = ""
-    fallback_chain: List[str] = field(default_factory=list)
-    pages_attempted: int = 0
-    pages_succeeded: int = 0
-    pages_failed: int = 0
-    degraded_mode: bool = False
-    debug_summary: Dict[str, Any] = field(default_factory=dict)
-    status: str = "ok"
-    interrupted: bool = False
-    interrupt_reason: str = ""
-    interrupt_stage: str = ""
-    interrupt_message: str = ""
-
-
-class ResearchInterrupted(RuntimeError):
-    pass
-
-
-def _checkpoint_inline(ctx: ToolContext, run: ResearchRun, stage: str, payload: Dict[str, Any]) -> None:
-    checkpoint = getattr(ctx, "checkpoint", None)
-    event = checkpoint(stage, payload=payload) if callable(checkpoint) else None
-    record = {"stage": stage, **(payload or {}), "owner_message_seen": bool(event)}
-    if event:
-        record.update({
-            "reason": str(event.get("reason") or ""),
-            "message": str(event.get("message") or ""),
-            "pending_count": len(event.get("pending_messages") or []),
-        })
-        run.interrupted = True
-        run.owner_interrupt_seen = True
-        run.interrupt_reason = str(event.get("reason") or "superseded_by_new_request")
-        run.interrupt_stage = stage
-        run.interrupt_message = str(event.get("message") or "")
-        run.status = run.interrupt_reason
-    run.interruption_checks = [*(run.interruption_checks or []), record]
-    if event:
-        raise ResearchInterrupted(run.interrupt_reason)
-
-def _detect_contradictions(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    numeric_findings, status_findings = [], []
-    for finding in findings:
-        claim = str(finding.get("claim") or "").strip()
-        lowered = claim.lower()
-        cleaned = re.sub(r"[^a-zа-я0-9\s]", " ", claim.casefold())
-        cleaned = re.sub(r"\b(19|20)\d{2}\b", " ", cleaned)
-        cleaned = re.sub(r"\b\d+(?:[.,]\d+)?\b", " ", cleaned)
-        cleaned = re.sub(r"\b(v|version|ver|rpm|ms|s|sec|seconds|minutes|percent|%)\b", " ", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        tokens = [tok for tok in cleaned.split() if len(tok) >= 3]
-        stop = {"the", "and", "for", "with", "from", "that", "this", "our", "says", "according", "guide"}
-        primary_tokens = [tok for tok in tokens if tok not in stop]
-        topic_key = " ".join((primary_tokens or tokens)[:8]) if tokens else ""
-        numbers = re.findall(r"\b\d+(?:[.,]\d+)?\b", claim)
-        if topic_key and numbers:
-            numeric_findings.append((topic_key, tuple(numbers[:2]), finding))
-        if topic_key and any(token in lowered for token in ("available", "unavailable", "deprecated", "supported", "unsupported", "announced", "cancelled", "delayed", "released", "planned", "removed")):
-            status_findings.append((topic_key, finding))
-    contradictions = []
-    for idx, (topic_a, nums_a, finding_a) in enumerate(numeric_findings):
-        for topic_b, nums_b, finding_b in numeric_findings[idx + 1:]:
-            if topic_a != topic_b or nums_a == nums_b:
-                continue
-            contradictions.append({"kind": "numeric_mismatch", "topic": topic_a, "claim_a": finding_a.get("claim"), "claim_b": finding_b.get("claim"), "source_a": finding_a.get("source_url"), "source_b": finding_b.get("source_url"), "observed_at_a": finding_a.get("observed_at"), "observed_at_b": finding_b.get("observed_at")})
-    opposite_pairs = {"available": "unavailable", "supported": "unsupported", "released": "planned", "announced": "cancelled"}
-    for idx, (topic_a, finding_a) in enumerate(status_findings):
-        claim_a = str(finding_a.get("claim") or "").lower()
-        for topic_b, finding_b in status_findings[idx + 1:]:
-            claim_b = str(finding_b.get("claim") or "").lower()
-            if topic_a != topic_b:
-                continue
-            if any((left in claim_a and right in claim_b) or (left in claim_b and right in claim_a) for left, right in opposite_pairs.items()):
-                contradictions.append({"kind": "status_conflict", "topic": topic_a, "claim_a": finding_a.get("claim"), "claim_b": finding_b.get("claim"), "source_a": finding_a.get("source_url"), "source_b": finding_b.get("source_url"), "observed_at_a": finding_a.get("observed_at"), "observed_at_b": finding_b.get("observed_at")})
-    deduped, seen = [], set()
-    for item in contradictions:
-        key = re.sub(r"\W+", " ", f"{item.get('kind','')} {item.get('topic','')} {item.get('claim_a','')} {item.get('claim_b','')}".casefold()).strip()
-        rev = re.sub(r"\W+", " ", f"{item.get('kind','')} {item.get('topic','')} {item.get('claim_b','')} {item.get('claim_a','')}".casefold()).strip()
-        if not key or key in seen or rev in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-    return deduped[:5]
-
-def _render_synthesis(run: ResearchRun, policy: IntentPolicy) -> None:
-    source_authority_map = {str(item.get("url") or ""): str(item.get("authority") or "secondary") for item in run.candidate_sources}
-    ranked_findings = sorted(run.findings, key=lambda item: ({"official": 4, "primary": 3, "secondary": 2, "community": 1}.get(source_authority_map.get(str(item.get("source_url") or ""), "secondary"), 2), {"high": 3, "medium": 2, "low": 1}.get(str(item.get("confidence_local") or "low"), 1), 1 if str(item.get("observed_at") or "").strip() else 0, len(str(item.get("evidence_snippet") or ""))), reverse=True)
-    unique_source_rows, seen_source_urls = [], set()
-    for finding in ranked_findings:
-        source_url = str(finding.get("source_url") or "").strip()
-        if not source_url or source_url in seen_source_urls:
-            continue
-        seen_source_urls.add(source_url)
-        unique_source_rows.append({"url": source_url, "source_type": str(finding.get("source_type") or "page").strip() or "page", "observed_at": str(finding.get("observed_at") or "").strip(), "claim": _normalize_text_block(str(finding.get("claim") or "").strip()), "evidence_snippet": _normalize_text_block(str(finding.get("evidence_snippet") or "").strip()), "authority": source_authority_map.get(source_url, "secondary")})
-    key_finding_rows = []
-    for finding in ranked_findings[:4]:
-        claim = _normalize_text_block(str(finding.get("claim") or "").strip())
-        evidence = _normalize_text_block(str(finding.get("evidence_snippet") or "").strip())
-        source_url = str(finding.get("source_url") or "").strip()
-        if claim and evidence and source_url:
-            key_finding_rows.append({"claim": claim, "evidence_snippet": evidence, "source_url": source_url, "source_type": str(finding.get("source_type") or "page").strip() or "page", "observed_at": str(finding.get("observed_at") or "").strip(), "confidence_local": str(finding.get("confidence_local") or "low"), "authority": source_authority_map.get(source_url, "secondary")})
-    if not key_finding_rows:
-        short_answer = (
-            "Источники расходятся; уверенный вывод без дополнительной проверки делать нельзя." if run.contradictions else
-            "Официальный первоисточник не подтверждён; надёжный ответ пока не собран." if policy.require_official_source and not any(item.get("authority") == "official" for item in run.candidate_sources) else
-            "После чтения выбранных страниц надёжных утверждений пока недостаточно." if not run.findings else
-            "Данных пока недостаточно для уверенного вывода."
-        )
-        run.synthesis = {"answer_mode": run.answer_mode, "short_answer": short_answer, "key_findings": [], "evidence_backed_explanation": "После чтения выбранных страниц не набралось утверждений с достаточной опорой на evidence.", "uncertainty_caveats": list(dict.fromkeys(run.uncertainty_notes)), "sources": unique_source_rows}
-        run.final_answer = run.synthesis["short_answer"]
-        return
-    primary_rows = [item for item in key_finding_rows if item.get("authority") in {"official", "primary"}]
-    support_rows = [item for item in key_finding_rows if item.get("authority") not in {"official", "primary"}]
-    ordered_rows = primary_rows + support_rows
-    if run.answer_mode == "timeline":
-        ordered_rows = sorted(ordered_rows, key=lambda item: (item["observed_at"] or "9999-99-99", item["authority"] not in {"official", "primary"}, item["confidence_local"] != "high"))
-    short_answer = ordered_rows[0]["claim"] if run.answer_mode == "short_factual" else {"comparison_brief": "Сравнение по прочитанным источникам: " + "; ".join(item["claim"] for item in ordered_rows[:2]), "analyst_memo": "По прочитанным источникам картина такая: " + "; ".join(item["claim"] for item in ordered_rows[:2]), "timeline": ordered_rows[0]["claim"]}.get(run.answer_mode, ordered_rows[0]["claim"])
-    explanation_prefix = {"short_factual": "Что подтверждают прочитанные источники:", "analyst_memo": "Что подтверждают прочитанные источники:", "comparison_brief": "Сопоставление подтверждённых утверждений:", "timeline": "Хронология/последовательность по прочитанным источникам:"}[run.answer_mode]
-    evidence_lines = [f"- {item['claim']}\n  evidence: {item['evidence_snippet']}\n  source: {item['source_url']} [{item['source_type']}, {item['authority']}{(' @ ' + item['observed_at']) if item['observed_at'] else ''}]" for item in ordered_rows]
-    caveats = list(dict.fromkeys(note for note in run.uncertainty_notes if note))
-    run.synthesis = {"answer_mode": run.answer_mode, "short_answer": short_answer, "key_findings": ordered_rows, "evidence_backed_explanation": explanation_prefix + "\n" + "\n".join(evidence_lines), "uncertainty_caveats": caveats, "sources": unique_source_rows}
-    final_blocks = [f"Режим ответа: {run.answer_mode}", "", "Короткий ответ:", short_answer, "", "Ключевые находки:"]
-    final_blocks.extend(f"- {item['claim']}\n  evidence: {item['evidence_snippet']}\n  source: {item['source_url']} [{item['authority']}]" for item in ordered_rows)
-    final_blocks += ["", explanation_prefix, *evidence_lines]
-    if caveats:
-        final_blocks += ["", "Неопределённость / caveats:", *(f"- {note}" for note in caveats)]
-    if unique_source_rows:
-        final_blocks += ["", "Sources:", *(f"- {item['url']} [{item['source_type']}, {item['authority']}]" for item in unique_source_rows)]
-    run.final_answer = "\n".join(final_blocks)
-
-def _read_page_findings(query: str, source: Dict[str, Any], timeout_sec: int = 12) -> Dict[str, Any]:
-    url = str(source.get("url") or "")
-    read_reasons = list(source.get("reasons") or [])
-    browser_reason = "browser_not_used: default direct urllib reading path"
-    try:
-        import urllib.request
-
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; VelesResearch/1.0; +https://github.com/gr1ng0333/veles)",
-                "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            body = resp.read()
-            content_type = str(resp.headers.get("Content-Type") or "")
-        charset_match = re.search(r"charset=([A-Za-z0-9._-]+)", content_type, re.IGNORECASE)
-        charset = charset_match.group(1) if charset_match else "utf-8"
-        raw_text = body.decode(charset, errors="replace")
-        clean_text = str(raw_text or "")
-        if "<" in clean_text and ">" in clean_text:
-            clean_text = re.sub(r"<script\b[^>]*>.*?</script>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
-            clean_text = re.sub(r"<style\b[^>]*>.*?</style>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
-            clean_text = re.sub(r"<noscript\b[^>]*>.*?</noscript>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
-            clean_text = re.sub(r"<svg\b[^>]*>.*?</svg>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
-            clean_text = re.sub(r"<[^>]+>", " ", clean_text)
-        clean_text = html.unescape(clean_text)
-        clean_text = re.sub(r"\s+", " ", clean_text).strip()
-        sentences = [
-            sentence.strip()
-            for sentence in re.split(r"(?<=[.!?])\s+", clean_text)
-            if sentence.strip()
-        ]
-        query_terms = [term for term in re.findall(r"[a-zA-Zа-яА-Я0-9_+-]{3,}", str(query or "").lower()) if len(term) >= 3]
-        source_host = str(source.get("host") or urlparse(url).netloc).lower().lstrip("www.")
-        if any(token in source_host for token in ("docs.", "developer.", "platform.", "api.")):
-            source_type = "docs"
-        elif any(token in source_host for token in ("news", "blog", "press")):
-            source_type = "news"
-        else:
-            source_type = "page"
-        relevant_sections = [
-            sentence
-            for sentence in sentences
-            if any(term in sentence.lower() for term in query_terms)
-        ]
-        if len(relevant_sections) < 2:
-            informative_sentences = [
-                sentence
-                for sentence in sentences
-                if len(sentence) >= 40 and not sentence.lower().startswith(("skip to", "sign in", "cookie", "accept "))
-            ]
-            for sentence in informative_sentences:
-                if sentence not in relevant_sections:
-                    relevant_sections.append(sentence)
-                if len(relevant_sections) >= 3:
-                    break
-        relevant_sections = relevant_sections[:3]
-        findings: List[Dict[str, Any]] = []
-        seen_claims: set[str] = set()
-        observed_at_patterns = [
-            r"\b(2024|2025|2026)[-/.](\d{1,2})[-/.](\d{1,2})\b",
-            r"\b(2024|2025|2026)\b",
-        ]
-        observed_at = ""
-        for pattern in observed_at_patterns:
-            match = re.search(pattern, clean_text)
-            if match:
-                observed_at = match.group(0)
-                break
-        freshness_markers = [marker for marker in ("today", "latest", "recent", "updated", "announced", "released", "new", "сегодня", "обновл", "анонс", "релиз") if marker in clean_text.lower()]
-        for sentence in relevant_sections:
-            lowered = sentence.lower()
-            overlap = sum(1 for term in query_terms if term in lowered)
-            score = overlap + min(1.5, len(sentence) / 240.0)
-            if any(ch.isdigit() for ch in sentence):
-                score += 0.4
-            if any(marker in lowered for marker in ("updated", "released", "supports", "limit", "version", "announced", "docs", "api", "rate", "rpm", "quota")):
-                score += 0.6
-            claim = sentence[:220].strip(" -:;,.\n\t")
-            dedupe_key = re.sub(r"\W+", " ", claim.casefold()).strip()
-            if not dedupe_key or dedupe_key in seen_claims:
-                continue
-            seen_claims.add(dedupe_key)
-            findings.append({
-                "claim": claim,
-                "evidence_snippet": sentence[:320].strip(),
-                "source_url": url,
-                "source_type": source_type,
-                "observed_at": observed_at,
-                "freshness_signals": freshness_markers,
-                "confidence_local": "high" if score >= 4.0 else "medium" if score >= 2.5 else "low",
-            })
-        return {
-            "url": url,
-            "status": "ok",
-            "content_type": content_type,
-            "text_preview": clean_text[:400],
-            "relevant_sections": relevant_sections,
-            "findings": findings,
-            "error": None,
-            "read_reason": read_reasons,
-            "browser_reason": browser_reason,
-            "browser_used": False,
-        }
-    except Exception as exc:
-        timeout_info = classify_timeout_error(exc, "page_read") if _timeout_like(exc) else None
-        return {
-            "url": url,
-            "status": "timeout" if timeout_info else "error",
-            "content_type": "",
-            "text_preview": "",
-            "relevant_sections": [],
-            "findings": [],
-            "error": (timeout_info or {}).get("type") or repr(exc),
-            "timeout_detail": (timeout_info or {}).get("detail", ""),
-            "timeout_limit": timeout_sec if timeout_info else None,
-            "read_reason": read_reasons,
-            "browser_reason": browser_reason,
-            "browser_used": False,
-        }
-def _apply_research_quality(run: ResearchRun, policy: IntentPolicy, output_mode_override: str | None = None) -> None:
-    freshness_known = sum(1 for finding in run.findings if str(finding.get("observed_at") or "").strip())
-    freshness_unknown = max(0, len(run.findings) - freshness_known)
-    run.freshness_summary = {"known_dated_findings": freshness_known, "undated_findings": freshness_unknown, "freshness_priority": policy.freshness_priority}
-    if freshness_unknown and policy.freshness_priority in {"high", "medium"}:
-        run.uncertainty_notes.append("Часть найденных утверждений без явной даты публикации или обновления.")
-    run.contradictions = _detect_contradictions(run.findings)
-    if run.contradictions:
-        run.uncertainty_notes.append("Источники расходятся по части утверждений; смотри contradictions в trace.")
-    read_pages_ok = sum(1 for page in run.visited_pages for result in page.get("read_results", []) if result.get("status") == "ok")
-    high_conf_findings = sum(1 for finding in run.findings if finding.get("confidence_local") == "high")
-    strong_findings = sum(1 for finding in run.findings if finding.get("confidence_local") in {"high", "medium"})
-    has_official_or_primary = any(str(item.get("authority") or "") in {"official", "primary"} for item in run.candidate_sources)
-    run.confidence = "high" if read_pages_ok >= policy.min_sources_before_synthesis and high_conf_findings >= 1 else ("medium" if read_pages_ok >= 1 and strong_findings >= policy.min_sources_before_synthesis else "low")
-    if freshness_unknown and run.confidence == "high": run.confidence = "medium"
-    elif freshness_unknown and run.confidence == "medium" and policy.freshness_priority == "high": run.confidence = "low"
-    if run.contradictions and run.confidence in {"high", "medium"}: run.confidence = "medium" if run.confidence == "high" else "low"
-    if policy.require_official_source and not has_official_or_primary:
-        run.confidence = "low"
-        run.uncertainty_notes.append("Официальный или первичный источник не подтверждён; вывод опирается на вторичные пересказы.")
-    mode_by_intent = {"fact_lookup": "short_factual", "product_docs_api_lookup": "short_factual", "comparison_evaluation": "comparison_brief", "breaking_news": "timeline", "people_company_ecosystem_tracking": "timeline", "background_explainer": "analyst_memo"}
-    run.answer_mode = output_mode_override if output_mode_override in {"short_factual", "analyst_memo", "comparison_brief", "timeline"} else mode_by_intent.get(run.intent_type, "short_factual")
-    _render_synthesis(run, policy)
-
 # ---------------------------------------------------------------------------
 # DuckDuckGo HTML scraper helpers (stdlib only)
 # ---------------------------------------------------------------------------
@@ -391,7 +111,6 @@ _DDG_LINK_RE = re.compile(
 _DDG_SNIPPET_RE = re.compile(
     r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL,
 )
-
 
 def _parse_ddg_html(raw_html: str, limit: int = MAX_RESULTS) -> list[dict[str, str]]:
     """Extract search results from DuckDuckGo HTML page."""
@@ -418,7 +137,6 @@ def _parse_ddg_html(raw_html: str, limit: int = MAX_RESULTS) -> list[dict[str, s
             break
     return results
 
-
 def _search_duckduckgo(q: str, timeout_sec: int = 10) -> dict[str, Any]:
     """DuckDuckGo HTML scrape search backend (stdlib only, zero deps)."""
     import urllib.parse
@@ -441,7 +159,6 @@ def _search_duckduckgo(q: str, timeout_sec: int = 10) -> dict[str, Any]:
         return {"query": q, "status": "no_results", "backend": "duckduckgo", "sources": [], "answer": "", "error": "DuckDuckGo returned no usable results."}
     return {"query": q, "status": "ok", "backend": "duckduckgo", "sources": sources, "answer": "", "error": None}
 
-
 # ---------------------------------------------------------------------------
 # Circuit-breaker-aware backend dispatcher
 # ---------------------------------------------------------------------------
@@ -451,7 +168,6 @@ _BACKEND_BREAKERS: dict[str, CircuitBreaker] = {
     "duckduckgo": _ddg_breaker,
     "openai": _openai_breaker,
 }
-
 
 def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) -> str:
     del ctx
