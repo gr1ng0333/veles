@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List
 
+from ouroboros.search_utils import detect_query_type, extract_core_subject, shorten_query
+
 DEFAULT_INTENT = "background_explainer"
 MAX_SUBQUERIES, MAX_PAGES_READ, MAX_BROWSE_DEPTH, MAX_SYNTHESIS_ROUNDS = 6, 6, 2, 1
 
@@ -37,6 +39,8 @@ class QueryPlan:
     contradiction_check_query: str
     subqueries: List[str]
     branch_budget: int
+    query_type: str = "general"
+    core_subject: str = ""
 
 
 BUDGET_PROFILES: Dict[str, ResearchBudgetProfile] = {
@@ -289,10 +293,13 @@ def _compose_query_variants(base: str, intent_type: str, policy: IntentPolicy, f
 
 def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SUBQUERIES, freshness_priority_override: str | None = None) -> QueryPlan:
     base = re.sub(r"\s+", " ", str(query or "").strip())
+    compact_base = shorten_query(base, max_len=96)
+    query_type = detect_query_type(base)
+    core_subject = extract_core_subject(base)
     policy = INTENT_POLICIES.get(intent_type, INTENT_POLICIES[DEFAULT_INTENT])
     override = str(freshness_priority_override or "").strip().lower()
     freshness_priority = override if override in {"low", "medium", "high"} else policy.freshness_priority
-    variants = _compose_query_variants(base, intent_type, policy, freshness_priority)
+    variants = _compose_query_variants(compact_base or base, intent_type, policy, freshness_priority)
     comparison_benchmark = bool(variants.get("comparison_benchmark"))
     candidates = [variants["primary_query"]]
     if freshness_priority in {"high", "medium"}:
@@ -326,4 +333,6 @@ def _build_query_plan(query: str, intent_type: str, max_subqueries: int = MAX_SU
         contradiction_check_query=variants["contradiction_check_query"],
         subqueries=subqueries,
         branch_budget=len(subqueries),
+        query_type=query_type,
+        core_subject=core_subject,
     )

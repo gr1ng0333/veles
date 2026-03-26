@@ -6,7 +6,12 @@ import pytest
 
 from ouroboros.search_utils import (
     _extract_keywords,
+    dedupe_signature,
+    detect_query_type,
     expand_search_queries,
+    extract_core_subject,
+    recency_signal,
+    score_result_signals,
     shorten_query,
 )
 
@@ -140,3 +145,25 @@ class TestExpandSearchQueries:
         queries = expand_search_queries("neural networks survey")
         lowered = [q.lower() for q in queries]
         assert len(lowered) == len(set(lowered))
+
+
+class TestQuerySignals:
+    def test_detect_query_type_docs(self):
+        assert detect_query_type("openai api rate limit docs") == "docs_api"
+
+    def test_extract_core_subject(self):
+        assert extract_core_subject("What are OpenAI API rate limits in docs") == "OpenAI API rate limits"
+
+    def test_dedupe_signature_normalizes_url(self):
+        a = dedupe_signature(title="OpenAI Docs", url="https://platform.openai.com/docs/")
+        b = dedupe_signature(title="OpenAI Docs", url="http://platform.openai.com/docs")
+        assert a == b
+
+    def test_recency_signal_respects_priority(self):
+        assert recency_signal(text="updated 2026 latest", freshness_priority="high") > recency_signal(text="updated 2026 latest", freshness_priority="low")
+
+    def test_score_result_signals_bundle(self):
+        data = score_result_signals("openai api docs", title="OpenAI API docs", snippet="latest reference", url="https://platform.openai.com/docs")
+        assert data["query_type"] == "docs_api"
+        assert data["relevance"] > 0
+        assert data["dedupe_signature"]

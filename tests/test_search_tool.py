@@ -284,6 +284,8 @@ def test_intent_policy_and_followup_contract(query, expected_intent):
         assert all(item.strip() for item in plan.subqueries)
         assert len({item.casefold() for item in plan.subqueries}) == len(plan.subqueries)
         assert plan.primary_query == planned_query
+        assert plan.query_type
+        assert isinstance(plan.core_subject, str)
 
 
 @pytest.mark.parametrize('mode', ['source_scoring', 'deep_reading'])
@@ -335,6 +337,9 @@ def test_source_selection_and_deep_reading_contours(_save, mode):
         duplicate_entry = next(item for page in data['visited_pages'] for item in page['ranked_sources'] if item['url'] == 'https://platform.openai.com/docs/guides/rate-limits' and any('duplicate:' in reason for reason in item['reasons']))
         assert duplicate_entry['decision'] == 'reject'
         assert any('official-source' in reason or 'primary-source' in reason for reason in data['candidate_sources'][0]['reasons'])
+        assert data['candidate_sources'][0]['query_type'] == 'docs_api'
+        assert data['candidate_sources'][0]['core_subject']
+        assert data['candidate_sources'][0]['signal_trace']['relevance'] > 0
         return
 
     with patch('ouroboros.tools.search._web_search') as _web, patch('ouroboros.tools.search._read_page_findings') as _fetch:
@@ -701,6 +706,8 @@ def test_comparison_prefers_primary_benchmark_retrieval(_web, _fetch, _save):
     assert data['intent_type'] == 'comparison_evaluation'
     assert data['intent_policy']['require_official_source'] is False
     assert data['query_plan']['branch_budget'] == 4
+    assert data['query_plan']['query_type'] == 'benchmark_compare'
+    assert data['query_plan']['core_subject']
     assert data['query_plan']['official_docs_query'].endswith('official benchmark methodology maintainers')
     assert any(item['authority'] in {'official', 'primary'} for item in data['candidate_sources'][:2])
     top_urls = [item['url'] for item in data['candidate_sources'][:2]]
@@ -1199,3 +1206,39 @@ def test_web_search_serper_success_normalizes_sources(mock_urlopen, mock_env_get
         'url': 'https://platform.openai.com/docs/guides/rate-limits',
         'snippet': 'official docs',
     }]
+
+
+@patch('ouroboros.tools.search.save_artifact')
+@patch('ouroboros.tools.search._read_page_findings')
+@patch('ouroboros.tools.search._web_search')
+def test_research_run_tracks_query_signals_in_candidate_sources(_web, _fetch, _save):
+    _save.return_value = {"relative_path": "artifacts/outbox/trace.json", "bytes": 123}
+    _web.side_effect = [
+        json.dumps({
+            "query": "openai api rate limit",
+            "status": "ok",
+            "backend": "searxng",
+            "sources": [
+                {"title": "OpenAI API docs", "url": "https://platform.openai.com/docs/guides/rate-limits", "snippet": "latest updated 2026 rate limits"},
+                {"title": "OpenAI API docs mirror", "url": "https://platform.openai.com/docs/guides/rate-limits/", "snippet": "latest updated 2026 rate limits"},
+            ],
+            "answer": "",
+            "error": None,
+        }),
+        json.dumps({"query": "openai api rate limit recent", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": "openai api rate limit platform.openai.com openai official docs api reference vendor documentation", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+        json.dumps({"query": "openai api rate limit platform.openai.com openai reference guide vendor documentation api reference", "status": "no_results", "backend": "searxng", "sources": [], "answer": "", "error": None}),
+    ]
+    _fetch.return_value = {"url": "https://platform.openai.com/docs/guides/rate-limits", "status": "ok", "content_type": "text/html", "text_preview": "docs", "relevant_sections": ["rate limits"], "findings": [], "error": None}
+
+    class Ctx:
+        drive_root = '/tmp'
+        task_id = 'task-query-signals'
+        current_chat_id = 1
+
+    data = json.loads(_research_run(Ctx(), 'openai api rate limit'))
+    assert data['query_plan']['query_type'] == 'docs_api'
+    assert data['candidate_sources'][0]['query_type'] == 'docs_api'
+    assert data['candidate_sources'][0]['signal_trace']['recency'] > 0
+    assert data['candidate_sources'][0]['dedupe_signature']
+    assert data['candidate_sources'][0]['signal_trace']['relevance'] > 0

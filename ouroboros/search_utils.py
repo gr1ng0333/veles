@@ -9,7 +9,7 @@ Pure-Python helpers (zero dependencies) that improve search quality by:
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import Any, Dict, List
 
 _MAX_QUERY_LEN = 60  # characters
 
@@ -34,6 +34,15 @@ _PRESERVE_SUFFIXES = (
     "tutorial", "review", "evaluation", "dataset",
     "seminal",
 )
+
+_QUERY_TYPE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("policy_docs", ("policy", "privacy", "retention", "terms", "training")),
+    ("docs_api", ("docs", "documentation", "api", "reference", "sdk", "quickstart", "endpoint", "rate limit")),
+    ("benchmark_compare", ("benchmark", "leaderboard", "latency", "throughput", "eval", "evaluation", "vs", "versus", "compare", "comparison")),
+    ("breaking_news", ("today", "latest", "breaking", "announcement", "recent news")),
+)
+
+_RECENCY_MARKERS = re.compile(r"\b(2024|2025|2026|today|latest|recent|updated|new|новост|сегодня|обновл)\b", re.I)
 
 
 def _extract_keywords(text: str) -> List[str]:
@@ -110,9 +119,64 @@ def expand_search_queries(topic: str) -> List[str]:
 
     # Broader query: first 5 words of topic
     if len(topic_words) > 5:
-        broad = shorten_query(" ".join(topic_words[:5]))
-        if broad.lower() not in seen:
-            queries.append(broad)
-            seen.add(broad.lower())
+        broader = shorten_query(" ".join(topic_words[:5]))
+        if broader.lower() not in seen:
+            queries.append(broader)
+            seen.add(broader.lower())
 
     return queries
+
+
+def detect_query_type(query: str) -> str:
+    lowered = str(query or "").strip().lower()
+    if not lowered:
+        return "general"
+    for query_type, keywords in _QUERY_TYPE_RULES:
+        if any(keyword in lowered for keyword in keywords):
+            return query_type
+    return "general"
+
+
+def extract_core_subject(query: str) -> str:
+    keywords = _extract_keywords(str(query or ""))
+    if not keywords:
+        return ""
+    return " ".join(keywords[:4]).strip()
+
+
+def relevance_overlap(query: str, *, title: str = "", snippet: str = "", url: str = "") -> float:
+    query_terms = {term.lower() for term in _extract_keywords(query) if len(term) > 2}
+    if not query_terms:
+        return 0.0
+    haystack = f"{title} {snippet} {url}".lower()
+    overlap = sum(1 for term in query_terms if term in haystack)
+    return min(1.0, overlap / max(1, min(len(query_terms), 4)))
+
+
+def dedupe_signature(*, title: str = "", url: str = "") -> str:
+    title_tokens = [token.lower() for token in _extract_keywords(title)[:8]]
+    normalized_url = re.sub(r"^https?://", "", str(url or "").strip().lower()).rstrip("/")
+    return "|".join([" ".join(title_tokens), normalized_url])
+
+
+def recency_signal(*, text: str = "", freshness_priority: str = "low") -> float:
+    hits = len(_RECENCY_MARKERS.findall(str(text or "")))
+    if not hits:
+        return 0.0
+    weight = {"high": 0.8, "medium": 0.5, "low": 0.2}.get(str(freshness_priority or "low"), 0.2)
+    return min(1.0, hits * weight)
+
+
+def score_result_signals(query: str, *, title: str = "", snippet: str = "", url: str = "", freshness_priority: str = "low") -> Dict[str, Any]:
+    query_type = detect_query_type(query)
+    core_subject = extract_core_subject(query)
+    relevance = relevance_overlap(query, title=title, snippet=snippet, url=url)
+    recency = recency_signal(text=f"{title} {snippet} {url}", freshness_priority=freshness_priority)
+    signature = dedupe_signature(title=title, url=url)
+    return {
+        "query_type": query_type,
+        "core_subject": core_subject,
+        "relevance": relevance,
+        "recency": recency,
+        "dedupe_signature": signature,
+    }
