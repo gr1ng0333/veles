@@ -4,6 +4,8 @@ import re
 from operator import itemgetter
 from typing import Any, Callable, Dict, List
 
+from ouroboros.search_utils import dedupe_signature, score_result_signals
+
 DOMAIN_SCORES: Dict[str, float] = {
     "docs.python.org": 2.6, "platform.openai.com": 2.8, "openai.com": 2.4, "docs.anthropic.com": 2.8,
     "anthropic.com": 2.4, "developer.mozilla.org": 2.5, "developers.google.com": 2.6, "github.com": 1.8,
@@ -35,6 +37,7 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
     query_terms = {term for term in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9_-]+", run.user_query.lower()) if len(term) > 2}
     ranked_sources: List[Dict[str, Any]] = []
     seen_urls: set[str] = set()
+    seen_signatures: set[str] = set()
     for subquery in run.subqueries[: budget.max_subqueries]:
         run.budget_trace["subqueries_executed"] += 1
         result = web_search_fn(subquery)
@@ -89,11 +92,19 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
             if authority == "community": reasons.append("retelling-or-community")
             domain_bonus = next((value / 10.0 for domain, value in DOMAIN_SCORES.items() if host == domain or host.endswith(f".{domain}")), 0.0)
             if domain_bonus: score += domain_bonus; reasons.append(f"domain-trust:{domain_bonus:+.1f}")
-            freshness_hits = len(re.findall(r"\b(2024|2025|2026|today|latest|recent|updated|новост|сегодня|обновл)\b", haystack)); freshness_weight = {"high": 0.8, "medium": 0.5, "low": 0.2}[policy["freshness_priority"]]
-            if freshness_hits: freshness_score = min(1.5, freshness_hits * freshness_weight); score += freshness_score; reasons.append(f"freshness:{freshness_score:+.1f}")
-            overlap = sum(1 for term in query_terms if term in haystack)
-            if overlap: topical_score = min(3.0, overlap * 0.6); score += topical_score; reasons.append(f"topical:{topical_score:+.1f}")
-            is_duplicate = url in seen_urls
+            signal_trace = score_result_signals(run.user_query, title=title, snippet=snippet, url=url, freshness_priority=policy["freshness_priority"])
+            source_query_type = signal_trace["query_type"]
+            core_subject = signal_trace["core_subject"]
+            relevance_score = signal_trace["relevance"]
+            recency_score = signal_trace["recency"]
+            signature = signal_trace["dedupe_signature"]
+            if recency_score:
+                freshness_score = min(1.5, recency_score * 1.5)
+                score += freshness_score; reasons.append(f"freshness:{freshness_score:+.1f}")
+            if relevance_score:
+                topical_score = min(3.0, relevance_score * 3.0)
+                score += topical_score; reasons.append(f"topical:{topical_score:+.1f}")
+            is_duplicate = url in seen_urls or signature in seen_signatures
             if is_duplicate: score += -2.5; reasons.append("duplicate:-2.5")
             if host in AGGREGATOR_DOMAINS: score += -1.7; reasons.append("aggregator:-1.7")
             if host in SOCIAL_DOMAINS: score += -1.3; reasons.append("forum-social:-1.3")
@@ -150,11 +161,11 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
             if is_duplicate: reasons.append("selection-policy:duplicate-url")
             elif strict_official_query and not official: reasons.append("selection-policy:official-needed")
             elif score < 0.4: reasons.append("selection-policy:low-score")
-            entry = {"title": title or url, "url": url, "snippet": snippet, "score": round(score, 3), "reasons": reasons, "decision": decision, "host": host, "query": subquery, "authority": authority, "benchmark_primary_type": benchmark_primary_type, "page_kind": page_kind, "comparison_source_class": comparison_source_class}
+            entry = {"title": title or url, "url": url, "snippet": snippet, "score": round(score, 3), "reasons": reasons, "decision": decision, "host": host, "query": subquery, "authority": authority, "benchmark_primary_type": benchmark_primary_type, "page_kind": page_kind, "comparison_source_class": comparison_source_class, "query_type": source_query_type, "core_subject": core_subject, "dedupe_signature": signature, "signal_trace": {"relevance": round(relevance_score, 3), "recency": round(recency_score, 3)}}
             page_trace["ranked_sources"].append(entry)
             if entry["decision"] == "selected":
                 ranked_sources.append(entry)
-                page_trace["selected_to_read"].append({"url": url, "score": entry["score"], "reasons": entry["reasons"], "read_reason": [*entry["reasons"], f"selected-for-reading:score={entry['score']}"]})
+                page_trace["selected_to_read"].append({"url": url, "score": entry["score"], "reasons": entry["reasons"], "read_reason": [*entry["reasons"], f"selected-for-reading:score={entry['score']}"], "query_type": source_query_type, "core_subject": core_subject})
             else:
                 page_trace["rejected"].append({"url": url, "score": entry["score"], "reasons": entry["reasons"], "decision_reason": list(entry["reasons"])})
             seen_urls.add(url)
@@ -164,7 +175,7 @@ def collect_research_sources(run: Any, web_search_fn: Any, read_page_fn: Any, de
         if checkpoint_fn:
             checkpoint_fn("post_ranking", query=subquery, ranked_count=len(page_trace["ranked_sources"]), selected_count=len(page_trace["selected_to_read"]))
         existing_candidate_urls = {str(item.get("url") or "") for item in run.candidate_sources}
-        for item in [{"title": item.get("title") or item.get("url"), "url": item.get("url"), "snippet": item.get("snippet", ""), "score": item.get("score"), "authority": item.get("authority", "unknown"), "benchmark_primary_type": item.get("benchmark_primary_type", "")} for item in page_trace["ranked_sources"] if item.get("url")]:
+        for item in [{"title": item.get("title") or item.get("url"), "url": item.get("url"), "snippet": item.get("snippet", ""), "score": item.get("score"), "authority": item.get("authority", "unknown"), "benchmark_primary_type": item.get("benchmark_primary_type", ""), "query_type": item.get("query_type", "general"), "core_subject": item.get("core_subject", ""), "signal_trace": dict(item.get("signal_trace") or {})} for item in page_trace["ranked_sources"] if item.get("url")]:
             if item["url"] not in existing_candidate_urls:
                 run.candidate_sources.append(item)
                 existing_candidate_urls.add(item["url"])
