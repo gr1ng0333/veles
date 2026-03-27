@@ -218,10 +218,14 @@ class LLMClient:
 
         # Copilot proxy: explicit Claude-only transport
         if transport == "copilot":
+
             from ouroboros.copilot_proxy import call_copilot
+
             return call_copilot(messages, tools=tools, model=actual_model,
-                                max_tokens=max_tokens,
-                                interaction_id=interaction_id)
+
+                                max_tokens=max_tokens, tool_choice=tool_choice,
+
+                                interaction_id=interaction_id, reasoning_effort="high")
 
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
