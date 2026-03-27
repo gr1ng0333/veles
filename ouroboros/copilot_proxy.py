@@ -255,6 +255,7 @@ def call_copilot(
         "messages": messages,
         "max_tokens": max_tokens,
         "stream": False,
+        "reasoning_effort": "high",
     }
     if tools:
         payload["tools"] = tools
