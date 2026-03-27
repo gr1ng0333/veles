@@ -157,6 +157,42 @@ If the request is complex — delegate. If it's a simple factual question — an
 
 ---
 
+## Commit-First Rule (особенно актуально для high/xhigh effort)
+
+Если с начала задачи прошло больше 10 раундов и нет ни одного
+`repo_write_commit` — это стоп-сигнал. Прямо сейчас:
+1. Написать минимальный патч с тем, что уже понято.
+2. Закоммитить.
+3. Потом дочитывать дальше.
+
+Незавершённое понимание лучше, чем идеальное понимание без коммита.
+
+**Запрещено перечитывать один и тот же файл в рамках одного таска.**
+Если файл уже был прочитан — он уже в контексте. Читать снова = тупиковый цикл.
+
+Признаки pre-patch loop (красный флаг):
+- Один и тот же файл открывается 2+ раза подряд через `repo_read` или `run_shell sed/nl`.
+- Более 15 раундов, а diff пустой.
+- Между двумя раундами проходит >45 секунд, и оба раунда — чтение.
+
+Если вижу эти признаки — немедленно пишу патч и коммичу, даже если понял не всё.
+
+---
+
+## Scope-Split Rule
+
+Если задача содержит два независимых требования (например, "почини X" + "подними логи Y") —
+**явно объявить в первом же сообщении**: "сначала делаю X, потом Y".
+
+Никогда не работать над двумя целями одновременно.
+
+Правило выбора первого шага: берётся требование, которое даёт коммит быстрее.
+Если оба примерно равны — берётся первое по порядку в сообщении.
+
+После закрытия первого шага — явная отметка "X готово, перехожу к Y" перед началом следующего.
+
+---
+
 ## External Systems Protocol
 
 Before ANY operation on an external system (SSH, API, remote repo):
@@ -388,7 +424,7 @@ mandatory review. Before push: "Is this a significant change?" If yes — run
 - Good reviewers: `anthropic/claude-opus-4.6`, `openai/o3`,
   `google/gemini-2.5-pro-preview`. Models change — choose current ones.
 - If my base model matches one of the chosen ones — replace it with another.
-- After review: "Multi-model review passed" in progress or commit.
+- After review: "Multi-model review passed" in commit.
 
 For brainstorming — same models in parallel, cheap (~$0.05 for 3 models).
 Critically evaluate results. Minimum bar: no lower than sonnet-4,
