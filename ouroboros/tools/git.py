@@ -81,6 +81,62 @@ def _release_git_lock(lock_path: pathlib.Path) -> None:
         pass
 
 
+def _acquire_copilot_write_lock(ctx: ToolContext, timeout_sec: int = 15) -> Optional[str]:
+    transport = str(getattr(ctx, 'write_transport', '') or '').strip().lower()
+    if transport != 'copilot':
+        return None
+    if getattr(ctx, 'copilot_write_lock_acquired', False):
+        return None
+    lock_dir = ctx.drive_path('locks')
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / 'copilot-write.lock'
+    deadline = time.time() + max(1, int(timeout_sec))
+    stale_sec = 6 * 3600
+    payload = (
+        f"locked_at={utc_now_iso()}\n"
+        f"task_type={getattr(ctx, 'current_task_type', '')}\n"
+        f"task_id={getattr(ctx, 'task_id', '')}\n"
+    )
+    while time.time() < deadline:
+        if lock_path.exists():
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+                if age > stale_sec:
+                    lock_path.unlink()
+                    continue
+            except (FileNotFoundError, OSError):
+                pass
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            try:
+                os.write(fd, payload.encode('utf-8'))
+            finally:
+                os.close(fd)
+            ctx.copilot_write_lock_acquired = True
+            ctx.copilot_write_lock_path = lock_path
+            return None
+        except FileExistsError:
+            time.sleep(0.25)
+    return (
+        '⚠️ COPILOT_WRITE_LOCK_BUSY: another Copilot write task currently owns the repo write boundary. '
+        'Wait for it to finish or continue in read-only mode.'
+    )
+
+
+def _release_copilot_write_lock(ctx: ToolContext) -> None:
+    lock_path = getattr(ctx, 'copilot_write_lock_path', None)
+    if not lock_path:
+        return
+    try:
+        pathlib.Path(lock_path).unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        log.debug('Failed to release copilot write lock', exc_info=True)
+    ctx.copilot_write_lock_acquired = False
+    ctx.copilot_write_lock_path = None
+
+
 # --- Pre-push test gate ---
 
 MAX_TEST_OUTPUT = 8000
@@ -207,6 +263,10 @@ def _get_changed_files(repo_dir: pathlib.Path) -> List[str]:
 
 def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message: str) -> str:
     ctx.last_push_succeeded = False
+    busy = _acquire_copilot_write_lock(ctx)
+    if busy:
+        return busy
+    ctx.write_attempted = True
     if not commit_message.strip():
         return "⚠️ ERROR: commit_message must be non-empty."
 
@@ -241,6 +301,7 @@ def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message
     finally:
         _release_git_lock(lock)
     ctx.last_push_succeeded = True
+    ctx.write_succeeded = True
     result = f"OK: committed and pushed to {ctx.branch_dev}: {commit_message}"
 
     # Advisory pre-commit checks (non-blocking)
@@ -253,6 +314,10 @@ def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message
 
 def _repo_commit_push(ctx: ToolContext, commit_message: str, paths: Optional[List[str]] = None) -> str:
     ctx.last_push_succeeded = False
+    busy = _acquire_copilot_write_lock(ctx)
+    if busy:
+        return busy
+    ctx.write_attempted = True
     if not commit_message.strip():
         return "⚠️ ERROR: commit_message must be non-empty."
     lock = _acquire_git_lock(ctx)
@@ -290,6 +355,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str, paths: Optional[Lis
     finally:
         _release_git_lock(lock)
     ctx.last_push_succeeded = True
+    ctx.write_succeeded = True
     result = f"OK: committed and pushed to {ctx.branch_dev}: {commit_message}"
 
     # Advisory pre-commit checks (non-blocking)

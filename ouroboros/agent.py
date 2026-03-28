@@ -26,13 +26,15 @@ from ouroboros.utils import (
     safe_relpath, truncate_for_log,
     get_git_info, sanitize_owner_facing_text, sanitize_task_for_event,
 )
-from ouroboros.llm import LLMClient, add_usage
+from ouroboros.llm import LLMClient, add_usage, model_transport
 from ouroboros.model_modes import get_runtime_diagnostics, sync_mode_env_from_state
 from ouroboros.tools import ToolRegistry
+from ouroboros.tools.git import _release_copilot_write_lock
 from ouroboros.tools.registry import ToolContext
 from ouroboros.memory import Memory
 from ouroboros.context import build_llm_messages
 from ouroboros.loop import run_llm_loop
+from supervisor import git_ops
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +336,9 @@ class OuroborosAgent:
         is_direct = bool(task.get("_is_direct_chat"))
         chat_id = int(task.get("chat_id") or 0) or None
 
+        requested_model = str(task.get('model') or os.environ.get('OUROBOROS_MODEL') or '').strip()
+        write_transport = model_transport(requested_model) if requested_model else None
+
         # Set tool context for this task
         ctx = ToolContext(
             repo_dir=self.env.repo_dir,
@@ -346,6 +351,8 @@ class OuroborosAgent:
             task_depth=int(task.get("depth", 0)),
             is_direct_chat=is_direct,
             incoming_messages=self._incoming_messages,
+            task_id=str(task.get('id') or ''),
+            write_transport=write_transport,
         )
 
         # For direct chat: reuse persistent browser session (preserves cookies/page)
@@ -534,6 +541,21 @@ class OuroborosAgent:
             return list(self._pending_events)
 
         finally:
+            if 'ctx' in locals() and getattr(ctx, 'write_transport', None) == 'copilot' and getattr(ctx, 'write_attempted', False) and not getattr(ctx, 'last_push_succeeded', False) and not getattr(ctx, 'rescue_pushed', False):
+                ok_rescue, ref_or_err, pushed = git_ops.ensure_copilot_rescue_ref_if_needed(
+                    task_id=str(task.get('id') or ''),
+                    reason='task_finally_without_push',
+                )
+                if pushed and ok_rescue:
+                    ctx.rescue_pushed = True
+                    ctx.rescue_ref = ref_or_err
+                    ctx.final_status_hint = 'rescued'
+                elif getattr(ctx, 'write_attempted', False) and not getattr(ctx, 'last_push_succeeded', False):
+                    ctx.interrupted_before_push = True
+                    ctx.final_status_hint = 'interrupted_before_push'
+            if 'ctx' in locals():
+                _release_copilot_write_lock(ctx)
+
             self._busy = False
             # Browser cleanup: for direct chat keep the session alive;
             # for other task types (evolution, scheduled) clean up fully.
@@ -596,6 +618,21 @@ class OuroborosAgent:
                 "format": "markdown",
                 "task_id": task.get("id"), "ts": utc_now_iso(),
             })
+
+        if ctx.write_transport == 'copilot' and ctx.write_attempted and not ctx.last_push_succeeded:
+            ok_rescue, ref_or_err, pushed = git_ops.ensure_copilot_rescue_ref_if_needed(
+                task_id=str(task.get('id') or ''),
+                reason='task_completed_without_push',
+            )
+            if pushed and ok_rescue:
+                ctx.rescue_pushed = True
+                ctx.rescue_ref = ref_or_err
+                ctx.final_status_hint = 'rescued'
+                text = (text or '').rstrip() + f"\n\n⚠️ Copilot write task did not reach push confirmation; unpublished state was preserved in rescue ref `{ref_or_err}`."
+            elif pushed and not ok_rescue:
+                ctx.interrupted_before_push = True
+                ctx.final_status_hint = 'interrupted_before_push'
+                text = (text or '').rstrip() + f"\n\n⚠️ Copilot write task finished without push and rescue ref failed: {ref_or_err}"
 
         duration_sec = round(time.time() - start_time, 3)
         n_tool_calls = len(llm_trace.get("tool_calls", []))

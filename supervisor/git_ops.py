@@ -14,6 +14,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,6 +33,7 @@ DRIVE_ROOT: pathlib.Path = pathlib.Path("/content/drive/MyDrive/Ouroboros")
 REMOTE_URL: str = ""
 BRANCH_DEV: str = "ouroboros"
 BRANCH_STABLE: str = "ouroboros-stable"
+MAX_RESCUE_SNAPSHOTS: int = 20
 
 
 def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, remote_url: str,
@@ -47,6 +49,17 @@ def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, remote_url: str,
 # ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
+
+def _cleanup_old_rescue_snapshots(limit: int = MAX_RESCUE_SNAPSHOTS) -> None:
+    rescue_root = DRIVE_ROOT / "archive" / "rescue"
+    if not rescue_root.exists():
+        return
+
+    entries = [p for p in rescue_root.iterdir() if p.is_dir()]
+    entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    for stale in entries[limit:]:
+        shutil.rmtree(stale, ignore_errors=True)
+
 
 def git_capture(cmd: List[str]) -> Tuple[int, str, str]:
     r = subprocess.run(cmd, cwd=str(REPO_DIR), capture_output=True, text=True)
@@ -205,33 +218,138 @@ def _create_rescue_snapshot(branch: str, reason: str,
     return info
 
 
-MAX_RESCUE_SNAPSHOTS = 20
+def _collect_copilot_rescue_repo_state() -> Dict[str, Any]:
+    branch_proc = subprocess.run(
+        ['git', 'branch', '--show-current'],
+        cwd=str(REPO_DIR), capture_output=True, text=True,
+    )
+    current_branch = (branch_proc.stdout or '').strip() if branch_proc.returncode == 0 else ''
+
+    status_proc = subprocess.run(
+        ['git', 'status', '--porcelain'],
+        cwd=str(REPO_DIR), capture_output=True, text=True,
+    )
+    dirty_lines = [ln for ln in (status_proc.stdout or '').splitlines() if ln.strip()]
+
+    unpushed_proc = subprocess.run(
+        ['git', 'log', '--oneline', f'origin/{BRANCH_DEV}..HEAD'],
+        cwd=str(REPO_DIR), capture_output=True, text=True,
+    )
+    unpushed_lines = [ln for ln in (unpushed_proc.stdout or '').splitlines() if ln.strip()] if unpushed_proc.returncode == 0 else []
+
+    warnings: List[str] = []
+    if dirty_lines:
+        warnings.append('dirty_working_tree')
+    if unpushed_lines:
+        warnings.append('unpushed_commits')
+    if not current_branch:
+        warnings.append('unknown_current_branch')
+
+    return {
+        'current_branch': current_branch,
+        'dirty_lines': dirty_lines,
+        'unpushed_lines': unpushed_lines,
+        'warnings': warnings,
+    }
 
 
-def _cleanup_old_rescue_snapshots() -> None:
-    """Remove oldest rescue snapshots when count exceeds MAX_RESCUE_SNAPSHOTS."""
-    rescue_root = DRIVE_ROOT / "archive" / "rescue"
-    if not rescue_root.exists():
-        return
+def _push_copilot_rescue_ref(task_id: str, reason: str = '') -> Tuple[bool, str]:
+    """Persist current unpublished repo state to a dedicated remote rescue ref."""
+    task = str(task_id or '').strip() or 'unknown-task'
+    safe_task = ''.join(ch if ch.isalnum() or ch in '-_.' else '-' for ch in task)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    ref = f'refs/veles-rescue/{safe_task}/{stamp}'
+    msg = f'copilot rescue for {safe_task}'
+    if reason:
+        msg += f' | {reason[:120]}'
+
+    repo_state = _collect_copilot_rescue_repo_state()
+    snapshot = _create_rescue_snapshot(BRANCH_DEV, reason or 'copilot rescue', repo_state)
+    rescue_dir = pathlib.Path(str(snapshot.get('path') or '')).resolve()
+    if not rescue_dir.exists():
+        return False, f'rescue snapshot missing: {rescue_dir}'
+
+    origin_proc = subprocess.run(
+        ['git', 'remote', 'get-url', 'origin'],
+        cwd=str(REPO_DIR), capture_output=True, text=True,
+    )
+    if origin_proc.returncode != 0:
+        return False, f'origin url failed: {(origin_proc.stderr or origin_proc.stdout).strip()}'
+    origin_url = (origin_proc.stdout or '').strip()
+    if not origin_url:
+        return False, 'origin url empty'
+
+    head_proc = subprocess.run(
+        ['git', 'rev-parse', 'HEAD'],
+        cwd=str(REPO_DIR), capture_output=True, text=True,
+    )
+    head_sha = (head_proc.stdout or '').strip() if head_proc.returncode == 0 else ''
+
+    with tempfile.TemporaryDirectory(prefix='veles-rescue-repo-') as tmp:
+        tmp_path = pathlib.Path(tmp)
+        init_proc = subprocess.run(['git', 'init', '-q'], cwd=str(tmp_path), capture_output=True, text=True)
+        if init_proc.returncode != 0:
+            return False, f'git init failed: {(init_proc.stderr or init_proc.stdout).strip()}'
+        subprocess.run(['git', 'config', 'user.name', 'Veles Rescue'], cwd=str(tmp_path), capture_output=True, text=True)
+        subprocess.run(['git', 'config', 'user.email', 'veles-rescue@local'], cwd=str(tmp_path), capture_output=True, text=True)
+
+        for child in rescue_dir.iterdir():
+            dst = tmp_path / child.name
+            if child.is_dir():
+                shutil.copytree(child, dst)
+            else:
+                shutil.copy2(child, dst)
+
+        manifest = {
+            'task_id': safe_task,
+            'reason': reason,
+            'ref': ref,
+            'base_branch': BRANCH_DEV,
+            'source_head_sha': head_sha,
+            'snapshot_path': str(rescue_dir),
+            'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        atomic_write_text(tmp_path / 'remote_rescue_manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2))
+
+        add_proc = subprocess.run(['git', 'add', '-A'], cwd=str(tmp_path), capture_output=True, text=True)
+        if add_proc.returncode != 0:
+            return False, f'git add failed: {(add_proc.stderr or add_proc.stdout).strip()}'
+        commit_proc = subprocess.run(['git', 'commit', '-q', '-m', msg], cwd=str(tmp_path), capture_output=True, text=True)
+        if commit_proc.returncode != 0:
+            return False, f'git commit failed: {(commit_proc.stderr or commit_proc.stdout).strip()}'
+        push_proc = subprocess.run(['git', 'push', origin_url, f'HEAD:{ref}', '--force'], cwd=str(tmp_path), capture_output=True, text=True)
+        if push_proc.returncode != 0:
+            return False, f'push failed: {(push_proc.stderr or push_proc.stdout).strip()}'
+
     try:
-        dirs = sorted(
-            [d for d in rescue_root.iterdir() if d.is_dir()],
-            key=lambda d: d.name,
+        append_jsonl(
+            DRIVE_ROOT / 'logs' / 'supervisor.jsonl',
+            {
+                'ts': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                'type': 'copilot_rescue_ref_pushed',
+                'task_id': safe_task,
+                'ref': ref,
+                'reason': reason,
+                'source_head_sha': head_sha,
+                'dirty_count': len(repo_state.get('dirty_lines') or []),
+                'unpushed_count': len(repo_state.get('unpushed_lines') or []),
+            },
         )
-        if len(dirs) <= MAX_RESCUE_SNAPSHOTS:
-            return
-        to_remove = dirs[:len(dirs) - MAX_RESCUE_SNAPSHOTS]
-        for d in to_remove:
-            shutil.rmtree(d, ignore_errors=True)
-            log.info("rescue_cleanup removed=%s remaining=%d",
-                     d.name, len(dirs) - len(to_remove))
     except Exception:
-        log.debug("rescue_cleanup failed", exc_info=True)
+        pass
+    return True, ref
 
 
-# ---------------------------------------------------------------------------
-# Checkout + reset
-# ---------------------------------------------------------------------------
+def ensure_copilot_rescue_ref_if_needed(*, task_id: str, reason: str = '') -> Tuple[bool, str, bool]:
+    """Push a rescue ref only when local repo has unpublished commits or dirty state."""
+    repo_state = _collect_copilot_rescue_repo_state()
+    dirty = bool(repo_state.get('dirty_lines'))
+    ahead_count = len(repo_state.get('unpushed_lines') or [])
+    if not dirty and ahead_count <= 0:
+        return True, '', False
+    ok, ref_or_err = _push_copilot_rescue_ref(task_id=task_id, reason=reason)
+    return ok, ref_or_err, True
+
 
 def checkout_and_reset(branch: str, reason: str = "unspecified",
                        unsynced_policy: str = "ignore") -> Tuple[bool, str]:
