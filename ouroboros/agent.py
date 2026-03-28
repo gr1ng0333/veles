@@ -470,7 +470,7 @@ class OuroborosAgent:
                 text = "⚠️ Model returned an empty response. Try rephrasing your request."
 
             # Emit events for supervisor
-            self._emit_task_results(task, text, usage, llm_trace, start_time, drive_logs)
+            self._emit_task_results(task, text, usage, llm_trace, start_time, drive_logs, ctx)
 
             # Execution reflection — auto-learning from task errors (non-blocking daemon thread)
             try:
@@ -585,6 +585,7 @@ class OuroborosAgent:
         self, task: Dict[str, Any], text: str,
         usage: Dict[str, Any], llm_trace: Dict[str, Any],
         start_time: float, drive_logs: pathlib.Path,
+        ctx: Any = None,
     ) -> None:
         """Emit all end-of-task events to supervisor."""
         # NOTE: per-round llm_usage events are already emitted in loop.py
@@ -619,7 +620,7 @@ class OuroborosAgent:
                 "task_id": task.get("id"), "ts": utc_now_iso(),
             })
 
-        if ctx.write_transport == 'copilot' and ctx.write_attempted and not ctx.last_push_succeeded:
+        if ctx is not None and getattr(ctx, 'write_transport', None) == 'copilot' and getattr(ctx, 'write_attempted', False) and not getattr(ctx, 'last_push_succeeded', False):
             ok_rescue, ref_or_err, pushed = git_ops.ensure_copilot_rescue_ref_if_needed(
                 task_id=str(task.get('id') or ''),
                 reason='task_completed_without_push',
