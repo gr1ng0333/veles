@@ -1,36 +1,34 @@
 """
-Ouroboros — Background Consciousness.
+Ouroboros — Background Consciousness (Watchdog + Advisor).
 
-A persistent thinking loop that runs between tasks, giving the agent
-continuous presence rather than purely reactive behavior.
+A read-only background daemon that wakes periodically to check system
+health, reflect on recent activity, and report insights to the owner.
 
 The consciousness:
-- Wakes periodically (interval decided by the LLM via set_next_wakeup)
-- Loads scratchpad, identity, recent events
-- Calls the LLM with a lightweight introspection prompt
-- Has access to a subset of tools (memory, messaging, scheduling)
-- Can message the owner proactively
-- Can schedule tasks for itself
-- Pauses when a regular task is running
+- Wakes every ~15 minutes (±3 min randomization)
+- Reads logs, state, memory for context (READ-ONLY)
+- Makes a single LLM call without tools
+- Sends a Telegram message to the owner if noteworthy, or stays silent
+- NEVER creates tasks, writes files, or modifies state
+- Anti-spam throttle: health alerts ≤1/15min, insights ≤1/2hr
 """
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import logging
 import os
 import pathlib
 import queue
+import random
 import threading
 import time
 import traceback
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 from ouroboros.utils import (
     utc_now_iso, read_text, append_jsonl, clip_text,
-    truncate_for_log, sanitize_tool_result_for_log, sanitize_tool_args_for_log,
 )
 from ouroboros.llm import LLMClient, model_transport, transport_model_name
 from ouroboros.model_modes import get_background_model, get_background_reasoning_effort
@@ -66,37 +64,8 @@ def _calc_next_wakeup_at(seconds: float) -> str:
     return datetime.fromtimestamp(dt, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _build_thought_preview(
-    final_content: str,
-    *,
-    rounds: int,
-    tool_calls: int,
-    end_reason: str,
-) -> str:
-    content = (final_content or "").strip()
-    if content:
-        return content[:300]
-
-    reason_map = {
-        "paused": "cycle paused due to active foreground task",
-        "max_rounds_reached": "cycle reached max background rounds",
-        "empty_response": "model returned empty response",
-        "budget_exceeded": "cycle stopped due to background budget guard",
-        "error": "cycle stopped on internal error",
-        "stopped": "cycle interrupted by stop signal",
-    }
-    reason_text = reason_map.get(end_reason, end_reason or "no-final-content")
-    fallback = (
-        "background cycle finished without final text; "
-        f"reason={reason_text}; rounds={rounds}; tool_calls={tool_calls}"
-    )
-    return fallback[:300]
-
-
 class BackgroundConsciousness:
-    """Persistent background thinking loop for Ouroboros."""
-
-    _MAX_BG_ROUNDS = 5
+    """Read-only background watchdog and advisor for Ouroboros."""
 
     def __init__(
         self,
@@ -111,16 +80,17 @@ class BackgroundConsciousness:
         self._owner_chat_id_fn = owner_chat_id_fn
 
         self._llm = LLMClient()
-        self._registry = self._build_registry()
         self._running = False
         self._paused = False
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._wakeup_event = threading.Event()
-        self._next_wakeup_sec: float = 300.0
-        self._user_set_wakeup: bool = False
+        self._next_wakeup_sec: float = 900.0
         self._observations: queue.Queue = queue.Queue()
-        self._deferred_events: list = []
+
+        # Anti-spam throttle (monotonic timestamps)
+        self._last_health_alert_ts: float = 0.0
+        self._last_insight_ts: float = 0.0
 
         # Budget tracking
         self._bg_spent_usd: float = 0.0
@@ -165,11 +135,7 @@ class BackgroundConsciousness:
         self._paused = True
 
     def resume(self) -> None:
-        """Resume after task completes. Flush any deferred events first."""
-        if self._deferred_events and self._event_queue is not None:
-            for evt in self._deferred_events:
-                self._event_queue.put(evt)
-            self._deferred_events.clear()
+        """Resume after task completes."""
         self._paused = False
         self._wakeup_event.set()
 
@@ -184,27 +150,11 @@ class BackgroundConsciousness:
     # Main loop
     # -------------------------------------------------------------------
 
-    def _policy_wakeup_sec(self) -> float:
-        """Wakeup policy from owner: 1800s with tasks, 3600s when idle."""
-        try:
-            qpath = self._drive_root / "state" / "queue_snapshot.json"
-            if qpath.exists():
-                snap = json.loads(read_text(qpath))
-                pending = int(snap.get("pending_count", 0) or 0)
-                running = int(snap.get("running_count", 0) or 0)
-                if (pending + running) > 0:
-                    return 1800.0
-        except Exception:
-            log.debug("Failed to read queue snapshot for wakeup policy", exc_info=True)
-        return 3600.0
-
     def _loop(self) -> None:
         """Daemon thread: sleep → wake → think → sleep."""
         while not self._stop_event.is_set():
-            # Respect LLM's set_next_wakeup; fall back to owner policy
-            if not self._user_set_wakeup:
-                self._next_wakeup_sec = self._policy_wakeup_sec()
-            self._user_set_wakeup = False
+            # Fixed 15-minute interval ±3 minutes randomization
+            self._next_wakeup_sec = 900.0 + random.uniform(-180, 180)
             self._monitor_state["next_wakeup_interval_seconds"] = int(self._next_wakeup_sec)
             self._monitor_state["next_wakeup_at"] = _calc_next_wakeup_at(self._next_wakeup_sec)
             self._save_monitor_state()
@@ -222,7 +172,6 @@ class BackgroundConsciousness:
 
             # Budget check
             if not self._check_budget():
-                self._next_wakeup_sec = self._policy_wakeup_sec()
                 continue
 
             try:
@@ -234,9 +183,6 @@ class BackgroundConsciousness:
                     "error": repr(e),
                     "traceback": traceback.format_exc()[:1500],
                 })
-                self._next_wakeup_sec = min(
-                    self._next_wakeup_sec * 2, self._policy_wakeup_sec()
-                )
 
     def _check_budget(self) -> bool:
         """Check if background consciousness is within its budget allocation."""
@@ -278,128 +224,66 @@ class BackgroundConsciousness:
     # -------------------------------------------------------------------
 
     def _think(self) -> None:
-        """One thinking cycle: build context, call LLM, execute tools iteratively."""
+        """One thinking cycle: build context, single LLM call, handle response."""
         context = self._build_context()
         model = self._model
 
-        tools = self._tool_schemas()
         messages = [
             {"role": "system", "content": context},
-            {"role": "user", "content": "Wake up. Think."},
+            {"role": "user", "content": "Wake up. Observe and report."},
         ]
 
-        total_cost = 0.0
-        final_content = ""
-        round_idx = 0
-        tool_call_count = 0
-        end_reason = "stopped"
-        all_pending_events = []  # Accumulate events across all tool calls
-
         try:
-            for round_idx in range(1, self._MAX_BG_ROUNDS + 1):
-                if self._paused:
-                    end_reason = "paused"
-                    break
-                msg, usage = self._llm.chat(
-                    messages=messages,
-                    model=model,
-                    tools=tools,
-                    reasoning_effort=get_background_reasoning_effort(),
-                    max_tokens=2048,
-                )
-                cost = float(usage.get("cost") or 0)
-                total_cost += cost
-                self._bg_spent_usd += cost
-
-                # Write BG spending to global state so it's visible in budget tracking
-                try:
-                    from supervisor.state import update_budget_from_usage
-                    update_budget_from_usage({
-                        "cost": cost, "rounds": 1,
-                        "prompt_tokens": usage.get("prompt_tokens", 0),
-                        "completion_tokens": usage.get("completion_tokens", 0),
-                        "cached_tokens": usage.get("cached_tokens", 0),
-                    })
-                except Exception:
-                    log.debug("Failed to update global budget from BG consciousness", exc_info=True)
-
-                # Budget check between rounds
-                if not self._check_budget():
-                    append_jsonl(self._drive_root / "logs" / "events.jsonl", {
-                        "ts": utc_now_iso(),
-                        "type": "bg_budget_exceeded_mid_cycle",
-                        "round": round_idx,
-                    })
-                    end_reason = "budget_exceeded"
-                    break
-
-                # Report usage to supervisor
-                if self._event_queue is not None:
-                    self._event_queue.put({
-                        "type": "llm_usage",
-                        "provider": "openrouter",
-                        "usage": usage,
-                        "source": "consciousness",
-                        "ts": utc_now_iso(),
-                        "category": "consciousness",
-                    })
-
-                content = msg.get("content") or ""
-                tool_calls = msg.get("tool_calls") or []
-
-                if self._paused:
-                    end_reason = "paused"
-                    break
-
-                # If we have content but no tool calls, we're done
-                if content and not tool_calls:
-                    final_content = content
-                    end_reason = "finalized"
-                    break
-
-                # If we have tool calls, execute them and continue loop
-                if tool_calls:
-                    tool_call_count += len(tool_calls)
-                    end_reason = "tool_calls"
-                    messages.append(msg)
-                    for tc in tool_calls:
-                        result = self._execute_tool(tc, all_pending_events)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.get("id", ""),
-                            "content": result,
-                        })
-                    continue
-
-                # If neither content nor tool_calls, stop
-                end_reason = "empty_response"
-                break
-
-            if round_idx >= self._MAX_BG_ROUNDS and not final_content and end_reason == "tool_calls":
-                end_reason = "max_rounds_reached"
-
-            # Forward or defer accumulated events
-            if all_pending_events and self._event_queue is not None:
-                if self._paused:
-                    self._deferred_events.extend(all_pending_events)
-                else:
-                    for evt in all_pending_events:
-                        self._event_queue.put(evt)
-
-            thought_preview = _build_thought_preview(
-                final_content,
-                rounds=round_idx,
-                tool_calls=tool_call_count,
-                end_reason=end_reason,
+            msg, usage = self._llm.chat(
+                messages=messages,
+                model=model,
+                tools=None,
+                reasoning_effort=get_background_reasoning_effort(),
+                max_tokens=2048,
             )
+            cost = float(usage.get("cost") or 0)
+            self._bg_spent_usd += cost
 
-            # Log the thought with round count
+            # Write BG spending to global state so it's visible in budget tracking
+            try:
+                from supervisor.state import update_budget_from_usage
+                update_budget_from_usage({
+                    "cost": cost, "rounds": 1,
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "cached_tokens": usage.get("cached_tokens", 0),
+                })
+            except Exception:
+                log.debug("Failed to update global budget from BG consciousness", exc_info=True)
+
+            # Report usage to supervisor
+            if self._event_queue is not None:
+                self._event_queue.put({
+                    "type": "llm_usage",
+                    "provider": "openrouter",
+                    "usage": usage,
+                    "source": "consciousness",
+                    "ts": utc_now_iso(),
+                    "category": "consciousness",
+                })
+
+            final_content = (msg.get("content") or "").strip()
+
+            # Handle response: NOTHING_TO_REPORT → silence, else → maybe send
+            if "NOTHING_TO_REPORT" in final_content:
+                log.debug("Consciousness: nothing to report")
+            elif final_content:
+                self._maybe_send_to_owner(final_content)
+
+            thought_preview = (final_content or "")[:300]
+
+            # Log the thought
             append_jsonl(self._drive_root / "logs" / "events.jsonl", {
                 "ts": utc_now_iso(),
                 "type": "consciousness_thought",
                 "thought_preview": thought_preview,
-                "cost_usd": total_cost,
-                "rounds": round_idx,
+                "cost_usd": cost,
+                "rounds": 1,
                 "model": model,
                 "requested_model": model,
                 "transport": model_transport(model),
@@ -409,14 +293,13 @@ class BackgroundConsciousness:
 
             now_iso = utc_now_iso()
             self._monitor_state["wakeup_count"] = int(self._monitor_state.get("wakeup_count", 0)) + 1
-            self._monitor_state["last_issues_check"] = now_iso
             self._monitor_state["last_thought_at"] = now_iso
             self._monitor_state["last_thought_preview"] = thought_preview
             self._monitor_state["last_model"] = model
             self._monitor_state["last_transport"] = model_transport(model)
             self._monitor_state["last_actual_model"] = transport_model_name(model)
             self._monitor_state["last_reasoning_effort"] = get_background_reasoning_effort()
-            self._monitor_state["last_rounds"] = round_idx
+            self._monitor_state["last_rounds"] = 1
             self._monitor_state["next_wakeup_interval_seconds"] = int(self._next_wakeup_sec)
             self._monitor_state["next_wakeup_at"] = _calc_next_wakeup_at(self._next_wakeup_sec)
             self._save_monitor_state()
@@ -428,12 +311,55 @@ class BackgroundConsciousness:
                 "error": repr(e),
             })
             err_now_iso = utc_now_iso()
-            self._monitor_state["last_issues_check"] = err_now_iso
             self._monitor_state["last_thought_at"] = err_now_iso
-            self._monitor_state["last_thought_preview"] = _build_thought_preview(
-                "", rounds=round_idx, tool_calls=tool_call_count, end_reason="error"
-            )
+            self._monitor_state["last_thought_preview"] = f"error: {repr(e)}"[:300]
             self._save_monitor_state()
+
+    # -------------------------------------------------------------------
+    # Owner messaging with anti-spam throttle
+    # -------------------------------------------------------------------
+
+    def _maybe_send_to_owner(self, text: str) -> None:
+        """Send message to owner via Telegram, respecting anti-spam throttle.
+
+        Health alerts (⚠️): max 1 per 15 minutes.
+        Background insights (🔍): max 1 per 2 hours.
+        """
+        now = time.monotonic()
+        is_health_alert = "\u26a0\ufe0f" in text or "Health Alert" in text
+
+        if is_health_alert:
+            if now - self._last_health_alert_ts < 900:  # 15 min
+                log.debug("Consciousness: health alert throttled")
+                return
+            self._last_health_alert_ts = now
+        else:
+            if now - self._last_insight_ts < 7200:  # 2 hours
+                log.debug("Consciousness: insight throttled")
+                return
+            self._last_insight_ts = now
+
+        chat_id = self._owner_chat_id_fn()
+        if not chat_id:
+            log.debug("Consciousness: no owner chat_id, cannot send")
+            return
+
+        if self._event_queue is not None:
+            self._event_queue.put({
+                "type": "send_message",
+                "chat_id": chat_id,
+                "text": text,
+                "format": "markdown",
+                "is_progress": False,
+                "ts": utc_now_iso(),
+            })
+
+        append_jsonl(self._drive_root / "logs" / "events.jsonl", {
+            "ts": utc_now_iso(),
+            "type": "consciousness_advisor_message",
+            "is_health_alert": is_health_alert,
+            "text_preview": text[:200],
+        })
 
     # -------------------------------------------------------------------
     # Context building (lightweight)
@@ -549,4 +475,3 @@ class BackgroundConsciousness:
         parts.append("## Runtime\n\n" + "\n".join(runtime_lines))
 
         return "\n\n".join(parts)
-
