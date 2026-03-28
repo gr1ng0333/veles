@@ -139,8 +139,12 @@ class OuroborosAgent:
             pass
 
     def _check_uncommitted_changes(self) -> Tuple[dict, int]:
-        """Check for uncommitted changes and attempt auto-rescue commit & push."""
-        import re
+        """Check for uncommitted changes at startup.
+
+        Instead of auto-committing to git history (which masks real changes
+        with rescue noise), we save a diff snapshot to the rescue archive
+        and emit a warning. This keeps git history clean and honest.
+        """
         import subprocess
         try:
             result = subprocess.run(
@@ -148,45 +152,38 @@ class OuroborosAgent:
                 cwd=str(self.env.repo_dir),
                 capture_output=True, text=True, timeout=10, check=True
             )
-            dirty_files = [l.strip() for l in result.stdout.strip().split('\n') if l.strip()]
+            dirty_files = [l.strip() for l in result.stdout.strip().split(chr(10)) if l.strip()]
             if dirty_files:
-                # Auto-rescue: commit and push
-                auto_committed = False
+                # Save diff snapshot to rescue archive (no git commit)
                 try:
-                    # Only stage tracked files (not secrets/notebooks)
-                    subprocess.run(["git", "add", "-u"], cwd=str(self.env.repo_dir), timeout=10, check=True)
-                    subprocess.run(
-                        ["git", "commit", "-m", "auto-rescue: uncommitted changes detected on startup"],
-                        cwd=str(self.env.repo_dir), timeout=30, check=True
+                    rescue_dir = self.env.drive_path("archive/rescue")
+                    rescue_dir.mkdir(parents=True, exist_ok=True)
+                    from ouroboros.utils import utc_now_iso
+                    import datetime
+                    ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                    snapshot_id = f"{ts}_startup_dirty"
+                    # Save git diff
+                    diff_result = subprocess.run(
+                        ["git", "diff"],
+                        cwd=str(self.env.repo_dir),
+                        capture_output=True, text=True, timeout=15
                     )
-                    # Validate branch name
-                    if not re.match(r'^[a-zA-Z0-9_/-]+$', self.env.branch_dev):
-                        raise ValueError(f"Invalid branch name: {self.env.branch_dev}")
-                    # Pull with rebase before push
-                    subprocess.run(
-                        ["git", "pull", "--rebase", "origin", self.env.branch_dev],
-                        cwd=str(self.env.repo_dir), timeout=60, check=True
+                    diff_text = diff_result.stdout or "(no diff output)"
+                    snapshot_path = rescue_dir / f"{snapshot_id}.diff"
+                    snapshot_path.write_text(diff_text, encoding="utf-8")
+                    log.warning(
+                        f"Startup dirty tree: {len(dirty_files)} uncommitted file(s). "
+                        f"Diff saved to rescue archive: {snapshot_id}.diff — "
+                        "no auto-commit made (keeping git history clean)."
                     )
-                    # Push
-                    try:
-                        subprocess.run(
-                            ["git", "push", "origin", self.env.branch_dev],
-                            cwd=str(self.env.repo_dir), timeout=60, check=True
-                        )
-                        auto_committed = True
-                        log.warning(f"Auto-rescued {len(dirty_files)} uncommitted files on startup")
-                    except subprocess.CalledProcessError:
-                        # If push fails, undo the commit
-                        subprocess.run(
-                            ["git", "reset", "HEAD~1"],
-                            cwd=str(self.env.repo_dir), timeout=10, check=True
-                        )
-                        raise
-                except Exception as e:
-                    log.warning(f"Failed to auto-rescue uncommitted changes: {e}", exc_info=True)
+                except Exception as save_err:
+                    log.warning(f"Failed to save rescue snapshot: {save_err}", exc_info=True)
+
                 return {
-                    "status": "warning", "files": dirty_files[:20],
-                    "auto_committed": auto_committed,
+                    "status": "warning",
+                    "files": dirty_files[:20],
+                    "auto_committed": False,
+                    "rescue_snapshot": True,
                 }, 1
             else:
                 return {"status": "ok"}, 0
