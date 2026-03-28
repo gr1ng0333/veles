@@ -48,6 +48,10 @@
 
 ## Changelog
 
+### 6.83.1
+- Fix: restore missing return statement in get_reflection_model() — function was returning None, breaking all execution reflections and pattern register updates
+- Bug introduced in a8ea306; all reflection tasks since then failed silently (LLM was called with model=None)
+
 ### 6.83.0
 - Replaced auto-commit on startup dirty tree with a rescue archive snapshot (diff saved to archive/rescue/)
 - Startup auto-rescue commits were polluting git history and masking real changes; now git history stays clean and the dirty state is preserved as a .diff file for review
@@ -864,6 +868,10 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
+### 6.83.1
+- Fix: restore missing return statement in get_reflection_model() — function was returning None, breaking all execution reflections and pattern register updates
+- Bug introduced in a8ea306; all reflection tasks since then failed silently (LLM was called with model=None)
 
 ### 6.83.0
 - Replaced auto-commit on startup dirty tree with a rescue archive snapshot (diff saved to archive/rescue/)
