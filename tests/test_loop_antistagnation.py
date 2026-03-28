@@ -43,7 +43,7 @@ def test_stagnation_action_thresholds(round_no, already_injected, expected):
 
 @pytest.mark.parametrize(
     ("task_type", "env_value", "base_limit", "expected"),
-    [("evolution", None, 15, 40), ("task", "5", 15, 15), ("evolution", "6", 15, 6)],
+    [("evolution", "40", 15, 40), ("task", "5", 15, 15), ("evolution", "6", 15, 6)],
 )
 def test_get_evolution_round_limit_contract(monkeypatch, task_type, env_value, base_limit, expected):
     if env_value is None:

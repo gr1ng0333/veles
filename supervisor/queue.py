@@ -503,13 +503,75 @@ def _evolution_blocked_by_codex_capacity(now_iso: str) -> Tuple[bool, Dict[str, 
         )
         return False, {"reason": "check_failed", "error": repr(exc)}
 
+
+def _evolution_blocked_by_copilot_capacity(now_iso: str) -> Tuple[bool, Dict[str, Any]]:
+    """Return (blocked, details) for Copilot quota / account health gate."""
+    try:
+        from ouroboros.copilot_proxy_accounts import (
+            get_accounts_status as copilot_accounts_status,
+            COPILOT_MONTHLY_QUOTA,
+        )
+
+        statuses = copilot_accounts_status(force_reload=True)
+        if not statuses:
+            return False, {"reason": "no_copilot_accounts"}
+
+        all_dead = all(s.get("dead") for s in statuses)
+        if all_dead:
+            return True, {"reason": "all_copilot_accounts_dead"}
+
+        all_in_cooldown = all(
+            s.get("dead") or s.get("in_cooldown") for s in statuses
+        )
+        if all_in_cooldown:
+            shortest = min(
+                (s.get("cooldown_remaining", 0) for s in statuses if not s.get("dead") and s.get("in_cooldown")),
+                default=0,
+            )
+            return True, {"reason": "all_copilot_in_cooldown", "shortest_cooldown": shortest}
+
+        total_usage = sum(float(s.get("usage_units", 0)) for s in statuses)
+        total_quota = COPILOT_MONTHLY_QUOTA * len(statuses)
+        if total_quota > 0 and total_usage >= total_quota * 0.95:
+            return True, {
+                "reason": "copilot_quota_exhausted",
+                "total_usage": total_usage,
+                "total_quota": total_quota,
+            }
+
+        return False, {
+            "total_usage": total_usage,
+            "total_quota": total_quota,
+        }
+    except Exception as exc:
+        append_jsonl(
+            DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            {
+                "ts": now_iso,
+                "type": "evolution_copilot_capacity_check_failed",
+                "error": repr(exc),
+            },
+        )
+        return False, {"reason": "check_failed", "error": repr(exc)}
+
+def _get_evolution_transport() -> str:
+    """Determine which transport the current active mode uses."""
+    try:
+        from ouroboros.model_modes import get_active_mode
+        from ouroboros.llm import model_transport
+        mode = get_active_mode()
+        return model_transport(mode.model)
+    except Exception:
+        return "codex"
+
+
 def enqueue_evolution_task_if_needed() -> None:
     """Enqueue evolution task if queue is empty and evolution mode is enabled.
 
     Throttling:
     - Cooldown: waits EVOLUTION_COOLDOWN_SEC between cycles (backoff on no-commit streak).
     - Hourly cap: max EVOLUTION_MAX_CYCLES_PER_HOUR per hour.
-    - Codex 5h usage: retry-backed gate with deduped state transition logs.
+    - Transport capacity: codex 5h usage / copilot quota / openrouter budget.
     - Circuit breaker: pauses after 3 consecutive explicit failures.
     """
     if PENDING or RUNNING:
@@ -562,7 +624,19 @@ def enqueue_evolution_task_if_needed() -> None:
         if retry_ts > now:
             return
 
-    blocked, capacity_info = _evolution_blocked_by_codex_capacity(now_iso)
+    # --- Transport-aware capacity gate ---
+    transport = _get_evolution_transport()
+    if transport == "copilot":
+        blocked, capacity_info = _evolution_blocked_by_copilot_capacity(now_iso)
+        capacity_reason = "copilot_capacity"
+    elif transport == "openrouter":
+        blocked = budget_remaining(st) < EVOLUTION_BUDGET_RESERVE
+        capacity_info = {"budget_remaining": budget_remaining(st)}
+        capacity_reason = "openrouter_budget"
+    else:
+        blocked, capacity_info = _evolution_blocked_by_codex_capacity(now_iso)
+        capacity_reason = "codex_capacity"
+
     was_blocked = bool(st.get("evolution_capacity_blocked"))
     if blocked:
         prev_step = int(st.get("evolution_capacity_backoff_step") or 0)
@@ -573,9 +647,8 @@ def enqueue_evolution_task_if_needed() -> None:
         st["evolution_capacity_backoff_step"] = step
         st["evolution_capacity_blocked"] = True
         log.warning(
-            "evolution capacity gate blocked: total_5h=%s threshold=%s step=%d backoff=%ds",
-            capacity_info.get("total_5h"), capacity_info.get("threshold"),
-            step, backoff_sec,
+            "evolution capacity gate blocked (%s): info=%s step=%d backoff=%ds",
+            capacity_reason, capacity_info, step, backoff_sec,
         )
         if not was_blocked:
             append_jsonl(
@@ -583,9 +656,8 @@ def enqueue_evolution_task_if_needed() -> None:
                 {
                     "ts": now_iso,
                     "type": "evolution_blocked",
-                    "reason": "codex_capacity",
-                    "total_5h": capacity_info.get("total_5h"),
-                    "threshold": capacity_info.get("threshold"),
+                    "reason": capacity_reason,
+                    **{k: v for k, v in capacity_info.items() if k != "reason"},
                     "retry_at": retry_at_iso,
                     "backoff_sec": backoff_sec,
                     "backoff_step": step,
@@ -600,9 +672,8 @@ def enqueue_evolution_task_if_needed() -> None:
             {
                 "ts": now_iso,
                 "type": "evolution_unblocked",
-                "reason": "codex_capacity",
-                "total_5h": capacity_info.get("total_5h"),
-                "threshold": capacity_info.get("threshold"),
+                "reason": capacity_reason,
+                **{k: v for k, v in capacity_info.items() if k != "reason"},
             },
         )
     st["evolution_capacity_blocked"] = False
