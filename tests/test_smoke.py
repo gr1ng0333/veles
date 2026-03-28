@@ -138,6 +138,8 @@ EXPECTED_TOOLS = [
     "remote_list_dir", "remote_read_file", "remote_stat", "remote_find", "remote_grep", "remote_project_discover", "remote_project_fetch", "remote_investigate_project", "remote_command_exec", "remote_capabilities_overview",
     # Plan management
     "plan_create", "plan_approve", "plan_reject", "plan_step_done", "plan_update", "plan_complete", "plan_status",
+    # Growth tools
+    "run_tests", "log_query", "http_request",
 ]
 
 
@@ -434,7 +436,7 @@ def test_function_count_reasonable():
     # Soft structural budget: keep total function count bounded, but allow recent
     # growth from project/plan/review capabilities and the short-video pack contour
     # until a dedicated simplification cycle pays the debt back down.
-    assert len(sizes) <= 1155, f"{len(sizes)} functions — too many?"
+    assert len(sizes) <= 1185, f"{len(sizes)} functions — too many?"
 
 
 # ── Pre-push gate tests ──────────────────────────────────────────────
