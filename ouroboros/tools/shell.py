@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import utc_now_iso, append_jsonl, truncate_for_log
+from ouroboros.tools.git import _acquire_copilot_write_lock
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,19 @@ def _run_shell(ctx: ToolContext, cmd, cwd: str = "") -> str:
     if not isinstance(cmd, list):
         return "⚠️ SHELL_ARG_ERROR: cmd must be a list of strings."
     cmd = [str(x) for x in cmd]
+
+    shell_text = ' ' + ' '.join(cmd).lower() + ' '
+    mutating_markers = (
+        ' git add ', ' git commit ', ' git push ', ' git tag ', ' git reset ', ' git checkout ',
+        ' git cherry-pick ', ' apply_patch ', ' patch ', ' sed -i', ' perl -pi', ' mv ', ' cp ',
+        ' rm ', ' mkdir ', ' touch ', ' python - <<', ' python3 - <<'
+    )
+    likely_mutating = any(tok in shell_text for tok in mutating_markers)
+    if likely_mutating:
+        msg = _acquire_copilot_write_lock(ctx)
+        if msg:
+            return msg
+        ctx.write_attempted = True
 
     work_dir = ctx.repo_dir
     if cwd and cwd.strip() not in ("", ".", "./"):
