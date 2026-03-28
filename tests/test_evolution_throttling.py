@@ -788,3 +788,28 @@ class TestAutoResumeAfterRestart:
 
         w.auto_resume_after_restart()
         assert calls == []
+
+
+def test_enqueue_evolution_skips_when_direct_chat_active(monkeypatch):
+    import supervisor.queue as q
+    import supervisor.workers as workers
+
+    q.PENDING[:] = []
+    q.RUNNING.clear()
+
+    queued = {"called": False}
+    monkeypatch.setattr(q, "enqueue_task", lambda task, front=False: queued.__setitem__("called", True))
+    monkeypatch.setattr(workers, "is_direct_chat_active", lambda: True)
+
+    q.enqueue_evolution_task_if_needed()
+    assert queued["called"] is False
+
+
+def test_supervisor_commands_are_terminal_for_evolve_status_bg_review():
+    from pathlib import Path
+
+    text = Path('/opt/veles/colab_launcher.py').read_text()
+    assert 'return "[Supervisor handled /status' not in text
+    assert 'return "[Supervisor handled /review' not in text
+    assert 'return f"[Supervisor handled /evolve' not in text
+    assert 'return f"[Supervisor handled /bg' not in text

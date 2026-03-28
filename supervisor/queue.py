@@ -608,6 +608,10 @@ def enqueue_evolution_task_if_needed() -> None:
     - Transport capacity: codex 5h usage / copilot quota / openrouter budget.
     - Circuit breaker: pauses after 3 consecutive explicit failures.
     """
+    from supervisor import workers
+
+    if workers.is_direct_chat_active():
+        return
     if PENDING or RUNNING:
         return
     st = load_state()
