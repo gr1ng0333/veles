@@ -147,6 +147,8 @@ def ensure_state_defaults(st: Dict[str, Any]) -> Dict[str, Any]:
     st.setdefault("budget_drift_alert", False)
     st.setdefault("evolution_consecutive_failures", 0)
     st.setdefault("no_commit_streak", 0)
+    st.setdefault("evolution_last_kind", "")
+    st.setdefault("evolution_hygiene_streak", 0)
     st.setdefault("evolution_cycles_1h", [])
     st.setdefault("resume_needed", False)
     st.setdefault("resume_reason", "")
