@@ -196,6 +196,31 @@ def _is_codex_timeout_error(exc: Exception) -> bool:
     return False
 
 
+def _is_copilot_timeout_error(exc: Exception) -> bool:
+    """Return True for Copilot infrastructure errors that warrant a model fallback."""
+    msg = str(exc)
+    if isinstance(exc, RuntimeError) and "All Copilot accounts exhausted" in msg:
+        return True
+    if "timed out" in msg.lower() or "TimeoutError" in type(exc).__name__:
+        return True
+    if "IncompleteRead" in type(exc).__name__ or "IncompleteRead" in msg:
+        return True
+    # HTTP 5xx from urllib
+    import urllib.error
+    if isinstance(exc, urllib.error.HTTPError) and exc.code >= 500:
+        return True
+    if isinstance(exc, (urllib.error.URLError, OSError, ConnectionError)):
+        return True
+    return False
+
+
+def _is_transport_timeout_error(exc: Exception, transport: str) -> bool:
+    """Unified transport-aware timeout/error check."""
+    if transport == "copilot":
+        return _is_copilot_timeout_error(exc)
+    return _is_codex_timeout_error(exc)
+
+
 def _call_llm_with_fallback(
     *,
     llm: LLMClient,
@@ -214,6 +239,7 @@ def _call_llm_with_fallback(
     interaction_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     primary_exc: Optional[Exception] = None
+    transport = model_transport(active_model)
     try:
         msg, _ = _call_llm_with_retry(
             llm,
@@ -231,7 +257,7 @@ def _call_llm_with_fallback(
             interaction_id=interaction_id,
         )
     except Exception as e:
-        if _is_codex_timeout_error(e):
+        if _is_transport_timeout_error(e, transport):
             primary_exc = e
             msg = None
         else:
@@ -240,11 +266,21 @@ def _call_llm_with_fallback(
     if msg is not None:
         return msg
 
-    fallback_list_raw = os.environ.get(
-        "OUROBOROS_MODEL_FALLBACK_LIST",
-        "google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6",
-    )
-    fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
+    # Build fallback list based on transport
+    if transport == "copilot":
+        copilot_fallback_chain = {
+            "copilot/claude-opus-4.6": "copilot/claude-sonnet-4.6",
+            "copilot/claude-sonnet-4.6": "copilot/claude-haiku-4.5",
+            "copilot/claude-haiku-4.5": None,
+        }
+        chain_next = copilot_fallback_chain.get(active_model)
+        fallback_candidates = [chain_next] if chain_next else []
+    else:
+        fallback_list_raw = os.environ.get(
+            "OUROBOROS_MODEL_FALLBACK_LIST",
+            "google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6",
+        )
+        fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
     fallback_model = next((m for m in fallback_candidates if m != active_model), None)
     if fallback_model is None:
         if primary_exc is not None:
@@ -409,10 +445,17 @@ def _run_one_shot_mode(
 def _get_evolution_round_limit(task_type: str, default_task_max_rounds: int) -> int:
     if task_type != "evolution":
         return default_task_max_rounds
+    env_limit = os.environ.get("OUROBOROS_EVOLUTION_MAX_ROUNDS", "").strip()
+    if env_limit:
+        try:
+            return max(1, int(env_limit))
+        except (ValueError, TypeError):
+            log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS=%r, using transport-aware default", env_limit)
+    # Transport-aware default: use active mode max_rounds capped at 80
     try:
-        return max(1, int(os.environ.get("OUROBOROS_EVOLUTION_MAX_ROUNDS", "40")))
-    except (ValueError, TypeError):
-        log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS, falling back to 40")
+        mode_max = int(max_rounds_for_active_mode())
+        return min(max(1, mode_max), 80)
+    except Exception:
         return 40
 
 

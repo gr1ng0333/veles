@@ -466,8 +466,10 @@ class TestPidLock:
 class TestEvolutionMaxRounds:
     def test_default_is_40(self, monkeypatch):
         monkeypatch.delenv("OUROBOROS_EVOLUTION_MAX_ROUNDS", raising=False)
+        monkeypatch.setattr("ouroboros.loop_runtime.max_rounds_for_active_mode", lambda: 200)
         from ouroboros.loop_runtime import _get_evolution_round_limit
-        assert _get_evolution_round_limit("evolution", 30) == 40
+        # With mode max_rounds=200, evolution cap is min(200, 80) = 80
+        assert _get_evolution_round_limit("evolution", 30) == 80
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("OUROBOROS_EVOLUTION_MAX_ROUNDS", "7")
