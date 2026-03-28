@@ -249,6 +249,7 @@ def call_copilot(
     tool_choice: Optional[Any] = None,
     interaction_id: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    force_user_initiator: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Call LLM via GitHub Copilot API.
@@ -275,6 +276,8 @@ def call_copilot(
     # Determine initiator from last message role
     last_role = messages[-1].get("role", "user") if messages else "user"
     initiator = "user" if last_role == "user" else "agent"
+    if force_user_initiator:
+        initiator = "user"
     log.debug(
         "copilot_request model=%s initiator=%s interaction_id=%s round_tokens=%d",
         model, initiator, interaction_id or "none", sum(len(json.dumps(m)) for m in messages) // 4,

@@ -238,7 +238,7 @@ def test_llm_routes_copilot_model(monkeypatch):
     routed = {}
 
     def fake_call_copilot(messages, tools=None, model="claude-sonnet-4-5", max_tokens=16384,
-                          tool_choice=None, interaction_id=None, reasoning_effort=None):
+                          tool_choice=None, interaction_id=None, reasoning_effort=None, force_user_initiator=False):
         routed["model"] = model
         routed["messages"] = messages
         routed["tools"] = tools
@@ -586,3 +586,27 @@ def test_load_accounts_outer_quotes_stripped(monkeypatch, tmp_path):
     assert len(cpa._accounts) == 2
     assert cpa._accounts[0]["github_token"] == "ghu_testToken1"
     assert cpa._accounts[1]["github_token"] == "ghu_testToken2"
+
+
+def test_llm_chat_forwards_force_user_initiator_to_copilot(monkeypatch):
+    from ouroboros.llm import LLMClient
+
+    routed = {}
+
+    def fake_call_copilot(messages, tools=None, model=None, max_tokens=None,
+                          tool_choice=None, interaction_id=None, reasoning_effort=None, force_user_initiator=False):
+        routed["force_user_initiator"] = force_user_initiator
+        return {"role": "assistant", "content": "ok"}, {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr("ouroboros.copilot_proxy.call_copilot", fake_call_copilot)
+
+    client = LLMClient()
+    msg, usage = client.chat(
+        messages=[{"role": "assistant", "content": "continue"}],
+        model="copilot/claude-sonnet-4.6",
+        force_user_initiator=True,
+    )
+
+    assert msg["content"] == "ok"
+    assert usage["prompt_tokens"] == 1
+    assert routed["force_user_initiator"] is True

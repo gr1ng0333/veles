@@ -42,6 +42,44 @@ from ouroboros.loop import (
 )
 
 
+COPILOT_EVOLUTION_INTERACTION_ROLLOVER_ROUND = 30
+
+
+def _should_rollover_copilot_interaction(*, task_type: str, active_model: str, round_idx: int) -> bool:
+    return (
+        task_type == "evolution"
+        and model_transport(active_model) == "copilot"
+        and round_idx > 1
+        and (round_idx - 1) % COPILOT_EVOLUTION_INTERACTION_ROLLOVER_ROUND == 0
+    )
+
+
+def _maybe_rollover_copilot_interaction(
+    *,
+    state: Dict[str, Any],
+    task_type: str,
+    emit_progress: Callable[[str], None],
+) -> None:
+    round_idx = int(state.get("round_idx") or 0)
+    active_model = str(state.get("active_model") or "")
+    if not _should_rollover_copilot_interaction(task_type=task_type, active_model=active_model, round_idx=round_idx):
+        state["force_user_initiator"] = False
+        return
+    previous = state.get("interaction_id")
+    state["interaction_id"] = str(uuid.uuid4())
+    state["force_user_initiator"] = True
+    emit_progress(
+        "🔄 Copilot evolution rollover: после 30 agent-раундов открываю новый premium-thread "
+        f"({str(previous or '?')[:8]} → {state['interaction_id'][:8]})."
+    )
+
+
+def _consume_force_user_initiator(state: Dict[str, Any]) -> bool:
+    flag = bool(state.get("force_user_initiator"))
+    state["force_user_initiator"] = False
+    return flag
+
+
 def _enforce_evolution_copilot_reasoning(*, task_type: str, active_model: str, active_effort: str) -> str:
     """Force high reasoning for Copilot Sonnet/Opus during evolution runs."""
     if str(task_type or "").strip().lower() != "evolution":
@@ -317,6 +355,7 @@ def _call_llm_with_fallback(
     transport = model_transport(active_model)
 
     def _call_candidate(model: str, phase: str) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[Exception]]:
+        force_user_initiator = bool(accumulated_usage.pop("_force_user_initiator", False)) if phase == "primary" else False
         candidate_transport = model_transport(model)
         try:
             if candidate_transport == "copilot":
@@ -340,6 +379,7 @@ def _call_llm_with_fallback(
                 accumulated_usage,
                 task_type,
                 interaction_id=interaction_id,
+                force_user_initiator=force_user_initiator,
             )
             return msg, _consume_last_llm_error(accumulated_usage, model), None
         except Exception as exc:
@@ -914,6 +954,10 @@ def _run_single_round(
         return prepared
 
     round_idx = state["round_idx"]
+    _maybe_rollover_copilot_interaction(state=state, task_type=task_type, emit_progress=emit_progress)
+    force_user_initiator = _consume_force_user_initiator(state)
+    if force_user_initiator:
+        state["accumulated_usage"]["_force_user_initiator"] = True
     msg = _call_llm_with_fallback(
         llm=llm,
         messages=messages,
@@ -1009,6 +1053,7 @@ def run_llm_loop_impl(
         "execution_style": execution_style_for_active_mode(),
         "runtime_diagnostics": runtime_diagnostics,
         "interaction_id": str(uuid.uuid4()),
+        "force_user_initiator": False,
     }
     # If caller provides a persistent executor (direct-chat), reuse it and
     # do NOT shut it down when this task ends — it survives across messages.

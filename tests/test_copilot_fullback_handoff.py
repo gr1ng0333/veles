@@ -50,7 +50,7 @@ def test_call_llm_with_fallback_handoffs_same_round_to_codex(monkeypatch):
 
     def fake_call(
         llm, messages, model, tools, effort, max_retries, drive_logs,
-        task_id, round_idx, event_queue, accumulated_usage, task_type="", interaction_id=None,
+        task_id, round_idx, event_queue, accumulated_usage, task_type="", interaction_id=None, force_user_initiator=False,
     ):
         calls.append(model)
         if model.startswith("copilot/"):
@@ -94,3 +94,52 @@ def test_call_llm_with_fallback_handoffs_same_round_to_codex(monkeypatch):
     assert ("copilot/claude-sonnet-4.6", "primary") in sleeps
     assert ("copilot/claude-haiku-4.5", "fallback") in sleeps
     assert any("Codex" in item for item in progress)
+
+
+def test_copilot_evolution_rollover_renews_interaction_and_forces_user_initiator(monkeypatch):
+    from ouroboros import loop_runtime
+
+    progress = []
+    state = {
+        "round_idx": 31,
+        "active_model": "copilot/claude-sonnet-4.6",
+        "interaction_id": "old-interaction-id",
+        "force_user_initiator": False,
+    }
+
+    monkeypatch.setattr(loop_runtime.uuid, "uuid4", lambda: "new-interaction-id")
+
+    loop_runtime._maybe_rollover_copilot_interaction(
+        state=state,
+        task_type="evolution",
+        emit_progress=progress.append,
+    )
+
+    assert state["interaction_id"] == "new-interaction-id"
+    assert state["force_user_initiator"] is True
+    assert progress
+    assert "premium-thread" in progress[0]
+
+    consumed = loop_runtime._consume_force_user_initiator(state)
+    assert consumed is True
+    assert state["force_user_initiator"] is False
+
+
+def test_copilot_evolution_rollover_skips_non_boundary_rounds():
+    from ouroboros import loop_runtime
+
+    state = {
+        "round_idx": 30,
+        "active_model": "copilot/claude-sonnet-4.6",
+        "interaction_id": "same-id",
+        "force_user_initiator": True,
+    }
+
+    loop_runtime._maybe_rollover_copilot_interaction(
+        state=state,
+        task_type="evolution",
+        emit_progress=lambda _msg: (_ for _ in ()).throw(AssertionError("should not emit progress")),
+    )
+
+    assert state["interaction_id"] == "same-id"
+    assert state["force_user_initiator"] is False

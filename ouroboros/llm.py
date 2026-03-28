@@ -197,6 +197,7 @@ class LLMClient:
         max_tokens: int = 16384,
         tool_choice: str = "auto",
         interaction_id: Optional[str] = None,
+        force_user_initiator: bool = False,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
         transport = model_transport(model)
@@ -225,7 +226,8 @@ class LLMClient:
 
                                 max_tokens=max_tokens, tool_choice=tool_choice,
 
-                                interaction_id=interaction_id, reasoning_effort="high")
+                                interaction_id=interaction_id, reasoning_effort="high",
+                                force_user_initiator=force_user_initiator)
 
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
