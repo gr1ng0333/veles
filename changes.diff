@@ -1,0 +1,55 @@
+diff --git a/ouroboros/tools/git_history.py b/ouroboros/tools/git_history.py
+index e19d34e..7b30228 100644
+--- a/ouroboros/tools/git_history.py
++++ b/ouroboros/tools/git_history.py
+@@ -40,10 +40,10 @@ def _run_git(args: List[str], cwd: str, timeout: int = 15) -> tuple[int, str, st
+         return 1, "", str(e)
+ 
+ 
+-_NULL = "\x00"
+-_RECORD_SEP = "\x1e"  # ASCII record separator
++_FIELD_SEP = ""  # unit separator (safe in subprocess args via git %x1f)
++_RECORD_SEP = ""  # record separator
+ 
+-_LOG_FMT = f"%H{_NULL}%P{_NULL}%an{_NULL}%ae{_NULL}%ai{_NULL}%s{_NULL}%b{_RECORD_SEP}"
++_LOG_FMT = "%H%x1f%P%x1f%an%x1f%ae%x1f%ai%x1f%s%x1f%b%x1e"
+ 
+ 
+ def _parse_log_output(raw: str, include_body: bool = False) -> List[Dict[str, Any]]:
+@@ -53,8 +53,8 @@ def _parse_log_output(raw: str, include_body: bool = False) -> List[Dict[str, An
+         chunk = chunk.strip()
+         if not chunk:
+             continue
+-        parts = chunk.split(_NULL)
+-        if len(parts) < 7:
++        parts = chunk.split(_FIELD_SEP)
++        if len(parts) < 6:
+             continue
+         sha, parents, author, email, date, subject, body = (
+             parts[0].strip(),
+@@ -156,7 +156,7 @@ def _log_mode(
+ 
+ 
+ def _reflog_mode(ctx: ToolContext, limit: int, since: str) -> str:
+-    fmt = f"%H{_NULL}%gd{_NULL}%ai{_NULL}%gs{_RECORD_SEP}"
++    fmt = "%H%x1f%gd%x1f%ai%x1f%gs%x1e"
+     args = ["reflog", f"--format={fmt}", f"--max-count={limit}"]
+     if since:
+         args.append(f"--since={since}")
+@@ -170,7 +170,7 @@ def _reflog_mode(ctx: ToolContext, limit: int, since: str) -> str:
+         chunk = chunk.strip()
+         if not chunk:
+             continue
+-        parts = chunk.split(_NULL)
++        parts = chunk.split(_FIELD_SEP)
+         if len(parts) < 4:
+             continue
+         sha, ref, date, action = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3].strip()
+@@ -430,6 +430,6 @@ def get_tools() -> List[ToolEntry]:
+                     "required": [],
+                 },
+             },
+-            execute=_git_history,
++            handler=_git_history,
+         )
+     ]

@@ -1,0 +1,1 @@
+bf3b53d feat(tools): add git_history — structured git log/reflog/tags/show/compare queries
