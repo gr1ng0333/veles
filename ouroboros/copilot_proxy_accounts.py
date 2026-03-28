@@ -332,6 +332,27 @@ def _shortest_cooldown_remaining() -> float:
         return min(remaining) if remaining else 0.0
 
 
+def _apply_soft_cooldown(seconds: int) -> float:
+    """Apply a temporary cooldown to all live accounts when the backend reports exhaustion with no wait hint."""
+    with _accounts_lock:
+        _init_accounts()
+        if not _accounts:
+            return 0.0
+        now = time.time()
+        target = now + max(seconds, 0)
+        changed = False
+        for acc in _accounts:
+            if acc.get("dead"):
+                continue
+            if acc.get("cooldown_until", 0) < target:
+                acc["cooldown_until"] = target
+                changed = True
+        if changed:
+            _save_accounts_state(_accounts)
+            return float(max(seconds, 0))
+        return 0.0
+
+
 def _ensure_copilot_token(acc: Dict[str, Any], account_idx: int, urlopen) -> str:
     """Ensure account has a valid Copilot API token; exchange if needed."""
     now = time.time()
