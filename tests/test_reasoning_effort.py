@@ -158,3 +158,42 @@ def test_review_effort_unchanged():
     else:
         initial_effort = "high"
     assert initial_effort == "high"
+
+
+# ---------------------------------------------------------------------------
+# task-specific effort policy
+# ---------------------------------------------------------------------------
+
+def test_evolution_copilot_sonnet_forces_high():
+    from ouroboros.loop_runtime import _enforce_evolution_copilot_reasoning
+
+    assert _enforce_evolution_copilot_reasoning(
+        task_type="evolution",
+        active_model="copilot/claude-sonnet-4.6",
+        active_effort="low",
+    ) == "high"
+
+
+def test_evolution_copilot_opus_forces_high():
+    from ouroboros.loop_runtime import _enforce_evolution_copilot_reasoning
+
+    assert _enforce_evolution_copilot_reasoning(
+        task_type="evolution",
+        active_model="copilot/claude-opus-4.6",
+        active_effort="medium",
+    ) == "high"
+
+
+def test_non_target_models_keep_existing_effort():
+    from ouroboros.loop_runtime import _enforce_evolution_copilot_reasoning
+
+    assert _enforce_evolution_copilot_reasoning(
+        task_type="task",
+        active_model="copilot/claude-sonnet-4.6",
+        active_effort="low",
+    ) == "low"
+    assert _enforce_evolution_copilot_reasoning(
+        task_type="evolution",
+        active_model="copilot/claude-haiku-4.5",
+        active_effort="medium",
+    ) == "medium"

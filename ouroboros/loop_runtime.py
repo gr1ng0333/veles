@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 PROMPT_TOKEN_GUARD_THRESHOLD = 40000
 
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
-from ouroboros.llm import LLMClient, normalize_reasoning_effort, model_transport
+from ouroboros.llm import LLMClient, normalize_reasoning_effort, model_transport, reasoning_rank
 from ouroboros.model_modes import execution_style_for_active_mode, get_runtime_diagnostics, max_rounds_for_active_mode, tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl, utc_now_iso
@@ -40,6 +40,19 @@ from ouroboros.loop import (
     _check_budget_limits,
     _finalize_with_summary,
 )
+
+
+def _enforce_evolution_copilot_reasoning(*, task_type: str, active_model: str, active_effort: str) -> str:
+    """Force high reasoning for Copilot Sonnet/Opus during evolution runs."""
+    if str(task_type or "").strip().lower() != "evolution":
+        return active_effort
+    normalized_model = str(active_model or "").strip().lower()
+    if normalized_model not in {"copilot/claude-sonnet-4.6", "copilot/claude-opus-4.6"}:
+        return active_effort
+    normalized_effort = normalize_reasoning_effort(active_effort, default="medium")
+    if reasoning_rank(normalized_effort) != reasoning_rank("high"):
+        return "high"
+    return normalized_effort
 
 
 def _maybe_handle_hard_round_limit(
@@ -167,6 +180,11 @@ def _apply_context_overrides_and_compaction(
 
     pending_compaction = getattr(ctx, "_pending_compaction", None)
     task_type = getattr(ctx, "current_task_type", None) or ""
+    active_effort = _enforce_evolution_copilot_reasoning(
+        task_type=task_type,
+        active_model=active_model,
+        active_effort=active_effort,
+    )
     transport = model_transport(active_model)
     # Copilot has prefix caching — less aggressive compaction
     keep_recent = 30 if transport == "copilot" else 16
@@ -911,6 +929,11 @@ def run_llm_loop_impl(
     tools._ctx.task_id = task_id
 
     runtime_diagnostics = get_runtime_diagnostics()
+    initial_effort = _enforce_evolution_copilot_reasoning(
+        task_type=task_type,
+        active_model=active_model,
+        active_effort=initial_effort,
+    )
     state = {
         "active_model": active_model,
         "active_effort": initial_effort,
