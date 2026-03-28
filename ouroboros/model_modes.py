@@ -7,9 +7,11 @@ from typing import Any, Dict, Optional
 from supervisor.state import load_state, save_state
 
 
-DEFAULT_AUX_LIGHT_MODEL = "qwen/qwen3-coder:free"
+DEFAULT_AUX_LIGHT_MODEL = "codex/gpt-5.4-mini"
 DEFAULT_BACKGROUND_OPENROUTER_MODEL = DEFAULT_AUX_LIGHT_MODEL
 DEFAULT_CONSCIOUSNESS_CODEX_MODEL = "gpt-5.4-codex-mini"
+# Reflection always uses the Codex OAuth contour (independent from aux_light env var)
+DEFAULT_REFLECTION_MODEL = "codex/gpt-5.4-mini"
 
 # Valid reasoning effort levels (Codex API)
 VALID_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
@@ -160,6 +162,15 @@ def sync_mode_env_from_state(st: Optional[Dict[str, Any]] = None) -> ModelMode:
 
 def get_aux_light_model() -> str:
     return os.environ.get("OUROBOROS_MODEL_LIGHT", "").strip() or DEFAULT_AUX_LIGHT_MODEL
+
+
+def get_reflection_model() -> str:
+    """Return model to use for execution reflection and pattern register updates.
+
+    Always routes through Codex OAuth contour. Overridable via env var
+    OUROBOROS_MODEL_REFLECTION for testing purposes.
+    """
+    return os.environ.get("OUROBOROS_MODEL_REFLECTION", "").strip() or DEFAULT_REFLECTION_MODEL
 
 
 def get_background_model() -> str:
