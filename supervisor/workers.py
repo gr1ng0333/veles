@@ -112,6 +112,15 @@ CRASH_TS: List[float] = []
 QUEUE_SEQ_COUNTER_REF: Dict[str, int] = {"value": 0}
 
 # Lock for all mutations to PENDING, RUNNING, WORKERS shared collections.
+_DIRECT_CHAT_LOCK = threading.Lock()
+_DIRECT_CHAT_ACTIVE = 0
+
+
+def is_direct_chat_active() -> bool:
+    with _DIRECT_CHAT_LOCK:
+        return _DIRECT_CHAT_ACTIVE > 0
+
+
 # Canonical definition lives in queue.py; imported here for use by assign_tasks/kill_workers.
 from supervisor.queue import _queue_lock
 
@@ -140,10 +149,21 @@ def _get_chat_agent():
     return _chat_agent
 
 
+def _run_direct_chat_task(task: Dict[str, Any]) -> List[Dict[str, Any]]:
+    global _DIRECT_CHAT_ACTIVE
+    agent = _get_chat_agent()
+    with _DIRECT_CHAT_LOCK:
+        _DIRECT_CHAT_ACTIVE += 1
+    try:
+        return agent.handle_task(task)
+    finally:
+        with _DIRECT_CHAT_LOCK:
+            _DIRECT_CHAT_ACTIVE = max(0, _DIRECT_CHAT_ACTIVE - 1)
+
+
 def handle_post_restart_ack(chat_id: int, restart_reason: str = "", restart_source: str = "", restart_requested_at: str = "") -> bool:
     """Have the agent itself send the first conscious post-restart message."""
     try:
-        agent = _get_chat_agent()
         reason = str(restart_reason or "").strip() or "unspecified"
         source = str(restart_source or "").strip() or "restart"
         requested_at = str(restart_requested_at or "").strip()
@@ -161,7 +181,7 @@ def handle_post_restart_ack(chat_id: int, restart_reason: str = "", restart_sour
             "_is_direct_chat": True,
             "_is_post_restart_ack": True,
         }
-        events = agent.handle_task(task)
+        events = _run_direct_chat_task(task)
         for e in events:
             get_event_q().put(e)
         return True
@@ -181,7 +201,6 @@ def handle_post_restart_ack(chat_id: int, restart_reason: str = "", restart_sour
 
 def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None) -> None:
     try:
-        agent = _get_chat_agent()
         task = {
             "id": uuid.uuid4().hex[:8],
             "type": "task",
@@ -201,7 +220,7 @@ def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple
         # Fallback for truly empty messages
         if not task["text"]:
             task["text"] = "(image attached)" if image_data else ""
-        events = agent.handle_task(task)
+        events = _run_direct_chat_task(task)
         for e in events:
             get_event_q().put(e)
     except Exception as e:
