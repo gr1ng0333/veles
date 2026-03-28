@@ -424,12 +424,29 @@ def enforce_task_timeouts() -> None:
 # Evolution + review scheduling
 # ---------------------------------------------------------------------------
 
+def _evolution_policy_snapshot(st: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    blockers: List[str] = []
+    if bool(st.get("budget_drift_alert")):
+        blockers.append("budget_drift")
+    if bool(st.get("resume_needed")):
+        blockers.append("resume_needed")
+    if bool(st.get("restart_notify_pending")):
+        blockers.append("restart_pending")
+    if int(st.get("evolution_consecutive_failures") or 0) > 0:
+        blockers.append("recent_evolution_failure")
+    if int(st.get("no_commit_streak") or 0) > 0:
+        blockers.append("no_commit_streak")
+    return (len(blockers) == 0), blockers
+
+
 def build_evolution_task_text(cycle: int) -> str:
     """Build evolution task text with context: cycle, no-commit streak, scratchpad summary."""
     st = load_state()
     streak = int(st.get("no_commit_streak") or 0)
+    hygiene_streak = int(st.get("evolution_hygiene_streak") or 0)
+    last_kind = str(st.get("evolution_last_kind") or "unknown")
+    invariants_green, blockers = _evolution_policy_snapshot(st)
 
-    # Read scratchpad summary
     scratchpad_summary = "empty"
     scratchpad_path = DRIVE_ROOT / "memory" / "scratchpad.md"
     try:
@@ -440,10 +457,27 @@ def build_evolution_task_text(cycle: int) -> str:
     except Exception:
         scratchpad_summary = "(read error)"
 
+    policy_lines = [
+        f"Policy: invariants_green={'yes' if invariants_green else 'no'}",
+        f"Policy: blockers={', '.join(blockers) if blockers else 'none'}",
+        f"Policy: last_evolution_kind={last_kind}",
+        f"Policy: consecutive_hygiene_cycles={hygiene_streak}",
+        "Policy: Growth = new tool, new capability in an existing tool, or observability that becomes a real usable capability.",
+        "Policy: Hygiene = version/release sync, README/pyproject/tag/changelog tails, smoke-budget bumps, cleanup-only edits, or pure repair of old loose ends.",
+        "Policy: prefer Growth over Hygiene whenever possible.",
+        "Policy: if invariants are green, you MUST choose a Growth cycle.",
+        "Policy: if the previous completed cycle was Hygiene and invariants are green, another Hygiene-only cycle is forbidden unless you are clearing a critical blocker.",
+        "Policy: new tools are the highest-priority Growth target.",
+        "Policy: a commit that only changes VERSION/README/pyproject/tests-smoke or other release tails does NOT count as successful evolution unless it also ships a new capability.",
+        "Policy: if you cannot honestly find a Growth move under green invariants, explicitly say so instead of drifting into release cleanup.",
+    ]
+
+    policy_text = "\n".join(policy_lines)
     return (
         f"EVOLUTION #{cycle}\n"
         f"No-commit streak: {streak}\n"
-        f"Scratchpad summary: {scratchpad_summary}\n\n"
+        f"Scratchpad summary: {scratchpad_summary}\n"
+        f"{policy_text}\n\n"
         "Your task: pick ONE high-leverage improvement, implement it, run tests, commit. "
         "Do not analyze without action. Every evolution must end with a commit or "
         "explicit \"nothing worth changing\" verdict."

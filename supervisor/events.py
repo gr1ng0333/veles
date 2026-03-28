@@ -105,6 +105,53 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
         )
 
 
+def _classify_evolution_commit_kind(commit_subject: str, changed_files: List[str]) -> str:
+    subject = str(commit_subject or "").strip().lower()
+    files = [str(path).strip() for path in (changed_files or []) if str(path).strip()]
+    normalized = [path.lower() for path in files]
+    if not normalized:
+        return "unknown"
+
+    release_only = {
+        "version",
+        "readme.md",
+        "pyproject.toml",
+        "tests/test_smoke.py",
+        "tests/test_version_artifacts.py",
+    }
+    hygiene_markers = ("version", "release", "changelog", "badge", "tag", "resync", "sync")
+
+    if any(path.startswith("ouroboros/tools/") for path in normalized):
+        return "growth"
+    if set(normalized).issubset(release_only):
+        return "hygiene"
+    if any(marker in subject for marker in hygiene_markers) and all(
+        path in release_only or path.startswith("docs/") for path in normalized
+    ):
+        return "hygiene"
+    return "maintenance"
+
+
+def _read_latest_commit_snapshot(repo_dir: Any) -> Dict[str, Any]:
+    try:
+        import subprocess
+        meta = subprocess.run(
+            ["git", "log", "-1", "--pretty=%H%x1f%s"],
+            capture_output=True, text=True, timeout=5, cwd=str(repo_dir),
+        )
+        if meta.returncode != 0 or not meta.stdout.strip():
+            return {}
+        sha, _, subject = meta.stdout.strip().partition("\x1f")
+        show = subprocess.run(
+            ["git", "show", "--name-only", "--format=", sha],
+            capture_output=True, text=True, timeout=5, cwd=str(repo_dir),
+        )
+        files = [line.strip() for line in show.stdout.splitlines() if line.strip()] if show.returncode == 0 else []
+        return {"sha": sha.strip(), "subject": subject.strip(), "files": files}
+    except Exception:
+        return {}
+
+
 def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     task_id = evt.get("task_id")
     task_type = str(evt.get("task_type") or "")
@@ -147,6 +194,13 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             except Exception:
                 pass
 
+        repo_dir = getattr(ctx, "REPO_DIR", None)
+        latest_commit = _read_latest_commit_snapshot(repo_dir) if (_has_commit and repo_dir) else {}
+        commit_kind = _classify_evolution_commit_kind(
+            str(latest_commit.get("subject") or ""),
+            latest_commit.get("files") or [],
+        ) if latest_commit else "unknown"
+
         # Validate payload: all three fields must be present for counting
         payload_complete = (
             raw_ok is not None
@@ -171,9 +225,14 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             rounds = int(raw_rounds or 0)
 
             if ok and _has_commit:
-                # Confirmed commit: reset failure counter AND no-commit streak
+                # Confirmed commit: reset failure counter AND track commit kind
                 st["evolution_consecutive_failures"] = 0
                 st["no_commit_streak"] = 0
+                st["evolution_last_kind"] = commit_kind
+                if commit_kind == "hygiene":
+                    st["evolution_hygiene_streak"] = int(st.get("evolution_hygiene_streak") or 0) + 1
+                else:
+                    st["evolution_hygiene_streak"] = 0
                 ctx.save_state(st)
                 ctx.append_jsonl(
                     ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
@@ -183,6 +242,9 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
                         "task_id": task_id,
                         "response_len": response_len,
                         "rounds": rounds,
+                        "commit_kind": commit_kind,
+                        "commit_sha": latest_commit.get("sha") if latest_commit else "",
+                        "commit_subject": latest_commit.get("subject") if latest_commit else "",
                     },
                 )
             elif not ok:

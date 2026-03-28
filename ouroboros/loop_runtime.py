@@ -55,6 +55,28 @@ def _enforce_evolution_copilot_reasoning(*, task_type: str, active_model: str, a
     return normalized_effort
 
 
+EVOLUTION_COPILOT_REQUEST_DELAY_SEC = float(os.environ.get("EVOLUTION_COPILOT_REQUEST_DELAY_SEC", "4.0"))
+
+
+def _maybe_sleep_before_evolution_copilot_request(
+    *,
+    task_type: str,
+    active_model: str,
+    round_idx: int,
+    phase: str,
+) -> None:
+    if str(task_type or "").strip().lower() != "evolution":
+        return
+    if model_transport(active_model) != "copilot":
+        return
+    if phase == "primary" and round_idx <= 1:
+        return
+    delay_sec = max(0.0, EVOLUTION_COPILOT_REQUEST_DELAY_SEC)
+    if delay_sec <= 0:
+        return
+    time.sleep(delay_sec)
+
+
 def _maybe_handle_hard_round_limit(
     *,
     round_idx: int,
@@ -259,6 +281,12 @@ def _call_llm_with_fallback(
     primary_exc: Optional[Exception] = None
     transport = model_transport(active_model)
     try:
+        _maybe_sleep_before_evolution_copilot_request(
+            task_type=task_type,
+            active_model=active_model,
+            round_idx=round_idx,
+            phase="primary",
+        )
         msg, _ = _call_llm_with_retry(
             llm,
             messages,
