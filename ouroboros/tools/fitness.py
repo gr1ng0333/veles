@@ -119,6 +119,9 @@ def _default_profile() -> Dict[str, Any]:
         "fat_target_g": None,
         "carbs_target_g": None,
         "current_program": "",
+        "active_program": {},
+        "training_days": [],
+        "has_pullup_bar": None,
         "notes": "",
         "updated_at": None,
     }
@@ -355,6 +358,114 @@ def _period_bounds(period: str) -> Tuple[datetime, datetime]:
     raise ValueError(f"period must be one of: {', '.join(sorted(_ALLOWED_SUMMARY_PERIODS))}")
 
 
+def _normalize_training_days(days: Any) -> List[str]:
+    if not isinstance(days, list):
+        return []
+    aliases = {
+        "mon": "mon", "monday": "mon", "пн": "mon",
+        "tue": "tue", "tuesday": "tue", "вт": "tue",
+        "wed": "wed", "wednesday": "wed", "ср": "wed",
+        "thu": "thu", "thursday": "thu", "чт": "thu",
+        "fri": "fri", "friday": "fri", "пт": "fri",
+        "sat": "sat", "saturday": "sat", "сб": "sat",
+        "sun": "sun", "sunday": "sun", "вс": "sun",
+    }
+    normalized: List[str] = []
+    for raw in days:
+        key = str(raw or "").strip().lower()
+        value = aliases.get(key)
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _default_active_program(profile: Dict[str, Any]) -> Dict[str, Any]:
+    training_days = _normalize_training_days(profile.get("training_days")) or ["mon", "wed", "fri"]
+    has_pullup_bar = profile.get("has_pullup_bar")
+    pull_exercise = "assisted_hang_or_negative_pullup" if has_pullup_bar else "doorframe_row_or_towel_row"
+    pull_progression = (
+        "висы 3x20-30с → негативные подтягивания 3x3-5"
+        if has_pullup_bar
+        else "тяга полотенца/к дверному проёму 3x8-12 → австралийские подтягивания при доступе"
+    )
+    return {
+        "version": 1,
+        "name": "calisthenics-beginner-base",
+        "goal": profile.get("goal") or "recomposition",
+        "level": profile.get("calisthenics_level") or "beginner",
+        "equipment": profile.get("equipment") or "none",
+        "training_days": training_days,
+        "sessions_per_week": 3,
+        "session_duration_min": 35,
+        "progression_rule": "Если все подходы закрыты чисто и остаётся 2+ повтора в запасе — добавь 1-2 повтора в следующей тренировке. Когда упираешься в верх вилки, усложняй вариацию.",
+        "recovery_rule": "Если сильная забитость, недосып или тяжесть в суставах — урежь объём на 30-40%, не геройствуй.",
+        "notes": [
+            "Перед каждой тренировкой 5-7 минут суставной разминки.",
+            "Отдых между подходами 60-90 секунд.",
+            "Прогулка 30-60 минут в свободный день — плюс, а не конфликт с программой.",
+        ],
+        "workouts": [
+            {
+                "day_code": training_days[0],
+                "label": "День A — жим + ноги + корпус",
+                "warmup": ["суставная разминка 5-7 мин", "1 лёгкий разминочный круг"],
+                "main": [
+                    {"exercise": "incline_pushup", "sets": 4, "reps": "6-10", "regression": "pushup_from_wall", "progression": "classic_pushup"},
+                    {"exercise": "bodyweight_squat", "sets": 4, "reps": "10-15", "regression": "chair_squat", "progression": "split_squat"},
+                    {"exercise": "glute_bridge", "sets": 3, "reps": "12-15", "regression": "short_range_bridge", "progression": "single_leg_glute_bridge"},
+                ],
+                "core": [
+                    {"exercise": "front_plank", "sets": 3, "reps": "20-40 sec"},
+                    {"exercise": "dead_bug", "sets": 2, "reps": "8-10/side"},
+                ],
+            },
+            {
+                "day_code": training_days[1],
+                "label": "День B — тяга + ноги + корпус",
+                "warmup": ["суставная разминка 5-7 мин", "лёгкая мобилизация плеч и лопаток"],
+                "main": [
+                    {"exercise": pull_exercise, "sets": 4, "reps": "5-8", "progression_notes": pull_progression},
+                    {"exercise": "reverse_lunge", "sets": 3, "reps": "8-10/leg", "regression": "split_squat_static", "progression": "bulgarian_split_squat"},
+                    {"exercise": "hip_hinge_good_morning", "sets": 3, "reps": "12-15", "regression": "short_range_hinge", "progression": "single_leg_romanian_deadlift_bodyweight"},
+                ],
+                "core": [
+                    {"exercise": "side_plank", "sets": 3, "reps": "15-30 sec/side"},
+                    {"exercise": "bird_dog", "sets": 2, "reps": "8-10/side"},
+                ],
+            },
+            {
+                "day_code": training_days[2],
+                "label": "День C — общий объём + техника",
+                "warmup": ["суставная разминка 5-7 мин", "1 лёгкий круг без отказа"],
+                "main": [
+                    {"exercise": "classic_pushup_or_incline", "sets": 3, "reps": "AMRAP-2", "regression": "higher_incline_pushup", "progression": "pause_pushup"},
+                    {"exercise": "split_squat", "sets": 3, "reps": "8-12/leg", "regression": "chair_assisted_split_squat", "progression": "bulgarian_split_squat"},
+                    {"exercise": pull_exercise, "sets": 3, "reps": "submax clean reps", "progression_notes": pull_progression},
+                ],
+                "core": [
+                    {"exercise": "hollow_hold", "sets": 3, "reps": "15-25 sec", "regression": "dead_bug_hold", "progression": "tucked_hollow_rock"},
+                ],
+                "finisher": ["walk 10-20 min or easy mobility 5 min"],
+            },
+        ],
+    }
+
+
+def _ensure_active_program(ctx: ToolContext) -> Dict[str, Any]:
+    profile = _read_profile(ctx)
+    active_program = profile.get("active_program")
+    if isinstance(active_program, dict) and active_program.get("name"):
+        return active_program
+    program = _default_active_program(profile)
+    profile["active_program"] = program
+    if not profile.get("current_program"):
+        profile["current_program"] = str(program.get("name") or "calisthenics-beginner-base")
+    if not profile.get("training_days"):
+        profile["training_days"] = list(program.get("training_days") or [])
+    _write_profile(ctx, profile)
+    return program
+
+
 def _generate_summary(ctx: ToolContext, period: str) -> Dict[str, Any]:
     normalized = str(period or "today").strip().lower()
     start, end = _period_bounds(normalized)
@@ -452,6 +563,9 @@ def _fitness_profile_write(
     fat_target_g: Any = None,
     carbs_target_g: Any = None,
     current_program: str = "",
+    training_days: Any = None,
+    has_pullup_bar: Any = None,
+    active_program: Any = None,
     notes: str = "",
 ) -> str:
     profile = _read_profile(ctx)
@@ -477,10 +591,20 @@ def _fitness_profile_write(
         updates["carbs_target_g"] = _to_float(carbs_target_g, "carbs_target_g", 0)
     if current_program:
         updates["current_program"] = str(current_program).strip()
+    normalized_training_days = _normalize_training_days(training_days)
+    if normalized_training_days:
+        updates["training_days"] = normalized_training_days
+    if has_pullup_bar is not None:
+        updates["has_pullup_bar"] = bool(has_pullup_bar)
+    if isinstance(active_program, dict):
+        updates["active_program"] = active_program
     if notes:
         updates["notes"] = str(notes).strip()
 
     profile.update(updates)
+    if any(key in updates for key in ("training_days", "has_pullup_bar")) and "active_program" not in updates:
+        profile["active_program"] = _default_active_program(profile)
+        profile["current_program"] = str(profile["active_program"].get("name") or "calisthenics-beginner-base")
     written = _write_profile(ctx, profile)
     return json.dumps({"status": "ok", "profile": written}, ensure_ascii=False, indent=2)
 
@@ -633,6 +757,12 @@ def get_tools() -> List[ToolEntry]:
                             "fat_target_g": {"type": "number"},
                             "carbs_target_g": {"type": "number"},
                             "current_program": {"type": "string"},
+                            "training_days": {
+                                "type": ["array", "null"],
+                                "items": {"type": "string"},
+                            },
+                            "has_pullup_bar": {"type": ["boolean", "null"]},
+                            "active_program": {"type": ["object", "null"]},
                             "notes": {"type": "string"},
                         },
                     },

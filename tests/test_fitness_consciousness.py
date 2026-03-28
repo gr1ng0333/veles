@@ -88,3 +88,17 @@ def test_send_owner_message_sets_awaiting_reply_only_for_questions(tmp_path: Pat
     shared_state.clear()
     daemon._queue_owner_message("Сегодня цель — 15 минут разминки.", reason="plan")
     assert "fitness_awaiting_reply" not in shared_state
+
+
+def test_context_mentions_program_bootstrap_when_profile_missing_program(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("ouroboros.fitness_consciousness.load_state", lambda: {})
+    monkeypatch.setattr("ouroboros.fitness_consciousness.save_state", lambda st: None)
+
+    fitness_root = tmp_path / "fitness"
+    fitness_root.mkdir(parents=True, exist_ok=True)
+    (fitness_root / "profile.json").write_text('{"weight_kg": 84, "height_cm": 173}', encoding="utf-8")
+
+    daemon = FitnessConsciousness(tmp_path, Path("/opt/veles"), queue.Queue(), lambda: 123)
+    context = daemon._build_context()
+    assert "нет active_program" in context
+    assert "3 дня" in context

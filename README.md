@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-6.84.9-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-6.85.0-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 6.84.9 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 6.85.0 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -43,6 +43,11 @@
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
 ### Changelog
+### 6.85.0
+- fitness step 7: added bootstrap of the first calisthenics program in `fitness_profile_write` with `active_program`, `training_days`, and `has_pullup_bar` stored in `/opt/veles-data/fitness/profile.json`
+- the starter plan now creates a realistic 3-day beginner bodyweight split (push/legs/core, pull/legs/core, volume/technique) with progressions/regressions and recovery rules
+- fitness daemon context/prompt now explicitly handles first contact: if `active_program` is missing, it asks about 3 training days and pull-up bar access before saving the initial program
+
 ### 6.84.9
 - persisted fitness/background daemon lifecycle in supervisor state: added `fitness_enabled`, `fitness_awaiting_reply`, `fitness_next_message`, and `bg_consciousness_enabled`; launcher now reapplies daemon start/stop policy on boot so fitness stays opt-in and the main background consciousness remains disabled by default.
 
