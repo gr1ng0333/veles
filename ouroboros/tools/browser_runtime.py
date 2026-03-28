@@ -173,7 +173,7 @@ _MARKDOWN_JS = """() => {
 }"""
 
 
-_READINESS_STATS_JS = """() => {
+_READINESS_STATS_JS = r"""() => {
     const body = document.body;
     const text = body ? (body.innerText || '') : '';
     const normalized = text.replace(/\s+/g, ' ').trim();
