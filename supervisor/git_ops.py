@@ -56,7 +56,8 @@ def _cleanup_old_rescue_snapshots(limit: int = MAX_RESCUE_SNAPSHOTS) -> None:
         return
 
     entries = [p for p in rescue_root.iterdir() if p.is_dir()]
-    entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    # Sort by directory name (format: YYYYMMDD_HHMMSS_*) — name IS the timestamp
+    entries.sort(key=lambda p: p.name, reverse=True)
     for stale in entries[limit:]:
         shutil.rmtree(stale, ignore_errors=True)
 
