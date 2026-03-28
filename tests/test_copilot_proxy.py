@@ -237,7 +237,8 @@ def test_llm_routes_copilot_model(monkeypatch):
 
     routed = {}
 
-    def fake_call_copilot(messages, tools=None, model="claude-sonnet-4-5", max_tokens=16384, interaction_id=None):
+    def fake_call_copilot(messages, tools=None, model="claude-sonnet-4-5", max_tokens=16384,
+                          tool_choice=None, interaction_id=None, reasoning_effort=None):
         routed["model"] = model
         routed["messages"] = messages
         routed["tools"] = tools
