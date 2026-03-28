@@ -279,6 +279,7 @@ class FitnessConsciousness:
                     "format": "markdown",
                     "is_progress": False,
                     "ts": utc_now_iso(),
+                    "chat_scope": "fitness",
                 })
             except Exception:
                 log.exception("Failed to enqueue fitness owner message")
@@ -301,6 +302,80 @@ class FitnessConsciousness:
 
     def _tool_send_owner_message(self, ctx: ToolContext, text: str, reason: str = "") -> str:
         return self._queue_owner_message(text=text, reason=reason)
+
+    def _append_chat_log(self, direction: str, text: str) -> None:
+        state = load_state()
+        append_jsonl(self._fitness_logs / "chat.jsonl", {
+            "ts": utc_now_iso(),
+            "session_id": state.get("session_id"),
+            "direction": direction,
+            "chat_id": self._owner_chat_id_fn(),
+            "user_id": state.get("owner_id"),
+            "text": text,
+        })
+
+    def handle_owner_message(self, text: str) -> str:
+        message = (text or "").strip()
+        if not message:
+            return "⚠️ Empty fitness message."
+
+        self._append_chat_log("in", message)
+        state = load_state()
+        state["fitness_awaiting_reply"] = False
+        state["fitness_next_message"] = False
+        state["fitness_last_owner_message_at"] = utc_now_iso()
+        save_state(state)
+
+        if not self._check_budget():
+            append_jsonl(self._fitness_logs / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "fitness_budget_exhausted",
+                "source": "owner_message",
+                "fitness_spent_usd": self._monitor_state.get("fitness_spent_usd", 0.0),
+                "budget_cap_usd": self._fitness_budget_usd,
+            })
+            return "⚠️ Fitness budget exhausted."
+
+        tools = self._build_tools()
+        system_prompt = self._load_prompt() + "\n\nОперационные правила:\n- Это прямое входящее сообщение владельца в fitness-контур.\n- Если нужен видимый ответ владельцу, используй send_owner_message и заверши ответом SILENT.\n- Не трогай основной контекст и не упоминай внутреннюю архитектуру без нужды."
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": self._build_context()},
+            {"role": "user", "content": f"Новое сообщение владельца для fitness-контура:\n{message}"},
+        ]
+        incoming = queue.Queue()
+        last_sent_before = self._monitor_state.get("last_sent_at")
+        final_text, usage, _ = run_llm_loop(
+            messages=messages,
+            tools=tools,
+            llm=self._llm,
+            drive_logs=self._fitness_logs,
+            emit_progress=lambda _text: None,
+            incoming_messages=incoming,
+            task_type="fitness_owner_message",
+            task_id=f"fitness-owner-{int(time.time())}",
+            budget_remaining_usd=self._fitness_budget_usd,
+            event_queue=self._event_queue,
+            initial_effort=get_background_reasoning_effort(),
+            drive_root=self._drive_root,
+        )
+        try:
+            self._monitor_state["fitness_spent_usd"] = float(self._monitor_state.get("fitness_spent_usd", 0.0) or 0.0) + float(usage.get("cost_usd", 0.0) or 0.0)
+        except Exception:
+            pass
+        self._monitor_state["last_run_at"] = utc_now_iso()
+        self._save_monitor_state()
+        append_jsonl(self._fitness_logs / "events.jsonl", {
+            "ts": utc_now_iso(),
+            "type": "fitness_owner_message_handled",
+            "text_preview": message[:200],
+            "cost_usd": float(usage.get("cost_usd", 0.0) or 0.0),
+        })
+        sent_during_run = self._monitor_state.get("last_sent_at") != last_sent_before
+        reply = (final_text or "").strip()
+        if reply and reply.upper() != "SILENT" and not sent_during_run:
+            self._queue_owner_message(reply, reason="owner_message_reply_fallback")
+        return "OK: fitness owner message handled."
 
     def _build_tools(self) -> ToolRegistry:
         registry = ToolRegistry(self._repo_dir, self._drive_root)

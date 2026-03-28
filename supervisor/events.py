@@ -94,6 +94,7 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
             log_text=(str(log_text) if isinstance(log_text, str) else None),
             fmt=fmt,
             is_progress=is_progress,
+            chat_scope=str(evt.get("chat_scope") or "main"),
         )
     except Exception as e:
         ctx.append_jsonl(
