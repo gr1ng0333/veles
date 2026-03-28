@@ -31,6 +31,14 @@ _ERROR_MARKERS = frozenset({
 
 REFLECTIONS_FILENAME = "task_reflections.jsonl"
 
+# Fallback chain for reflection model — tried in order until one succeeds.
+# Primary: Codex OAuth lightweight model.
+# Fallback: free OpenRouter model that doesn't require Codex auth.
+_REFLECTION_MODEL_FALLBACK_CHAIN = [
+    "codex/gpt-5.4-mini",
+    "qwen/qwen3-coder:free",
+]
+
 _REFLECTION_PROMPT = """\
 You are reviewing a completed task execution trace for Ouroboros, a self-modifying AI agent.
 The task had errors. Write a concise 150-250 word reflection covering:
@@ -67,6 +75,54 @@ def _truncate_with_notice(text: Any, limit: int) -> str:
     marker = f"... [+{len(raw) - available} chars]"
     available = max(0, limit - len(marker))
     return raw[:available] + marker
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Return True if the exception looks like an authentication/authorization failure."""
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("401", "user not found", "unauthorized", "authentication", "403", "forbidden"))
+
+
+def _llm_chat_with_fallback(
+    llm_client: Any,
+    messages: List[Dict[str, Any]],
+    primary_model: str,
+    max_tokens: int = 512,
+) -> str:
+    """Call the LLM with a fallback chain. Returns response content string.
+
+    Tries primary_model first. On auth error, tries each model in
+    _REFLECTION_MODEL_FALLBACK_CHAIN. On other errors, raises immediately.
+    Raises on all failures.
+    """
+    # Build candidate list: primary first, then fallback chain (deduped, preserving order)
+    candidates: List[str] = [primary_model]
+    for m in _REFLECTION_MODEL_FALLBACK_CHAIN:
+        if m != primary_model and m not in candidates:
+            candidates.append(m)
+
+    last_exc: Optional[Exception] = None
+    for model in candidates:
+        try:
+            resp_msg, _usage = llm_client.chat(
+                messages=messages,
+                model=model,
+                reasoning_effort="low",
+                max_tokens=max_tokens,
+            )
+            content = (resp_msg.get("content") or "").strip()
+            if model != primary_model:
+                log.info("Reflection used fallback model %s (primary %s failed)", model, primary_model)
+            return content
+        except Exception as exc:
+            last_exc = exc
+            if _is_auth_error(exc):
+                log.warning("Auth error on reflection model %s, trying next: %s", model, exc)
+                continue
+            # Non-auth error — don't try further models
+            raise
+
+    raise last_exc or RuntimeError("All reflection models failed")
 
 
 # ------------------------------------------------------------------
@@ -211,6 +267,10 @@ def generate_reflection(
 ) -> Dict[str, Any]:
     """Call the light LLM to produce an execution reflection.
 
+    Uses a fallback model chain: if the primary reflection model returns an
+    auth error (401/403/user-not-found), the next model in
+    _REFLECTION_MODEL_FALLBACK_CHAIN is tried automatically.
+
     Returns a structured dict ready for appending to the reflections JSONL.
     """
     from ouroboros.model_modes import get_reflection_model
@@ -227,17 +287,16 @@ def generate_reflection(
         error_details=error_details,
     )
 
-    light_model = get_reflection_model()
+    primary_model = get_reflection_model()
     try:
-        resp_msg, _usage = llm_client.chat(
+        reflection_text = _llm_chat_with_fallback(
+            llm_client=llm_client,
             messages=[{"role": "user", "content": prompt}],
-            model=light_model,
-            reasoning_effort="low",
+            primary_model=primary_model,
             max_tokens=512,
         )
-        reflection_text = (resp_msg.get("content") or "").strip()
     except Exception as e:
-        log.warning("Reflection LLM call failed: %s", e)
+        log.warning("Reflection LLM call failed (all models): %s", e)
         reflection_text = f"(reflection generation failed: {e})"
 
     return {
@@ -355,7 +414,11 @@ _PATTERNS_HEADER = (
 
 
 def _update_patterns(drive_root: pathlib.Path, entry: Dict[str, Any]) -> None:
-    """Update patterns.md knowledge base topic via LLM (Pattern Register)."""
+    """Update patterns.md knowledge base topic via LLM (Pattern Register).
+
+    Uses the same fallback model chain as generate_reflection so that
+    pattern updates survive Codex auth failures too.
+    """
     from ouroboros.llm import LLMClient
     from ouroboros.model_modes import get_reflection_model
 
@@ -382,15 +445,19 @@ def _update_patterns(drive_root: pathlib.Path, entry: Dict[str, Any]) -> None:
         reflection=_truncate_with_notice(entry.get("reflection", ""), 500),
     )
 
-    light_model = get_reflection_model()
+    primary_model = get_reflection_model()
     client = LLMClient()
-    resp_msg, _usage = client.chat(
-        messages=[{"role": "user", "content": prompt}],
-        model=light_model,
-        reasoning_effort="low",
-        max_tokens=1024,
-    )
-    updated = (resp_msg.get("content") or "").strip()
+    try:
+        updated = _llm_chat_with_fallback(
+            llm_client=client,
+            messages=[{"role": "user", "content": prompt}],
+            primary_model=primary_model,
+            max_tokens=1024,
+        )
+    except Exception as exc:
+        log.warning("Pattern register LLM failed (all models): %s", exc)
+        return
+
     if not updated or "|" not in updated:
         log.warning("Pattern register LLM returned invalid output, skipping update")
         return
@@ -471,7 +538,7 @@ def maybe_create_reflection(
         return entry
 
     except Exception:
-        log.warning("Execution reflection failed (non-critical)", exc_info=True)
+        log.warning("maybe_create_reflection failed (non-critical)", exc_info=True)
         return None
 
 
