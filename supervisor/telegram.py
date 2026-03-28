@@ -440,8 +440,14 @@ def budget_line(force: bool = False) -> str:
         return ""
 
 
-def log_chat(direction: str, chat_id: int, user_id: int, text: str) -> None:
-    append_jsonl(DRIVE_ROOT / "logs" / "chat.jsonl", {
+def _chat_log_path(scope: str = "main"):
+    if scope == "fitness":
+        return DRIVE_ROOT / "fitness" / "logs" / "chat.jsonl"
+    return DRIVE_ROOT / "logs" / "chat.jsonl"
+
+
+def log_chat(direction: str, chat_id: int, user_id: int, text: str, scope: str = "main") -> None:
+    append_jsonl(_chat_log_path(scope), {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "session_id": load_state().get("session_id"),
         "direction": direction,
@@ -453,7 +459,7 @@ def log_chat(direction: str, chat_id: int, user_id: int, text: str) -> None:
 
 def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
                      force_budget: bool = False, fmt: str = "",
-                     is_progress: bool = False) -> None:
+                     is_progress: bool = False, chat_scope: str = "main") -> None:
     st = load_state()
     owner_id = int(st.get("owner_id") or 0)
     safe_text = sanitize_owner_facing_text(str(text or ""))
@@ -467,7 +473,9 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
             "text": safe_log_text,
         })
     else:
-        log_chat("out", chat_id, owner_id, safe_log_text)
+        log_chat("out", chat_id, owner_id, safe_log_text, scope=chat_scope)
+        st["last_outgoing_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        save_state(st)
     budget = budget_line(force=force_budget)
     _text = safe_text
     if not budget:
