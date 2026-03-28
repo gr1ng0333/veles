@@ -240,7 +240,9 @@ def call_copilot(
     tools: Optional[List[Dict[str, Any]]] = None,
     model: str = "claude-sonnet-4-5",
     max_tokens: int = 16384,
+    tool_choice: Optional[Any] = None,
     interaction_id: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Call LLM via GitHub Copilot API.
@@ -255,10 +257,13 @@ def call_copilot(
         "messages": messages,
         "max_tokens": max_tokens,
         "stream": False,
-        "reasoning_effort": "high",
+        "reasoning_effort": reasoning_effort or "high",
     }
     if tools:
         payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    elif tools:
         payload["tool_choice"] = "auto"
 
     # Determine initiator from last message role
