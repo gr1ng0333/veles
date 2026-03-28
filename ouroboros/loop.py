@@ -766,6 +766,8 @@ def _call_llm_with_retry(
     """
     msg = None
     last_error: Optional[Exception] = None
+    accumulated_usage["_last_llm_error"] = None
+    accumulated_usage["_last_llm_error_model"] = None
 
     for attempt in range(max_retries):
         try:
@@ -776,6 +778,8 @@ def _call_llm_with_retry(
                 kwargs["interaction_id"] = interaction_id
             resp_msg, usage = llm.chat(**kwargs)
             msg = resp_msg
+            accumulated_usage["_last_llm_error"] = None
+            accumulated_usage["_last_llm_error_model"] = model
             add_usage(accumulated_usage, usage)
 
             # Calculate cost and emit event for EVERY attempt (including retries)
@@ -841,6 +845,8 @@ def _call_llm_with_retry(
 
         except Exception as e:
             last_error = e
+            accumulated_usage["_last_llm_error"] = str(e)
+            accumulated_usage["_last_llm_error_model"] = model
             append_jsonl(drive_logs / "events.jsonl", {
                 "ts": utc_now_iso(), "type": "llm_api_error",
                 "task_id": task_id,

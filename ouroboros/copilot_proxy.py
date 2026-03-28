@@ -142,8 +142,14 @@ def _call_with_rotation(
                 )
             wait_time = _accounts_impl._shortest_cooldown_remaining()
             if wait_time <= 0:
-                raise RuntimeError(
-                    f"All Copilot accounts exhausted (no cooldown to wait for). Last error: {last_error}"
+                wait_time = _accounts_impl._apply_soft_cooldown(30)
+                if wait_time <= 0:
+                    raise RuntimeError(
+                        f"All Copilot accounts exhausted (no cooldown to wait for). Last error: {last_error}"
+                    )
+                log.warning(
+                    "copilot_all_accounts_exhausted_soft_cooldown waiting=%ds interaction=%s",
+                    int(wait_time), (interaction_id or "?")[:8],
                 )
             wait_time = min(wait_time, 120)  # cap at 2 minutes
             log.warning(

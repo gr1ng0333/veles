@@ -261,6 +261,41 @@ def _is_transport_timeout_error(exc: Exception, transport: str) -> bool:
     return _is_codex_timeout_error(exc)
 
 
+def _consume_last_llm_error(accumulated_usage: Dict[str, Any], model: str) -> Optional[str]:
+    err_model = accumulated_usage.get("_last_llm_error_model")
+    err_text = accumulated_usage.get("_last_llm_error")
+    if err_model != model:
+        return None
+    accumulated_usage["_last_llm_error"] = None
+    accumulated_usage["_last_llm_error_model"] = None
+    return err_text or None
+
+
+def _build_fallback_candidates(active_model: str, transport: str) -> List[str]:
+    if transport == "copilot":
+        chain = {
+            "copilot/claude-opus-4.6": "copilot/claude-sonnet-4.6",
+            "copilot/claude-sonnet-4.6": "copilot/claude-haiku-4.5",
+            "copilot/claude-haiku-4.5": None,
+        }
+        candidates: List[str] = []
+        seen = {active_model}
+        current = chain.get(active_model)
+        while current and current not in seen:
+            candidates.append(current)
+            seen.add(current)
+            current = chain.get(current)
+        if "codex/gpt-5.4" not in seen:
+            candidates.append("codex/gpt-5.4")
+        return candidates
+
+    fallback_list_raw = os.environ.get(
+        "OUROBOROS_MODEL_FALLBACK_LIST",
+        "google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6",
+    )
+    return [m.strip() for m in fallback_list_raw.split(",") if m.strip() and m.strip() != active_model]
+
+
 def _call_llm_with_fallback(
     *,
     llm: LLMClient,
@@ -280,84 +315,75 @@ def _call_llm_with_fallback(
 ) -> Optional[Dict[str, Any]]:
     primary_exc: Optional[Exception] = None
     transport = model_transport(active_model)
-    try:
-        _maybe_sleep_before_evolution_copilot_request(
-            task_type=task_type,
-            active_model=active_model,
-            round_idx=round_idx,
-            phase="primary",
-        )
-        msg, _ = _call_llm_with_retry(
-            llm,
-            messages,
-            active_model,
-            tool_schemas,
-            active_effort,
-            max_retries,
-            drive_logs,
-            task_id,
-            round_idx,
-            event_queue,
-            accumulated_usage,
-            task_type,
-            interaction_id=interaction_id,
-        )
-    except Exception as e:
-        if _is_transport_timeout_error(e, transport):
-            primary_exc = e
-            msg = None
-        else:
-            raise
 
+    def _call_candidate(model: str, phase: str) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[Exception]]:
+        candidate_transport = model_transport(model)
+        try:
+            if candidate_transport == "copilot":
+                _maybe_sleep_before_evolution_copilot_request(
+                    task_type=task_type,
+                    active_model=model,
+                    round_idx=round_idx,
+                    phase=phase,
+                )
+            msg, _ = _call_llm_with_retry(
+                llm,
+                messages,
+                model,
+                tool_schemas,
+                active_effort,
+                max_retries,
+                drive_logs,
+                task_id,
+                round_idx,
+                event_queue,
+                accumulated_usage,
+                task_type,
+                interaction_id=interaction_id,
+            )
+            return msg, _consume_last_llm_error(accumulated_usage, model), None
+        except Exception as exc:
+            return None, _consume_last_llm_error(accumulated_usage, model), exc
+
+    msg, primary_error_text, primary_exc = _call_candidate(active_model, "primary")
     if msg is not None:
         return msg
 
-    # Build fallback list based on transport
-    if transport == "copilot":
-        copilot_fallback_chain = {
-            "copilot/claude-opus-4.6": "copilot/claude-sonnet-4.6",
-            "copilot/claude-sonnet-4.6": "copilot/claude-haiku-4.5",
-            "copilot/claude-haiku-4.5": None,
-        }
-        chain_next = copilot_fallback_chain.get(active_model)
-        fallback_candidates = [chain_next] if chain_next else []
-    else:
-        fallback_list_raw = os.environ.get(
-            "OUROBOROS_MODEL_FALLBACK_LIST",
-            "google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6",
-        )
-        fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
-    fallback_model = next((m for m in fallback_candidates if m != active_model), None)
-    if fallback_model is None:
+    fallback_candidates = _build_fallback_candidates(active_model, transport)
+    if not fallback_candidates:
         if primary_exc is not None:
             raise primary_exc
         return None
 
-    reason = f"timeout/error: {primary_exc}" if primary_exc else "empty response"
-    emit_progress(f"⚡ Fallback: {active_model} → {fallback_model} ({reason})")
-    log.warning("Falling back from %s to %s: %s", active_model, fallback_model, primary_exc or "empty response")
-    try:
-        msg, _ = _call_llm_with_retry(
-            llm,
-            messages,
-            fallback_model,
-            tool_schemas,
-            active_effort,
-            max_retries,
-            drive_logs,
-            task_id,
-            round_idx,
-            event_queue,
-            accumulated_usage,
-            task_type,
-            interaction_id=interaction_id,
-        )
-    except Exception as fallback_exc:
-        log.error("Fallback model %s also failed: %s", fallback_model, fallback_exc)
-        if primary_exc is not None:
-            raise primary_exc from fallback_exc
-        raise
-    return msg
+    previous_model = active_model
+    previous_reason = f"timeout/error: {primary_exc or primary_error_text}" if (primary_exc or primary_error_text) else "empty response"
+    last_exc: Optional[Exception] = primary_exc or (RuntimeError(primary_error_text) if primary_error_text else None)
+
+    for fallback_model in fallback_candidates:
+        if model_transport(previous_model) == "copilot" and model_transport(fallback_model) == "codex":
+            emit_progress("↪️ Copilot exhausted/unstable — передаю этот же раунд в Codex.")
+
+        emit_progress(f"⚡ Fallback: {previous_model} → {fallback_model} ({previous_reason})")
+        log.warning("Falling back from %s to %s: %s", previous_model, fallback_model, previous_reason)
+
+        msg, fallback_error_text, fallback_exc = _call_candidate(fallback_model, "fallback")
+        if msg is not None:
+            return msg
+
+        previous_model = fallback_model
+        previous_reason = f"timeout/error: {fallback_exc or fallback_error_text}" if (fallback_exc or fallback_error_text) else "empty response"
+        if fallback_exc is not None:
+            last_exc = fallback_exc
+        elif fallback_error_text:
+            last_exc = RuntimeError(fallback_error_text)
+
+    if last_exc is not None:
+        if primary_exc is not None and last_exc is not primary_exc:
+            raise primary_exc from last_exc
+        raise last_exc
+    if primary_exc is not None:
+        raise primary_exc
+    return None
 
 
 def _update_progress_windows(
