@@ -1,0 +1,35 @@
+diff --git a/colab_launcher.py b/colab_launcher.py
+index ccf68d3..ae5bbca 100644
+--- a/colab_launcher.py
++++ b/colab_launcher.py
+@@ -607,10 +607,10 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
+     if lowered.startswith("/status"):
+         status = status_text(WORKERS, PENDING, RUNNING, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC)
+         send_with_budget(chat_id, status, force_budget=True)
+-        return "[Supervisor handled /status — status text already sent to chat]\n"
++        return True  # terminal: already sent status to chat
+     if lowered.startswith("/review"):
+         queue_review_task(reason="owner:/review", force=True)
+-        return "[Supervisor handled /review — review task queued]\n"
++        return True  # terminal: review task already queued
+     if lowered.startswith("/evolve"):
+         parts = lowered.split()
+         action = parts[1] if len(parts) > 1 else "on"
+@@ -635,7 +635,7 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
+             persist_queue_snapshot(reason="evolve_off")
+         state_str = "ON" if turn_on else "OFF"
+         send_with_budget(chat_id, f"🧬 Evolution: {state_str}")
+-        return f"[Supervisor handled /evolve — evolution toggled {state_str}]\n"
++        return True  # terminal: evolution toggled, no LLM dispatch needed
+     if lowered.startswith("/bg"):
+         parts = lowered.split()
+         action = parts[1] if len(parts) > 1 else "status"
+@@ -648,7 +648,7 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
+         else:
+             bg_status = "running" if _consciousness.is_running else "stopped"
+             send_with_budget(chat_id, f"🧠 Background consciousness: {bg_status}")
+-        return f"[Supervisor handled /bg {action}]\n"
++        return True  # terminal: bg consciousness handled, no LLM dispatch needed
+     if lowered.startswith("/sonnet"):
+         mode = persist_active_mode("sonnet")
+         send_with_budget(chat_id, f"✅ Mode: sonnet\n• Main: {mode.model}\n• Rounds: {mode.max_rounds}\n• Tools: off")
