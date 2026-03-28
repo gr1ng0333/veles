@@ -536,6 +536,20 @@ _fitness_consciousness = FitnessConsciousness(
     event_queue=get_event_q(),
     owner_chat_id_fn=_get_owner_chat_id,
 )
+
+def _apply_background_runtime_policy() -> None:
+    st = load_state()
+    if st.get("bg_consciousness_enabled"):
+        _consciousness.start()
+    else:
+        _consciousness.stop()
+    if st.get("fitness_enabled"):
+        _fitness_consciousness.start()
+    else:
+        _fitness_consciousness.stop()
+
+_apply_background_runtime_policy()
+
 def reset_chat_agent():
     """Reset the direct-mode chat agent (called by watchdog on hangs)."""
     import supervisor.workers as _w
@@ -622,10 +636,14 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         parts = lowered.split()
         action = parts[1] if len(parts) > 1 else "next"
         if action in ("start", "on", "1"):
+            st2 = load_state()
+            st2["fitness_enabled"] = True
+            save_state(st2)
             send_with_budget(chat_id, f"🏋️ {_fitness_consciousness.start()}")
             return True
         if action in ("stop", "off", "0"):
             st2 = load_state()
+            st2["fitness_enabled"] = False
             st2["fitness_awaiting_reply"] = False
             st2["fitness_next_message"] = False
             save_state(st2)
@@ -668,9 +686,15 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         parts = lowered.split()
         action = parts[1] if len(parts) > 1 else "status"
         if action in ("start", "on", "1"):
+            st2 = load_state()
+            st2["bg_consciousness_enabled"] = True
+            save_state(st2)
             result = _consciousness.start()
             send_with_budget(chat_id, f"🧠 {result}")
         elif action in ("stop", "off", "0"):
+            st2 = load_state()
+            st2["bg_consciousness_enabled"] = False
+            save_state(st2)
             result = _consciousness.stop()
             send_with_budget(chat_id, f"🧠 {result}")
         else:
