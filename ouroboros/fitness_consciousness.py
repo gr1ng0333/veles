@@ -196,6 +196,7 @@ class FitnessConsciousness:
             f"Следующие разрешённые локальные wakeup-слоты (UTC+3): {', '.join(str(h) + ':00' for h in FITNESS_WAKE_HOURS)}",
             "Если владельца не нужно дёргать прямо сейчас — не отправляй сообщение и ответь SILENT.",
             "Если нужно задать вопрос или дать короткий пинок/план — используй send_owner_message ровно один раз.",
+            "Если у профиля ещё нет active_program, сначала собери два факта: удобные 3 дня в неделю и есть ли турник/перекладина.",
             "drive_read / drive_write работают только внутри fitness/.",
         ]
 
@@ -337,7 +338,7 @@ class FitnessConsciousness:
             return "⚠️ Fitness budget exhausted."
 
         tools = self._build_tools()
-        system_prompt = self._load_prompt() + "\n\nОперационные правила:\n- Это прямое входящее сообщение владельца в fitness-контур.\n- Если нужен видимый ответ владельцу, используй send_owner_message и заверши ответом SILENT.\n- Не трогай основной контекст и не упоминай внутреннюю архитектуру без нужды."
+        system_prompt = self._load_prompt() + "\n\nОперационные правила:\n- Это прямое входящее сообщение владельца в fitness-контур.\n- Если у профиля ещё нет active_program, сначала добери два ключевых факта: удобные 3 дня в неделю и есть ли доступ к турнику/перекладине.\n- Как только этих данных хватает, вызови fitness_profile_write(training_days=..., has_pullup_bar=...), чтобы сохранить active_program в profile.json, и только потом отвечай владельцу.\n- Если нужен видимый ответ владельцу, используй send_owner_message и заверши ответом SILENT.\n- Не трогай основной контекст и не упоминай внутреннюю архитектуру без нужды."
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": self._build_context()},

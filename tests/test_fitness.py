@@ -131,3 +131,32 @@ def test_workout_type_validation(tmp_path):
         assert "type must be one of" in str(exc)
     else:
         raise AssertionError("Expected ValueError for unsupported workout type")
+
+
+def test_profile_read_does_not_seed_active_program_before_bootstrap(tmp_path):
+    ctx = FakeCtx(tmp_path)
+    _fitness_profile_write(
+        ctx,
+        height_cm=173,
+        weight_kg=84,
+        goal="recomposition",
+        tdee_kcal=2400,
+        daily_calorie_target=2100,
+    )
+    profile = json.loads(_fitness_profile_read(ctx))
+    assert profile["current_program"] == ""
+    assert profile["active_program"] == {}
+
+
+def test_profile_write_rebuilds_program_for_pullup_bar_and_custom_days(tmp_path):
+    ctx = FakeCtx(tmp_path)
+    stored = json.loads(_fitness_profile_write(
+        ctx,
+        goal="recomposition",
+        training_days=["Tue", "Thu", "Sat"],
+        has_pullup_bar=True,
+    ))["profile"]
+    assert stored["training_days"] == ["tue", "thu", "sat"]
+    program = stored["active_program"]
+    assert program["training_days"] == ["tue", "thu", "sat"]
+    assert program["workouts"][1]["main"][0]["exercise"] == "assisted_hang_or_negative_pullup"
