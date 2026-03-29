@@ -516,7 +516,7 @@ _watchdog_thread = threading.Thread(target=_chat_watchdog_loop, daemon=True)
 _watchdog_thread.start()
 # 6.3) Background consciousness
 from ouroboros.consciousness import BackgroundConsciousness
-from ouroboros.fitness_consciousness import FitnessConsciousness
+from ouroboros.fitness_consciousness import FitnessConsciousness, looks_like_fitness_reply
 def _get_owner_chat_id() -> Optional[int]:
     try:
         st = load_state()
@@ -887,10 +887,14 @@ while True:
             continue
         fitness_route = None
         if text and not text.strip().startswith("/"):
-            if bool(st.get("fitness_awaiting_reply")):
-                fitness_route = "fitness_awaiting_reply"
-            elif bool(st.get("fitness_next_message")):
+            if bool(st.get("fitness_next_message")):
                 fitness_route = "fitness_next_message"
+            elif bool(st.get("fitness_awaiting_reply")):
+                if looks_like_fitness_reply(text):
+                    fitness_route = "fitness_awaiting_reply"
+                else:
+                    st["fitness_awaiting_reply"] = False
+                    save_state(st)
         log_chat("in", chat_id, user_id, text, scope=("fitness" if fitness_route else "main"))
         st["last_owner_message_at"] = now_iso
         if bool(st.get("suppress_auto_resume_until_owner_message")) and owner_message_allows_auto_resume_release(text):
