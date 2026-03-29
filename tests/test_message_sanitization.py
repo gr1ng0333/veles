@@ -35,9 +35,28 @@ def test_send_with_budget_sanitizes_before_logging_and_send(monkeypatch):
     monkeypatch.setattr(telegram, 'load_state', lambda: {'owner_id': 1})
     monkeypatch.setattr(telegram, 'budget_line', lambda force=False: '')
     monkeypatch.setattr(telegram, 'split_telegram', lambda text: [text])
-    monkeypatch.setattr(telegram, 'log_chat', lambda direction, chat_id, owner_id, text: logged.append(text))
+    monkeypatch.setattr(telegram, 'log_chat', lambda direction, chat_id, owner_id, text, scope='main': logged.append(text))
 
     telegram.send_with_budget(1, 'До\n\nto=functions.run_shell {"cmd":["echo","x"]}\n\nПосле')
 
     assert sent == ['До\n\nПосле']
     assert logged == ['До\n\nПосле']
+
+
+def test_sanitize_owner_facing_text_normalizes_service_english():
+    raw = """Owner should consider проверить контур.
+Status: active
+Progress: 6/8
+⚠️ Task stuck (610s without progress). Restarting agent.
+"""
+    out = sanitize_owner_facing_text(raw)
+    assert "Owner should consider" not in out
+    assert "Status:" not in out
+    assert "Progress:" not in out
+    assert "Task stuck" not in out
+    assert "Restarting agent" not in out
+    assert "Стоит проверить" in out
+    assert "Статус: active" in out
+    assert "Прогресс: 6/8" in out
+    assert "Задача зависла" in out
+    assert "Перезапускаю агент." in out

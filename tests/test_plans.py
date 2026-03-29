@@ -261,3 +261,29 @@ def test_plan_tool_reject_emits_progress(drive_root, sample_steps):
     assert progress
     assert "Останавливаю план" in progress[-1]
     assert "Owner stopped it" in progress[-1]
+
+
+def test_get_active_plan_auto_completes_stale_active_plan(drive_root, sample_steps):
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approved = approve_plan(drive_root, plan["id"])
+    approved["steps"][0]["status"] = STEP_DONE
+    approved["steps"][1]["status"] = STEP_SKIPPED
+    approved["steps"][2]["status"] = STEP_DONE
+    approved["status"] = STATUS_ACTIVE
+    (drive_root / "plans" / f"{plan['id']}.json").write_text(json.dumps(approved, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    active = get_active_plan(drive_root)
+    healed = get_plan(drive_root, plan["id"])
+
+    assert active is None
+    assert healed["status"] == STATUS_COMPLETED
+    assert healed["completed_at"] is not None
+    assert "Auto-finalized stale active plan" in healed["notes"]
+
+
+def test_complete_plan_requires_exact_plan_id(drive_root, sample_steps):
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approve_plan(drive_root, plan["id"])
+
+    with pytest.raises(ValueError, match="exact plan_id"):
+        complete_plan(drive_root, "fitness-bot-extraction", summary="done")

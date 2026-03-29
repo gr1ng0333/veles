@@ -287,10 +287,61 @@ def sanitize_tool_result_for_log(result: str, *, owner_facing: bool = False) -> 
                 and not line.strip().startswith('"parameters"')
                 and not line.strip().startswith('"cmd"')
             )
+        sanitized = _normalize_owner_facing_service_phrases(sanitized)
         result = _re.sub(r"\n{3,}", "\n\n", sanitized).strip()
     if len(result) < 20:
         return result
     return _SECRET_PATTERNS.sub("***REDACTED***", result)
+
+
+_OWNER_FACING_LINE_PREFIXES = (
+    ("Owner should consider ", "Стоит проверить "),
+    ("Status:", "Статус:"),
+    ("Progress:", "Прогресс:"),
+    ("Source:", "Источник:"),
+    ("Mode:", "Режим:"),
+    ("Main:", "Основная модель:"),
+    ("Rounds:", "Раунды:"),
+    ("Tools:", "Инструменты:"),
+    ("Execution:", "Исполнение:"),
+    ("Purpose:", "Назначение:"),
+    ("Aux light:", "Лёгкая вспомогательная:"),
+    ("Background:", "Фоновая:"),
+    ("Background reasoning:", "Фоновое рассуждение:"),
+    ("Reasoning effort:", "Усилие рассуждения:"),
+    ("Account:", "Аккаунт:"),
+    ("Limits:", "Лимиты:"),
+)
+
+
+def _normalize_owner_facing_service_phrases(text: str) -> str:
+    if not text:
+        return text
+
+    normalized = str(text)
+    inline_replacements = (
+        ("Owner should consider ", "Стоит проверить "),
+        ("Restart completed:", "Рестарт завершён:"),
+        ("Restart requested by agent:", "Агент запросил рестарт:"),
+        ("Restart skipped:", "Рестарт пропущен:"),
+        ("Restarting agent.", "Перезапускаю агент."),
+        ("without progress", "без прогресса"),
+        ("Task stuck", "Задача зависла"),
+    )
+    for src, dst in inline_replacements:
+        normalized = normalized.replace(src, dst)
+
+    lines = []
+    for line in normalized.splitlines():
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        replaced = stripped
+        for src, dst in _OWNER_FACING_LINE_PREFIXES:
+            if stripped.startswith(src):
+                replaced = dst + stripped[len(src):]
+                break
+        lines.append(indent + replaced)
+    return "\n".join(lines)
 
 
 _TOOL_LEAK_PATTERNS = [

@@ -10,6 +10,7 @@ import time
 import uuid
 import pathlib
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
@@ -54,14 +55,48 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_PLAN_ID_RE = re.compile(r"^plan_\d+_[0-9a-f]{6,}$")
+
+
+def _require_exact_plan_id(plan_id: str) -> str:
+    value = str(plan_id or "").strip()
+    if not _PLAN_ID_RE.fullmatch(value):
+        raise ValueError(
+            f"Plan id must be the exact plan_id like 'plan_1234567890_ab12cd', got: {plan_id!r}"
+        )
+    return value
+
+
+def _plan_has_actionable_steps(plan: Dict[str, Any]) -> bool:
+    return any(
+        step.get("status") in (STEP_PENDING, STEP_IN_PROGRESS)
+        for step in (plan.get("steps") or [])
+    )
+
+
+def _finalize_stale_active_plan(drive_root: pathlib.Path, plan: Dict[str, Any]) -> Dict[str, Any]:
+    notes = str(plan.get("notes") or "").strip()
+    auto_note = "Auto-finalized stale active plan with no actionable steps."
+    if auto_note not in notes:
+        plan["notes"] = (notes + "\n\n" + auto_note).strip() if notes else auto_note
+    plan["status"] = STATUS_COMPLETED
+    plan["completed_at"] = plan.get("completed_at") or _utcnow_iso()
+    _save_plan(drive_root, plan)
+    log.warning("plan_auto_completed_stale_active id=%s title=%s", plan.get("id"), plan.get("title"))
+    return plan
+
+
 def get_active_plan(drive_root: pathlib.Path) -> Optional[Dict[str, Any]]:
     """Return the currently active plan, or None."""
     plans_dir = _plans_dir(drive_root)
     for f in plans_dir.glob("*.json"):
         try:
             plan = json.loads(f.read_text(encoding="utf-8"))
-            if plan.get("status") == STATUS_ACTIVE:
+            if plan.get("status") != STATUS_ACTIVE:
+                continue
+            if _plan_has_actionable_steps(plan):
                 return plan
+            _finalize_stale_active_plan(drive_root, plan)
         except Exception:
             continue
     return None
@@ -69,6 +104,7 @@ def get_active_plan(drive_root: pathlib.Path) -> Optional[Dict[str, Any]]:
 
 def get_plan(drive_root: pathlib.Path, plan_id: str) -> Optional[Dict[str, Any]]:
     """Load a specific plan by ID."""
+    _require_exact_plan_id(plan_id)
     return _load_plan(drive_root, plan_id)
 
 
@@ -125,6 +161,7 @@ def create_plan(
 
 def approve_plan(drive_root: pathlib.Path, plan_id: str) -> Dict[str, Any]:
     """Approve a draft plan, making it active. First step becomes in_progress."""
+    _require_exact_plan_id(plan_id)
     plan = _load_plan(drive_root, plan_id)
     if not plan:
         raise ValueError(f"Plan {plan_id} not found")
@@ -152,6 +189,7 @@ def approve_plan(drive_root: pathlib.Path, plan_id: str) -> Dict[str, Any]:
 
 def reject_plan(drive_root: pathlib.Path, plan_id: str, reason: str = "") -> Dict[str, Any]:
     """Reject a draft or active plan."""
+    _require_exact_plan_id(plan_id)
     plan = _load_plan(drive_root, plan_id)
     if not plan:
         raise ValueError(f"Plan {plan_id} not found")
@@ -179,6 +217,7 @@ def step_done(
     Automatically advances the next pending step to in_progress.
     Returns updated plan.
     """
+    _require_exact_plan_id(plan_id)
     plan = _load_plan(drive_root, plan_id)
     if not plan:
         raise ValueError(f"Plan {plan_id} not found")
@@ -227,6 +266,7 @@ def update_plan(
     Update an active or draft plan: change notes, add steps, remove pending steps.
     Cannot remove done or in_progress steps.
     """
+    _require_exact_plan_id(plan_id)
     plan = _load_plan(drive_root, plan_id)
     if not plan:
         raise ValueError(f"Plan {plan_id} not found")
@@ -269,6 +309,7 @@ def update_plan(
 
 def complete_plan(drive_root: pathlib.Path, plan_id: str, summary: str = "") -> Dict[str, Any]:
     """Mark plan as completed. All steps should be done."""
+    _require_exact_plan_id(plan_id)
     plan = _load_plan(drive_root, plan_id)
     if not plan:
         raise ValueError(f"Plan {plan_id} not found")
