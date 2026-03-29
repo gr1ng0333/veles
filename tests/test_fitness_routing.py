@@ -4,7 +4,7 @@ import json
 import queue
 from pathlib import Path
 
-from ouroboros.fitness_consciousness import FitnessConsciousness
+from ouroboros.fitness_consciousness import FitnessConsciousness, looks_like_fitness_reply
 from supervisor import events as supervisor_events
 from supervisor import telegram
 
@@ -95,3 +95,12 @@ def test_handle_owner_message_clears_flags_and_queues_reply(tmp_path: Path, monk
     payload = json.loads(chat_log.read_text(encoding="utf-8").strip())
     assert payload["direction"] == "in"
     assert "сегодня" in payload["text"]
+
+def test_looks_like_fitness_reply_discriminates_basic_cases() -> None:
+    assert looks_like_fitness_reply("Пн/Ср/Пт, турник есть") is True
+    assert looks_like_fitness_reply("Сегодня съел гречку 250 г и 2 яйца") is True
+    assert looks_like_fitness_reply("Вес 84 кг") is True
+    assert looks_like_fitness_reply("Да") is True
+    assert looks_like_fitness_reply("Разберись с маршрутизацией и проверь пуш") is False
+    assert looks_like_fitness_reply("Сделай тикток тулзы") is False
+

@@ -49,6 +49,41 @@ def _parse_iso(value: Any) -> Optional[datetime]:
         return None
 
 
+def looks_like_fitness_reply(text: str) -> bool:
+    message = (text or "").strip().lower()
+    if not message:
+        return False
+
+    strong_tokens = {
+        "вес", "взвес", "ккал", "калор", "бжу", "белк", "жир", "углев",
+        "трен", "тренир", "подтяг", "отжим", "присед", "планк", "кардио",
+        "турник", "переклад", "подход", "повтор", "съел", "съела",
+        "завтрак", "обед", "ужин", "перекус", "калист", "прогул", "шаг"
+    }
+    if any(token in message for token in strong_tokens):
+        return True
+
+    compact = message.replace(" ", "")
+    if any(ch.isdigit() for ch in compact):
+        if any(unit in compact for unit in ("кг", "г", "гр", "ккал", "мин", "мину", "час", "ч", "x", "х")):
+            return True
+
+    weekday_tokens = {
+        "пн", "вт", "ср", "чт", "пт", "сб", "вс",
+        "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
+    }
+    if any(day in message for day in weekday_tokens) and any(token in message for token in ("турник", "без турника", "есть", "нет", "могу", "удобно", "трен")):
+        return True
+
+    short_affirmatives = {
+        "да", "нет", "ага", "угу", "есть", "нету", "имеется", "неа", "+", "-"
+    }
+    if message in short_affirmatives:
+        return True
+
+    return False
+
+
 def _normalize_monitor_state(raw: Any) -> Dict[str, Any]:
     base = dict(_DEFAULT_MONITOR_STATE)
     if isinstance(raw, dict):
