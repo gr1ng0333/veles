@@ -516,7 +516,6 @@ _watchdog_thread = threading.Thread(target=_chat_watchdog_loop, daemon=True)
 _watchdog_thread.start()
 # 6.3) Background consciousness
 from ouroboros.consciousness import BackgroundConsciousness
-from ouroboros.fitness_consciousness import FitnessConsciousness, looks_like_fitness_reply
 def _get_owner_chat_id() -> Optional[int]:
     try:
         st = load_state()
@@ -530,23 +529,12 @@ _consciousness = BackgroundConsciousness(
     event_queue=get_event_q(),
     owner_chat_id_fn=_get_owner_chat_id,
 )
-_fitness_consciousness = FitnessConsciousness(
-    drive_root=DRIVE_ROOT,
-    repo_dir=REPO_DIR,
-    event_queue=get_event_q(),
-    owner_chat_id_fn=_get_owner_chat_id,
-)
-
 def _apply_background_runtime_policy() -> None:
     st = load_state()
     if st.get("bg_consciousness_enabled"):
         _consciousness.start()
     else:
         _consciousness.stop()
-    if st.get("fitness_enabled"):
-        _fitness_consciousness.start()
-    else:
-        _fitness_consciousness.stop()
 
 _apply_background_runtime_policy()
 
@@ -631,31 +619,6 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         return True
     if lowered.startswith("/review"):
         queue_review_task(reason="owner:/review", force=True)
-        return True
-    if lowered.startswith("/fit"):
-        parts = lowered.split()
-        action = parts[1] if len(parts) > 1 else "next"
-        if action in ("start", "on", "1"):
-            st2 = load_state()
-            st2["fitness_enabled"] = True
-            save_state(st2)
-            send_with_budget(chat_id, f"🏋️ {_fitness_consciousness.start()}")
-            return True
-        if action in ("stop", "off", "0"):
-            st2 = load_state()
-            st2["fitness_enabled"] = False
-            st2["fitness_awaiting_reply"] = False
-            st2["fitness_next_message"] = False
-            save_state(st2)
-            send_with_budget(chat_id, f"🏋️ {_fitness_consciousness.stop()}")
-            return True
-        if not _fitness_consciousness.is_running:
-            send_with_budget(chat_id, "🏋️ Fitness daemon is OFF. Сначала дай /fit start.")
-            return True
-        st2 = load_state()
-        st2["fitness_next_message"] = True
-        save_state(st2)
-        send_with_budget(chat_id, "🏋️ Следующее сообщение уйдёт в fitness-контур.")
         return True
     if lowered.startswith("/evolve"):
         parts = lowered.split()
@@ -885,17 +848,7 @@ while True:
             continue
         if user_id != int(st.get("owner_id")):
             continue
-        fitness_route = None
-        if text and not text.strip().startswith("/"):
-            if bool(st.get("fitness_next_message")):
-                fitness_route = "fitness_next_message"
-            elif bool(st.get("fitness_awaiting_reply")):
-                if looks_like_fitness_reply(text):
-                    fitness_route = "fitness_awaiting_reply"
-                else:
-                    st["fitness_awaiting_reply"] = False
-                    save_state(st)
-        log_chat("in", chat_id, user_id, text, scope=("fitness" if fitness_route else "main"))
+        log_chat("in", chat_id, user_id, text, scope="main")
         st["last_owner_message_at"] = now_iso
         if bool(st.get("suppress_auto_resume_until_owner_message")) and owner_message_allows_auto_resume_release(text):
             st["suppress_auto_resume_until_owner_message"] = False
@@ -921,20 +874,6 @@ while True:
                 raise
             except Exception:
                 log.warning("Supervisor command handler error", exc_info=True)
-        elif fitness_route:
-            st = load_state()
-            st["fitness_awaiting_reply"] = False
-            st["fitness_next_message"] = False
-            save_state(st)
-            if not _fitness_consciousness.is_running:
-                send_with_budget(chat_id, "🏋️ Fitness daemon is OFF. Сначала дай /fit start.", chat_scope="fitness")
-                continue
-            try:
-                _fitness_consciousness.handle_owner_message(text)
-            except Exception:
-                log.warning("Fitness routing handler error", exc_info=True)
-                send_with_budget(chat_id, "⚠️ Fitness routing failed. Сообщение не обработано.", chat_scope="fitness")
-            continue
         # All other messages (and dual-path commands) → direct chat with Ouroboros
         if not text and not image_data:
             continue  # empty message, skip

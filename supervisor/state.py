@@ -162,11 +162,10 @@ def ensure_state_defaults(st: Dict[str, Any]) -> Dict[str, Any]:
     st.setdefault("codex_shadow_cost_total", 0.0)
     st.setdefault("copilot_shadow_cost_total", 0.0)
     st.setdefault("bg_consciousness_enabled", False)
-    st.setdefault("fitness_enabled", False)
-    st.setdefault("fitness_awaiting_reply", False)
-    st.setdefault("fitness_next_message", False)
     for legacy_key in ("approvals", "idle_cursor", "idle_stats", "last_idle_task_at",
-                        "last_auto_review_at", "last_review_task_id", "session_daily_snapshot"):
+                        "last_auto_review_at", "last_review_task_id", "session_daily_snapshot",
+                        "fitness_enabled", "fitness_awaiting_reply", "fitness_next_message",
+                        "fitness_last_question_at", "fitness_last_owner_message_at"):
         st.pop(legacy_key, None)
     return st
 
