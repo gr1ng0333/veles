@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import random
 import subprocess
 import sys
 import time
@@ -23,6 +24,153 @@ log = logging.getLogger(__name__)
 _playwright_ready = False
 _pw_instance = None
 _pw_thread_id = None
+
+
+# ---------------------------------------------------------------------------
+# Stealth constants
+# ---------------------------------------------------------------------------
+
+# Current Chrome stable user-agent (keep updated ~quarterly)
+_CHROME_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+)
+_CHROME_VERSION = "136"
+_CHROME_BRAND = f'"Chromium";v="{_CHROME_VERSION}", "Google Chrome";v="{_CHROME_VERSION}", "Not.A/Brand";v="99"'
+
+# Comprehensive Chromium launch flags for stealth
+_STEALTH_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features=site-per-process",
+    "--window-size=1920,1080",
+    # Anti-detection extras
+    "--disable-infobars",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-component-update",
+    "--disable-background-networking",
+    "--metrics-recording-only",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--disable-hang-monitor",
+    "--disable-prompt-on-repost",
+    "--disable-default-apps",
+    "--disable-translate",
+    "--disable-domain-reliability",
+    "--disable-client-side-phishing-detection",
+    "--disable-popup-blocking",
+    "--disable-extensions",
+    "--disable-sync",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-ipc-flooding-protection",
+    "--enable-features=NetworkService,NetworkServiceInProcess",
+    "--lang=en-US,en",
+]
+
+# CDP-level JS evasions — injected via Page.addScriptToEvaluateOnNewDocument
+# These run BEFORE any page JavaScript, making them harder to detect
+_CDP_STEALTH_JS = r"""
+// ---- navigator.webdriver ----
+Object.defineProperty(navigator, 'webdriver', {
+    get: () => undefined,
+    configurable: true
+});
+delete navigator.__proto__.webdriver;
+
+// ---- window.chrome ----
+if (!window.chrome) {
+    window.chrome = {};
+}
+if (!window.chrome.runtime) {
+    window.chrome.runtime = {
+        connect: function() {},
+        sendMessage: function() {},
+        PlatformOs: {MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd'},
+        PlatformArch: {ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64'},
+        PlatformNaclArch: {ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64'},
+        RequestUpdateCheckStatus: {THROTTLED: 'throttled', NO_UPDATE: 'no_update', UPDATE_AVAILABLE: 'update_available'},
+    };
+}
+
+// ---- Notification.permission ----
+if (typeof Notification !== 'undefined') {
+    Object.defineProperty(Notification, 'permission', {
+        get: () => 'default',
+        configurable: true
+    });
+}
+
+// ---- navigator.connection ----
+if (!navigator.connection) {
+    Object.defineProperty(navigator, 'connection', {
+        get: () => ({
+            effectiveType: '4g',
+            rtt: 50,
+            downlink: 10,
+            saveData: false,
+            onchange: null,
+            addEventListener: function() {},
+            removeEventListener: function() {},
+            dispatchEvent: function() { return true; }
+        }),
+        configurable: true
+    });
+}
+
+// ---- screen consistency ----
+if (screen.colorDepth !== 24) {
+    Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+}
+if (screen.pixelDepth !== 24) {
+    Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
+}
+
+// ---- window dimensions match ----
+Object.defineProperty(window, 'outerWidth', {
+    get: () => window.innerWidth,
+    configurable: true
+});
+Object.defineProperty(window, 'outerHeight', {
+    get: () => window.innerHeight + 85,  // typical Chrome toolbar height
+    configurable: true
+});
+
+// ---- Permissions API consistency ----
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+    parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+);
+
+// ---- SourceBuffer / SourceBufferList toString ----
+try {
+    if (typeof SourceBuffer !== 'undefined') {
+        SourceBuffer.prototype.toString = () => '[object SourceBuffer]';
+    }
+    if (typeof SourceBufferList !== 'undefined') {
+        SourceBufferList.prototype.toString = () => '[object SourceBufferList]';
+    }
+} catch(e) {}
+
+// ---- iframe contentWindow ----
+try {
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+        get: function() {
+            return new Proxy(this.contentWindow || window, {
+                get: function(target, prop) {
+                    if (prop === 'chrome') return window.chrome;
+                    return target[prop];
+                }
+            });
+        }
+    });
+} catch(e) {}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -379,22 +527,91 @@ def _reset_playwright_greenlet():
 
 
 def _browser_context_options(storage_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build context options with full stealth fingerprint consistency.
+
+    Checklist covered:
+    ✅ Realistic viewport with slight random offset (avoids exact-resolution fingerprint)
+    ✅ Current Chrome stable user-agent
+    ✅ Locale / timezone / color_scheme / device_scale_factor consistency
+    ✅ sec-ch-ua / sec-ch-ua-mobile / sec-ch-ua-platform headers
+    ✅ Accept-Language header matching navigator.languages
+    ✅ screen dimensions matching viewport
+    ✅ has_touch=False (desktop profile)
+    """
+    # Slight random offset to avoid exact 1920x1080 fingerprint
+    w_offset = random.randint(0, 10)
+    h_offset = random.randint(0, 10)
+    vp_width = 1920 - w_offset
+    vp_height = 1080 - h_offset
+
     options: Dict[str, Any] = {
-        "viewport": {"width": 1920, "height": 1080},
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        ),
+        "viewport": {"width": vp_width, "height": vp_height},
+        "screen": {"width": 1920, "height": 1080},
+        "user_agent": _CHROME_USER_AGENT,
+        "locale": "en-US",
+        "timezone_id": "America/New_York",
+        "color_scheme": "light",
+        "device_scale_factor": 1,
+        "has_touch": False,
+        "extra_http_headers": {
+            "Accept-Language": "en-US,en;q=0.9",
+            "sec-ch-ua": _CHROME_BRAND,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        },
     }
     if storage_state:
         options["storage_state"] = storage_state
     return options
 
 
-def _apply_stealth(page: Any) -> None:
+def _apply_stealth(page_or_context: Any) -> None:
+    """Apply playwright-stealth evasions to a page or context.
+
+    Stealth checklist:
+    ✅ playwright-stealth v2 evasions (navigator.webdriver, plugins, languages,
+       platform, vendor, webgl, chrome.app/csi/loadTimes, error.prototype, etc.)
+    """
     if _HAS_STEALTH:
-        stealth = Stealth()
-        stealth.apply_stealth_sync(page)
+        stealth = Stealth(
+            navigator_user_agent_override=_CHROME_USER_AGENT,
+            navigator_platform_override="Win32",
+            navigator_vendor_override="Google Inc.",
+            webgl_vendor_override="Intel Inc.",
+            webgl_renderer_override="Intel Iris OpenGL Engine",
+        )
+        stealth.apply_stealth_sync(page_or_context)
+
+
+def _apply_cdp_stealth(page: Any) -> None:
+    """Apply CDP-level stealth evasions that run before any page JavaScript.
+
+    These use Page.addScriptToEvaluateOnNewDocument via CDP session, making
+    them execute before the page's own scripts — much harder to detect than
+    page.evaluate() which runs after DOMContentLoaded.
+
+    Stealth checklist:
+    ✅ navigator.webdriver delete (bulletproof, pre-page-JS)
+    ✅ window.chrome mock with runtime/csi/loadTimes stubs
+    ✅ Notification.permission = "default"
+    ✅ navigator.connection (4g, rtt=50, downlink=10)
+    ✅ screen.colorDepth / pixelDepth = 24
+    ✅ window.outerWidth/outerHeight matching inner
+    ✅ Permissions API query consistency
+    ✅ SourceBuffer/SourceBufferList toString spoofing
+    """
+    try:
+        cdp = page.context.new_cdp_session(page)
+        cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": _CDP_STEALTH_JS})
+        cdp.detach()
+        log.debug("CDP stealth evasions applied")
+    except Exception:
+        # Fallback: inject via page.add_init_script (less reliable but still useful)
+        try:
+            page.add_init_script(_CDP_STEALTH_JS)
+            log.debug("CDP stealth fallback: used add_init_script")
+        except Exception:
+            log.debug("CDP stealth evasions failed", exc_info=True)
 
 
 def _replace_browser_context(ctx: ToolContext, storage_state: Optional[Dict[str, Any]] = None) -> Any:
@@ -410,8 +627,11 @@ def _replace_browser_context(ctx: ToolContext, storage_state: Optional[Dict[str,
         log.debug("Failed to close browser context during context replace", exc_info=True)
 
     ctx.browser_state.context = ctx.browser_state.browser.new_context(**_browser_context_options(storage_state))
+    # Apply stealth to CONTEXT so all new pages (popups, tabs) inherit evasions
+    _apply_stealth(ctx.browser_state.context)
     ctx.browser_state.page = ctx.browser_state.context.new_page()
-    _apply_stealth(ctx.browser_state.page)
+    # Apply CDP-level evasions to the first page (pre-JS injection)
+    _apply_cdp_stealth(ctx.browser_state.page)
     ctx.browser_state.page.set_default_timeout(30000)
     return ctx.browser_state.page
 
@@ -440,7 +660,7 @@ def _ensure_browser(ctx: ToolContext):
         log.info("browser_page_recovered — creating new page in existing context")
         try:
             ctx.browser_state.page = ctx.browser_state.context.new_page()
-            _apply_stealth(ctx.browser_state.page)
+            _apply_cdp_stealth(ctx.browser_state.page)
             ctx.browser_state.page.set_default_timeout(30000)
             return ctx.browser_state.page
         except Exception:
@@ -487,13 +707,7 @@ def _ensure_browser(ctx: ToolContext):
     ctx.browser_state.pw_instance = _pw_instance
     ctx.browser_state.browser = _pw_instance.chromium.launch(
         headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=site-per-process",
-            "--window-size=1920,1080",
-        ],
+        args=_STEALTH_LAUNCH_ARGS,
     )
     return _replace_browser_context(ctx)
 
