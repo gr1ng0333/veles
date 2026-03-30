@@ -663,17 +663,23 @@ def enqueue_evolution_task_if_needed() -> None:
             return
 
     # --- Transport-aware capacity gate ---
-    transport = _get_evolution_transport()
-    if transport == "copilot":
-        blocked, capacity_info = _evolution_blocked_by_copilot_capacity(now_iso)
+    # When copilot_capacity_bypass is set, skip quota check (use when counter is known broken)
+    if bool(st.get("copilot_capacity_bypass")):
+        blocked = False
+        capacity_info = {"bypass": True}
         capacity_reason = "copilot_capacity"
-    elif transport == "openrouter":
-        blocked = budget_remaining(st) < EVOLUTION_BUDGET_RESERVE
-        capacity_info = {"budget_remaining": budget_remaining(st)}
-        capacity_reason = "openrouter_budget"
     else:
-        blocked, capacity_info = _evolution_blocked_by_codex_capacity(now_iso)
-        capacity_reason = "codex_capacity"
+        transport = _get_evolution_transport()
+        if transport == "copilot":
+            blocked, capacity_info = _evolution_blocked_by_copilot_capacity(now_iso)
+            capacity_reason = "copilot_capacity"
+        elif transport == "openrouter":
+            blocked = budget_remaining(st) < EVOLUTION_BUDGET_RESERVE
+            capacity_info = {"budget_remaining": budget_remaining(st)}
+            capacity_reason = "openrouter_budget"
+        else:
+            blocked, capacity_info = _evolution_blocked_by_codex_capacity(now_iso)
+            capacity_reason = "codex_capacity"
 
     was_blocked = bool(st.get("evolution_capacity_blocked"))
     if blocked:
