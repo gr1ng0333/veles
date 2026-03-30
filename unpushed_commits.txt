@@ -1,0 +1,1 @@
+8722af3 feat: add copilot_capacity_bypass flag to skip broken quota gate
