@@ -1,0 +1,1 @@
+9ab4b24 v6.88.0: new tool budget_forecast — burn rate, runway, spend breakdown by category/model, daily history
