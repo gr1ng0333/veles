@@ -259,6 +259,15 @@ def call_copilot(
     """
     _accounts_impl._init_accounts()
 
+    # Opus: flatten multipart system messages to plain string.
+    # Copilot API silently drops multipart content for Opus (prompt_tokens → 13).
+    # Sonnet handles multipart correctly and benefits from prefix caching, so keep as-is.
+    if "opus" in model.lower():
+        for msg in messages:
+            if msg.get("role") == "system" and isinstance(msg.get("content"), list):
+                parts = [b["text"] for b in msg["content"] if isinstance(b, dict) and b.get("text")]
+                msg["content"] = "\n\n".join(parts)
+
     payload: Dict[str, Any] = {
         "model": model,
         "messages": messages,
