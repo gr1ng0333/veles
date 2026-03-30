@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 PROMPT_TOKEN_GUARD_THRESHOLD = 40000
 
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
+from ouroboros.copilot_proxy import CopilotServerCooldownError
 from ouroboros.llm import LLMClient, normalize_reasoning_effort, model_transport, reasoning_rank
 from ouroboros.model_modes import execution_style_for_active_mode, get_runtime_diagnostics, max_rounds_for_active_mode, tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
@@ -354,8 +355,10 @@ def _call_llm_with_fallback(
     primary_exc: Optional[Exception] = None
     transport = model_transport(active_model)
 
+    primary_force_user_initiator = bool(accumulated_usage.pop("_force_user_initiator", False))
+
     def _call_candidate(model: str, phase: str) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[Exception]]:
-        force_user_initiator = bool(accumulated_usage.pop("_force_user_initiator", False)) if phase == "primary" else False
+        force_user_initiator = primary_force_user_initiator if phase.startswith("primary") else False
         candidate_transport = model_transport(model)
         try:
             if candidate_transport == "copilot":
@@ -385,9 +388,33 @@ def _call_llm_with_fallback(
         except Exception as exc:
             return None, _consume_last_llm_error(accumulated_usage, model), exc
 
-    msg, primary_error_text, primary_exc = _call_candidate(active_model, "primary")
-    if msg is not None:
-        return msg
+    while True:
+        msg, primary_error_text, primary_exc = _call_candidate(active_model, "primary")
+        if msg is not None:
+            return msg
+        if transport == "copilot" and isinstance(primary_exc, CopilotServerCooldownError):
+            cooldown_sec = int(primary_exc.cooldown_sec or 60)
+            append_jsonl(drive_logs / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "copilot_server_cooldown",
+                "task_id": task_id,
+                "round": round_idx,
+                "model": active_model,
+                "interaction_id": interaction_id,
+                "account_idx": primary_exc.account_idx,
+                "status_code": primary_exc.status_code,
+                "cooldown_sec": cooldown_sec,
+            })
+            emit_progress(
+                f"⚠️ Copilot {active_model} вернул {primary_exc.status_code} на acc#{primary_exc.account_idx}. "
+                f"Ставлю cooldown на {cooldown_sec}с и повторяю этот же раунд."
+            )
+            time.sleep(cooldown_sec)
+            continue
+        primary_reason = f"timeout/error: {primary_exc or primary_error_text}" if (primary_exc or primary_error_text) else "empty response"
+        if primary_exc is None and not _is_transport_timeout_error(RuntimeError(primary_reason), transport):
+            return None
+        break
 
     fallback_candidates = _build_fallback_candidates(active_model, transport)
     if not fallback_candidates:

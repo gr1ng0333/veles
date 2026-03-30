@@ -36,6 +36,30 @@ _session_lock = threading.Lock()
 _active_sessions: Dict[str, Dict[str, Any]] = {}  # interaction_id → stats
 
 
+_SERVER_ERROR_COOLDOWN_SEC = 60
+
+
+class CopilotServerCooldownError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        account_idx: int,
+        status_code: int,
+        cooldown_sec: int,
+        interaction_id: Optional[str],
+        body_preview: str = "",
+    ) -> None:
+        self.account_idx = account_idx
+        self.status_code = status_code
+        self.cooldown_sec = cooldown_sec
+        self.interaction_id = interaction_id
+        self.body_preview = body_preview
+        super().__init__(
+            f"Copilot HTTP {status_code} on account #{account_idx}; cooldown {cooldown_sec}s; "
+            f"interaction={(interaction_id or '?')[:8]}"
+        )
+
+
 def _track_session(interaction_id: Optional[str], usage: Dict[str, Any], initiator: str) -> Dict[str, Any]:
     """Track cumulative stats for a Copilot agentic session. Returns session stats."""
     if not interaction_id:
@@ -210,19 +234,41 @@ def _call_with_rotation(
                     _accounts_impl._on_dead_account(idx)
                     break
                 if e.code in (500, 502, 503):
-                    if attempt < MAX_RETRIES:
-                        log.warning(
-                            "[copilot_api_error] Server error %d (account #%d, attempt %d)",
-                            e.code, idx, attempt + 1,
-                        )
-                        time.sleep(2 ** attempt)
-                        continue
-                    break
+                    body_preview = ""
+                    try:
+                        body_preview = e.read().decode(errors="replace")[:500]
+                    except Exception:
+                        pass
+                    _accounts_impl._on_server_error_cooldown(idx, _SERVER_ERROR_COOLDOWN_SEC)
+                    log.warning(
+                        "[copilot_api_error] HTTP %d (account #%d): server cooldown %ds, interaction=%s, body=%s",
+                        e.code, idx, _SERVER_ERROR_COOLDOWN_SEC, (interaction_id or "?")[:8], body_preview,
+                    )
+                    raise CopilotServerCooldownError(
+                        account_idx=idx,
+                        status_code=e.code,
+                        cooldown_sec=_SERVER_ERROR_COOLDOWN_SEC,
+                        interaction_id=interaction_id,
+                        body_preview=body_preview,
+                    )
                 body_preview = ""
                 try:
                     body_preview = e.read().decode(errors="replace")[:500]
                 except Exception:
                     pass
+                if e.code in (500, 502, 503):
+                    _accounts_impl._on_server_error_cooldown(idx, _SERVER_ERROR_COOLDOWN_SEC)
+                    log.warning(
+                        "[copilot_api_error] HTTP %d (account #%d): server cooldown %ds, interaction=%s, body=%s",
+                        e.code, idx, _SERVER_ERROR_COOLDOWN_SEC, (interaction_id or "?")[:8], body_preview,
+                    )
+                    raise CopilotServerCooldownError(
+                        account_idx=idx,
+                        status_code=e.code,
+                        cooldown_sec=_SERVER_ERROR_COOLDOWN_SEC,
+                        interaction_id=interaction_id,
+                        body_preview=body_preview,
+                    )
                 log.error("[copilot_api_error] HTTP %d: %s", e.code, body_preview)
                 raise
             except (urllib.error.URLError, OSError, TimeoutError) as e:
