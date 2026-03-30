@@ -310,6 +310,21 @@ def _on_rate_limit(account_idx: int, retry_after: int = 0) -> None:
             _save_accounts_state(_accounts)
 
 
+def _on_server_error_cooldown(account_idx: int, cooldown_sec: int = 60) -> None:
+    with _accounts_lock:
+        if account_idx < len(_accounts):
+            acc = _accounts[account_idx]
+            now = time.time()
+            target = now + max(0, int(cooldown_sec or 0))
+            if acc.get("cooldown_until", 0) < target:
+                acc["cooldown_until"] = target
+            log.warning(
+                "[copilot_account_cooldown] Account #%d server-error cooldown %ds",
+                account_idx, cooldown_sec,
+            )
+            _save_accounts_state(_accounts)
+
+
 def _on_dead_account(account_idx: int) -> None:
     with _accounts_lock:
         if account_idx < len(_accounts):
