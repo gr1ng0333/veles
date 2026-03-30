@@ -297,7 +297,7 @@ def run_probe(
                 tools=tools,
                 reasoning_effort=reasoning_effort,
                 max_tokens=max_tokens,
-                tool_choice="required",
+                tool_choice="auto",
                 interaction_id=interaction_id,
                 force_user_initiator=(round_idx == 1),
             )
