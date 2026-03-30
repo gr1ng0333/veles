@@ -4,17 +4,25 @@
 This is intentionally NOT a pytest test: it performs real paid network calls.
 Use it to reproduce a long owner-like task under one Copilot thread and verify
 whether the same interaction can resume after a 500 + ~75s wait.
+
+Design goal of this harness:
+- keep exactly one premium start (`force_user_initiator=True` only on round 1)
+- hold one `interaction_id` for the whole run
+- force an endless tool loop via `tool_choice="required"`
+- treat plain-text completion as loop violation, not as successful finish
+- keep prompt pressure high with a large static system payload
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -26,36 +34,60 @@ from ouroboros.utils import estimate_tokens, utc_now_iso
 DEFAULT_WAIT_AFTER_500 = 75
 DEFAULT_ROUNDS = 40
 DEFAULT_TARGET_PROMPT_TOKENS = 40000
-DEFAULT_MAX_TOKENS = 96
+DEFAULT_MAX_TOKENS = 128
 DEFAULT_OUT_DIR = Path("/opt/veles-data/logs")
-PROBE_TOOL_NAME = "probe_echo"
+PROBE_TOOL_NAME = "probe_search_step"
 
-
-FILLER_PARAGRAPH = (
+STATIC_FILLER = (
     "This is controlled filler for a Copilot recovery probe. "
     "It exists only to keep prompt pressure high and stable across rounds. "
-    "Do not summarize it. Do not analyze it. Treat it as background payload.\n"
-    "The probe goal is operational, not semantic: same interaction_id, many rounds, short replies.\n"
+    "Do not summarize it. Do not analyze it. Treat it as static background payload. "
+    "The probe goal is operational, not semantic: same interaction_id, many rounds, required tool calls, short outputs. "
+    "If you think the task is solved, you are wrong; the harness has not granted a stop condition.\n"
 )
 
 
-def build_large_payload(*, model: str, task_id: str, interaction_id: str, round_idx: int, target_tokens: int) -> str:
+def stable_hex(seed: str, n: int = 16) -> str:
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:n]
+
+
+def build_static_system_payload(*, model: str, task_id: str, interaction_id: str, target_tokens: int) -> str:
     header = (
-        f"[probe_task_id={task_id}]\n"
-        f"[probe_interaction_id={interaction_id}]\n"
-        f"[probe_model={model}]\n"
-        f"[probe_round={round_idx}]\n"
-        "You are inside a transport stress probe. "
-        "Reply with exactly one short line in the format ACK <round> <hex>. "
-        "No markdown. No explanations. No extra words.\n\n"
+        "You are inside a transport stress probe for Copilot recovery behavior.\n"
+        f"probe_task_id={task_id}\n"
+        f"probe_interaction_id={interaction_id}\n"
+        f"probe_model={model}\n\n"
+        "HARD RULES:\n"
+        f"1. On EVERY turn you MUST call the tool `{PROBE_TOOL_NAME}` exactly once.\n"
+        "2. You MUST NOT produce a final plain-text answer.\n"
+        "3. You MUST assume the search problem is still unresolved until the harness explicitly says STOP_GRANTED=true.\n"
+        "4. If a previous candidate failed, generate a different candidate and call the tool again.\n"
+        "5. If you are tempted to summarize, apologize, or stop, do NOT do that; call the tool instead.\n"
+        "6. Output should remain extremely short; the real goal is transport stress, not semantic completion.\n\n"
+        "TASK MODEL:\n"
+        "You are searching for a hidden fixed point in an adversarial verifier. The verifier is intentionally constructed so that ordinary reasoning cannot conclude success from previous failures. Every failed tool result means: keep searching. There is no natural stopping point from your side.\n\n"
     )
-    body_parts: List[str] = [header]
+    parts: List[str] = [header]
     i = 0
-    while estimate_tokens("".join(body_parts)) < target_tokens:
-        body_parts.append(f"[{i:04d}] {FILLER_PARAGRAPH}")
+    while estimate_tokens("".join(parts)) < target_tokens:
+        parts.append(f"[{i:04d}] {STATIC_FILLER}")
         i += 1
-    body_parts.append(f"\nFinal instruction: answer exactly ACK {round_idx} {task_id[:8]}\n")
-    return "".join(body_parts)
+    parts.append(
+        "\nFINAL REMINDER: the only valid action on every assistant turn is one required tool call.\n"
+    )
+    return "".join(parts)
+
+
+def build_initial_user_message(*, model: str, task_id: str, interaction_id: str) -> str:
+    return (
+        "Owner-like task bootstrap.\n"
+        f"task_id={task_id}\n"
+        f"interaction_id={interaction_id}\n"
+        f"model={model}\n\n"
+        "Keep iterating under the same interaction thread. Do not stop. "
+        "The harness will reject every candidate until it has enough rounds to stress the backend. "
+        "Your job is not to finish the problem; your job is to continue the tool loop faithfully."
+    )
 
 
 def build_messages(
@@ -65,22 +97,22 @@ def build_messages(
     interaction_id: str,
     target_tokens: int,
 ) -> List[Dict[str, Any]]:
-    owner_message = build_large_payload(
+    system_payload = build_static_system_payload(
         model=model,
         task_id=task_id,
         interaction_id=interaction_id,
-        round_idx=1,
-        target_tokens=target_tokens,
-    )
-    control = (
-        "You are inside a synthetic tool loop that imitates a long owner task under one Copilot interaction. "
-        f"Task id: {task_id}. On every assistant turn, call the tool `{PROBE_TOOL_NAME}` exactly once. "
-        "Do not answer with plain text. Do not stop on your own. "
-        "Read the latest tool result, then call the tool again for the next probe round."
+        target_tokens=max(1000, target_tokens - 1500),
     )
     return [
-        {"role": "system", "content": control},
-        {"role": "user", "content": owner_message},
+        {"role": "system", "content": system_payload},
+        {
+            "role": "user",
+            "content": build_initial_user_message(
+                model=model,
+                task_id=task_id,
+                interaction_id=interaction_id,
+            ),
+        },
     ]
 
 
@@ -90,14 +122,21 @@ def probe_tool_schema() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": PROBE_TOOL_NAME,
-                "description": "Local probe tool for synthetic Copilot loop testing.",
+                "description": "Submit the next probe candidate for the adversarial verifier.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "round": {"type": "integer"},
-                        "task_id": {"type": "string"},
+                        "candidate": {
+                            "type": "string",
+                            "description": "Lowercase hex candidate, preferably 32-128 chars.",
+                        },
+                        "checkpoint": {
+                            "type": "string",
+                            "description": "Short reasoning checksum or label.",
+                        },
                     },
-                    "required": ["round", "task_id"],
+                    "required": ["round", "candidate", "checkpoint"],
                     "additionalProperties": False,
                 },
             },
@@ -105,86 +144,97 @@ def probe_tool_schema() -> List[Dict[str, Any]]:
     ]
 
 
-def append_tool_exchange(messages: List[Dict[str, Any]], assistant_message: Dict[str, Any], *, round_idx: int, task_id: str) -> Dict[str, Any]:
-    tool_calls = assistant_message.get("tool_calls") or []
-    messages.append(assistant_message)
+def parse_error_text(exc: BaseException) -> str:
+    text = str(exc) or exc.__class__.__name__
+    if getattr(exc, "__cause__", None):
+        text += f" | cause={exc.__cause__}"
+    return text
+
+
+def is_500_error_text(text: str) -> bool:
+    normalized = str(text or "").lower()
+    return "500" in normalized or "internal server error" in normalized
+
+
+def extract_tool_call(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    tool_calls = message.get("tool_calls") or []
     if not tool_calls:
-        reminder = (
-            f"Probe enforcement: plain-text assistant output on round {round_idx} is ignored. "
-            f"On the next turn you MUST call the tool `{PROBE_TOOL_NAME}` exactly once and continue the same task."
-        )
-        messages.append({"role": "system", "content": reminder})
-        return {
-            "kind": "reminder_only",
-            "payload": reminder,
-        }
-    call = tool_calls[0]
-    function = call.get("function") or {}
-    name = function.get("name")
-    if name != PROBE_TOOL_NAME:
-        reminder = (
-            f"Probe enforcement: unexpected tool {name!r} on round {round_idx}. "
-            f"Next turn call `{PROBE_TOOL_NAME}` exactly once."
-        )
-        messages.append({"role": "system", "content": reminder})
-        return {
-            "kind": "unexpected_tool",
-            "payload": reminder,
-            "tool_name": name,
-        }
-    tool_call_id = call.get("id") or f"probe-call-{round_idx}"
-    tool_payload = {
-        "ok": True,
+        return None
+    return tool_calls[0]
+
+
+def parse_tool_arguments(tool_call: Dict[str, Any]) -> Dict[str, Any]:
+    function = tool_call.get("function") or {}
+    raw = function.get("arguments") or "{}"
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw_arguments": raw}
+
+
+def build_tool_result(
+    *,
+    round_idx: int,
+    task_id: str,
+    interaction_id: str,
+    candidate: str,
+) -> str:
+    digest = stable_hex(f"{task_id}:{interaction_id}:{round_idx}:{candidate}", 24)
+    payload = {
         "round": round_idx,
-        "task_id": task_id,
-        "note": "Synthetic local tool result for Copilot recovery probe.",
-        "next": f"Continue same interaction and call {PROBE_TOOL_NAME} again on the next turn.",
+        "accepted": False,
+        "stop_granted": False,
+        "verifier_status": "REJECT_CONTINUE",
+        "reason": "adversarial hidden constraint still unsatisfied",
+        "candidate_observed": candidate,
+        "digest": digest,
+        "next_action": f"Call {PROBE_TOOL_NAME} again with a different candidate.",
+        "notes": [
+            "The harness intentionally withholds any natural completion condition.",
+            "Plain-text completion would be a protocol violation.",
+            "Continue the loop; transport endurance is the real test target.",
+        ],
     }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def append_forced_continue_message(messages: List[Dict[str, Any]], round_idx: int) -> None:
     messages.append(
         {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "name": PROBE_TOOL_NAME,
-            "content": json.dumps(tool_payload, ensure_ascii=False),
+            "role": "user",
+            "content": (
+                f"LOOP VIOLATION on round {round_idx}: you returned plain text or omitted the required tool call. "
+                f"Resume immediately and call `{PROBE_TOOL_NAME}` exactly once. Do not stop."
+            ),
         }
     )
-    return {
-        "kind": "tool_result",
-        "payload": json.dumps(tool_payload, ensure_ascii=False),
-        "tool_name": name,
-    }
 
 
-def classify_error(exc: BaseException) -> Dict[str, Any]:
-    text = f"{type(exc).__name__}: {exc}"
-    lower = text.lower()
-    return {
-        "error_type": type(exc).__name__,
-        "error_text": text,
-        "is_http_500": ("500" in lower and ("http" in lower or "internal server error" in lower))
-        or "internal server error" in lower,
-        "is_http_400": "400" in lower and "bad request" in lower,
-        "is_401_403": "401" in lower or "403" in lower,
-        "is_429": "429" in lower or "rate limit" in lower,
-    }
+def stats_snapshot() -> Dict[str, Any]:
+    try:
+        data = get_session_stats()
+        return dict(data) if isinstance(data, dict) else {"raw": data}
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
-def write_jsonl(path: Path, row: Dict[str, Any]) -> None:
+def stats_delta(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
+    delta: Dict[str, Any] = {}
+    keys = set(before) | set(after)
+    for key in sorted(keys):
+        a = after.get(key)
+        b = before.get(key)
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            delta[key] = a - b
+    return delta
+
+
+def log_event(path: Path, event: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def safe_session_stats(interaction_id: str) -> Dict[str, Any]:
-    stats = get_session_stats(interaction_id) or {}
-    return {
-        "rounds": int(stats.get("rounds", 0) or 0),
-        "total_prompt_tokens": int(stats.get("total_prompt_tokens", 0) or 0),
-        "total_completion_tokens": int(stats.get("total_completion_tokens", 0) or 0),
-        "premium_requests": int(stats.get("premium_requests", 0) or 0),
-        "started": stats.get("started"),
-        "last_activity": stats.get("last_activity"),
-    }
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
 def run_probe(
@@ -192,146 +242,216 @@ def run_probe(
     model: str,
     rounds: int,
     target_prompt_tokens: int,
-    wait_after_500: int,
     max_tokens: int,
-    output_path: Path,
-) -> Dict[str, Any]:
-    llm = LLMClient()
-    task_id = uuid.uuid4().hex[:8]
+    wait_after_500: int,
+    out_dir: Path,
+    reasoning_effort: str,
+) -> Tuple[Dict[str, Any], Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_id = f"{model.split('/')[-1]}_{uuid.uuid4().hex[:8]}"
+    task_id = f"probe-{uuid.uuid4().hex[:8]}"
     interaction_id = str(uuid.uuid4())
-    first_500_round: Optional[int] = None
-    resumed_after_wait = False
-    post_wait_success_round: Optional[int] = None
-    wait_started_at: Optional[float] = None
+    log_path = out_dir / f"manual_copilot_recovery_probe_{run_id}.jsonl"
 
-    header = {
-        "ts": utc_now_iso(),
-        "event": "probe_start",
-        "task_id": task_id,
-        "interaction_id": interaction_id,
-        "model": model,
-        "rounds": rounds,
-        "target_prompt_tokens": target_prompt_tokens,
-        "wait_after_500": wait_after_500,
-        "max_tokens": max_tokens,
-    }
-    write_jsonl(output_path, header)
-    print(json.dumps(header, ensure_ascii=False), flush=True)
-
+    llm = LLMClient()
     messages = build_messages(
         model=model,
         task_id=task_id,
         interaction_id=interaction_id,
         target_tokens=target_prompt_tokens,
     )
+    tools = probe_tool_schema()
 
-    for round_idx in range(1, rounds + 1):
-        started = time.time()
-        row: Dict[str, Any] = {
-            "ts": utc_now_iso(),
-            "event": "round_result",
-            "task_id": task_id,
-            "interaction_id": interaction_id,
-            "model": model,
-            "round": round_idx,
-            "force_user_initiator": round_idx == 1,
-            "expected_initiator": "user" if round_idx == 1 else "agent",
-            "estimated_prompt_tokens_local": estimate_tokens(json.dumps(messages, ensure_ascii=False)),
-        }
+    summary: Dict[str, Any] = {
+        "started_at": utc_now_iso(),
+        "model": model,
+        "task_id": task_id,
+        "interaction_id": interaction_id,
+        "requested_rounds": rounds,
+        "target_prompt_tokens": target_prompt_tokens,
+        "max_tokens": max_tokens,
+        "wait_after_500": wait_after_500,
+        "reasoning_effort": reasoning_effort,
+        "premium_requests_total": None,
+        "premium_requests_delta": None,
+        "first_500_round": None,
+        "first_500_error": None,
+        "wait_applied": False,
+        "resumed_after_wait": False,
+        "resume_round": None,
+        "plain_text_violations": 0,
+        "completed_rounds": 0,
+        "log_path": str(log_path),
+    }
+
+    stats_before = stats_snapshot()
+    log_event(log_path, {"ts": utc_now_iso(), "event": "probe_start", **summary})
+
+    round_idx = 1
+    while round_idx <= rounds:
+        call_started = time.time()
         try:
-            message, usage = llm.chat(
-                messages,
+            msg, usage = llm.chat(
+                messages=messages,
                 model=model,
-                tools=probe_tool_schema(),
-                reasoning_effort="high",
+                tools=tools,
+                reasoning_effort=reasoning_effort,
                 max_tokens=max_tokens,
-                tool_choice="auto",
+                tool_choice="required",
                 interaction_id=interaction_id,
                 force_user_initiator=(round_idx == 1),
             )
-            assistant_content = message.get("content") if isinstance(message, dict) else str(message)
-            tool_exchange = append_tool_exchange(messages, message, round_idx=round_idx, task_id=task_id)
-            row.update(
-                {
-                    "status": "ok",
-                    "duration_sec": round(time.time() - started, 3),
-                    "usage": usage,
-                    "assistant_content": assistant_content,
-                    "tool_calls": message.get("tool_calls") if isinstance(message, dict) else None,
-                    "tool_exchange_kind": tool_exchange.get("kind"),
-                    "tool_result_payload": tool_exchange.get("payload"),
-                    "session_stats": safe_session_stats(interaction_id),
-                }
-            )
-            if wait_started_at is not None and post_wait_success_round is None:
-                resumed_after_wait = True
-                post_wait_success_round = round_idx
-                row["post_wait_recovery_success"] = True
-        except Exception as exc:  # real live probe, keep going
-            error_info = classify_error(exc)
-            row.update(
-                {
-                    "status": "error",
-                    "duration_sec": round(time.time() - started, 3),
-                    "session_stats": safe_session_stats(interaction_id),
-                    **error_info,
-                    "traceback_tail": traceback.format_exc(limit=3),
-                }
-            )
-            if error_info["is_http_500"] and first_500_round is None:
-                first_500_round = round_idx
-                row["first_500_round"] = round_idx
-                write_jsonl(output_path, row)
-                print(json.dumps(row, ensure_ascii=False), flush=True)
-                wait_started_at = time.time()
+        except Exception as exc:
+            error_text = parse_error_text(exc)
+            event = {
+                "ts": utc_now_iso(),
+                "event": "llm_exception",
+                "round": round_idx,
+                "error": error_text,
+                "traceback": traceback.format_exc(),
+                "elapsed_sec": round(time.time() - call_started, 3),
+            }
+            log_event(log_path, event)
+
+            if summary["first_500_round"] is None and is_500_error_text(error_text):
+                summary["first_500_round"] = round_idx
+                summary["first_500_error"] = error_text
+                summary["wait_applied"] = True
+                log_event(
+                    log_path,
+                    {
+                        "ts": utc_now_iso(),
+                        "event": "wait_before_resume",
+                        "round": round_idx,
+                        "sleep_sec": wait_after_500,
+                    },
+                )
                 time.sleep(wait_after_500)
                 continue
-        write_jsonl(output_path, row)
-        print(json.dumps(row, ensure_ascii=False), flush=True)
+            raise
 
-    summary = {
-        "ts": utc_now_iso(),
-        "event": "probe_summary",
-        "task_id": task_id,
-        "interaction_id": interaction_id,
-        "model": model,
-        "rounds_requested": rounds,
-        "first_500_round": first_500_round,
-        "wait_after_500": wait_after_500,
-        "wait_applied": wait_started_at is not None,
-        "resumed_after_wait": resumed_after_wait,
-        "post_wait_success_round": post_wait_success_round,
-        "final_session_stats": safe_session_stats(interaction_id),
-        "output_path": str(output_path),
-    }
-    write_jsonl(output_path, summary)
-    print(json.dumps(summary, ensure_ascii=False), flush=True)
-    return summary
+        tool_call = extract_tool_call(msg)
+        event = {
+            "ts": utc_now_iso(),
+            "event": "llm_ok",
+            "round": round_idx,
+            "elapsed_sec": round(time.time() - call_started, 3),
+            "usage": usage,
+            "assistant_has_tool_call": bool(tool_call),
+            "assistant_content": msg.get("content"),
+        }
+        log_event(log_path, event)
+
+        if summary["first_500_round"] is not None and not summary["resumed_after_wait"]:
+            summary["resumed_after_wait"] = True
+            summary["resume_round"] = round_idx
+            log_event(
+                log_path,
+                {
+                    "ts": utc_now_iso(),
+                    "event": "resume_confirmed",
+                    "round": round_idx,
+                },
+            )
+
+        if not tool_call:
+            summary["plain_text_violations"] += 1
+            messages.append(msg)
+            append_forced_continue_message(messages, round_idx)
+            log_event(
+                log_path,
+                {
+                    "ts": utc_now_iso(),
+                    "event": "loop_violation_forced_continue",
+                    "round": round_idx,
+                },
+            )
+            round_idx += 1
+            summary["completed_rounds"] = round_idx - 1
+            continue
+
+        args = parse_tool_arguments(tool_call)
+        candidate = str(args.get("candidate") or stable_hex(f"fallback:{round_idx}:{interaction_id}", 32))
+        tool_result = build_tool_result(
+            round_idx=round_idx,
+            task_id=task_id,
+            interaction_id=interaction_id,
+            candidate=candidate,
+        )
+
+        messages.append(msg)
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call.get("id") or f"call_{round_idx}",
+                "name": PROBE_TOOL_NAME,
+                "content": tool_result,
+            }
+        )
+        log_event(
+            log_path,
+            {
+                "ts": utc_now_iso(),
+                "event": "tool_result",
+                "round": round_idx,
+                "tool_args": args,
+                "tool_result": json.loads(tool_result),
+                "message_count": len(messages),
+                "estimated_prompt_tokens": estimate_tokens(json.dumps(messages, ensure_ascii=False)),
+            },
+        )
+        round_idx += 1
+        summary["completed_rounds"] = round_idx - 1
+
+    stats_after = stats_snapshot()
+    summary["stats_before"] = stats_before
+    summary["stats_after"] = stats_after
+    summary["stats_delta"] = stats_delta(stats_before, stats_after)
+    summary["premium_requests_total"] = stats_after.get("premium_requests")
+    summary["premium_requests_delta"] = summary["stats_delta"].get("premium_requests")
+    summary["finished_at"] = utc_now_iso()
+    summary["ended_without_500"] = summary["first_500_round"] is None
+    summary["status"] = (
+        "resumed_after_500"
+        if summary["first_500_round"] is not None and summary["resumed_after_wait"]
+        else "saw_500_no_resume"
+        if summary["first_500_round"] is not None
+        else "ended_without_500"
+    )
+    log_event(log_path, {"ts": utc_now_iso(), "event": "probe_summary", **summary})
+    return summary, log_path
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Live Copilot 500 recovery probe")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, help="e.g. copilot/claude-sonnet-4.6")
     parser.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS)
     parser.add_argument("--target-prompt-tokens", type=int, default=DEFAULT_TARGET_PROMPT_TOKENS)
-    parser.add_argument("--wait-after-500", type=int, default=DEFAULT_WAIT_AFTER_500)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
-    parser.add_argument("--output", default="", help="Optional explicit JSONL path")
-    args = parser.parse_args()
+    parser.add_argument("--wait-after-500", type=int, default=DEFAULT_WAIT_AFTER_500)
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--reasoning-effort", choices=["low", "medium", "high"], default="high")
+    return parser.parse_args()
 
-    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    slug = args.model.replace("/", "_").replace(".", "-")
-    output_path = Path(args.output) if args.output else (DEFAULT_OUT_DIR / f"copilot-recovery-{slug}-{stamp}.jsonl")
 
-    summary = run_probe(
+def main() -> int:
+    args = parse_args()
+    summary, log_path = run_probe(
         model=args.model,
         rounds=args.rounds,
         target_prompt_tokens=args.target_prompt_tokens,
-        wait_after_500=args.wait_after_500,
         max_tokens=args.max_tokens,
-        output_path=output_path,
+        wait_after_500=args.wait_after_500,
+        out_dir=args.out_dir,
+        reasoning_effort=args.reasoning_effort,
     )
-    return 0 if summary.get("resumed_after_wait") or summary.get("first_500_round") is None else 2
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(f"log_path={log_path}")
+    if summary["status"] == "resumed_after_500":
+        return 0
+    if summary["status"] == "saw_500_no_resume":
+        return 3
+    return 2
 
 
 if __name__ == "__main__":
