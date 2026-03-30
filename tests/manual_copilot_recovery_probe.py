@@ -28,6 +28,7 @@ DEFAULT_ROUNDS = 40
 DEFAULT_TARGET_PROMPT_TOKENS = 40000
 DEFAULT_MAX_TOKENS = 96
 DEFAULT_OUT_DIR = Path("/opt/veles-data/logs")
+PROBE_TOOL_NAME = "probe_echo"
 
 
 FILLER_PARAGRAPH = (
@@ -62,10 +63,8 @@ def build_messages(
     model: str,
     task_id: str,
     interaction_id: str,
-    round_idx: int,
     target_tokens: int,
-    previous_ack: Optional[str],
-) -> List[Dict[str, str]]:
+) -> List[Dict[str, Any]]:
     owner_message = build_large_payload(
         model=model,
         task_id=task_id,
@@ -74,16 +73,65 @@ def build_messages(
         target_tokens=target_tokens,
     )
     control = (
-        "You are continuing the SAME owner task under the SAME Copilot interaction. "
-        f"Current probe round is {round_idx}. Return exactly: ACK {round_idx} {task_id[:8]}"
+        "You are inside a synthetic tool loop that imitates a long owner task under one Copilot interaction. "
+        f"Task id: {task_id}. On every assistant turn, call the tool `{PROBE_TOOL_NAME}` exactly once. "
+        "Do not answer with plain text. Do not stop on your own. "
+        "Read the latest tool result, then call the tool again for the next probe round."
     )
-    messages: List[Dict[str, str]] = [
+    return [
         {"role": "system", "content": control},
         {"role": "user", "content": owner_message},
     ]
-    if previous_ack is not None:
-        messages.append({"role": "assistant", "content": previous_ack})
-    return messages
+
+
+def probe_tool_schema() -> List[Dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": PROBE_TOOL_NAME,
+                "description": "Local probe tool for synthetic Copilot loop testing.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "round": {"type": "integer"},
+                        "task_id": {"type": "string"},
+                    },
+                    "required": ["round", "task_id"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+
+
+def append_tool_exchange(messages: List[Dict[str, Any]], assistant_message: Dict[str, Any], *, round_idx: int, task_id: str) -> str:
+    tool_calls = assistant_message.get("tool_calls") or []
+    if not tool_calls:
+        raise RuntimeError(f"Assistant returned no tool_calls on round {round_idx}")
+    call = tool_calls[0]
+    function = call.get("function") or {}
+    name = function.get("name")
+    if name != PROBE_TOOL_NAME:
+        raise RuntimeError(f"Unexpected tool name on round {round_idx}: {name!r}")
+    messages.append(assistant_message)
+    tool_call_id = call.get("id") or f"probe-call-{round_idx}"
+    tool_payload = {
+        "ok": True,
+        "round": round_idx,
+        "task_id": task_id,
+        "note": "Synthetic local tool result for Copilot recovery probe.",
+        "next": f"Continue same interaction and call {PROBE_TOOL_NAME} again on the next turn.",
+    }
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": PROBE_TOOL_NAME,
+            "content": json.dumps(tool_payload, ensure_ascii=False),
+        }
+    )
+    return json.dumps(tool_payload, ensure_ascii=False)
 
 
 def classify_error(exc: BaseException) -> Dict[str, Any]:
@@ -149,17 +197,14 @@ def run_probe(
     write_jsonl(output_path, header)
     print(json.dumps(header, ensure_ascii=False), flush=True)
 
-    previous_ack: Optional[str] = None
+    messages = build_messages(
+        model=model,
+        task_id=task_id,
+        interaction_id=interaction_id,
+        target_tokens=target_prompt_tokens,
+    )
 
     for round_idx in range(1, rounds + 1):
-        messages = build_messages(
-            model=model,
-            task_id=task_id,
-            interaction_id=interaction_id,
-            round_idx=round_idx,
-            target_tokens=target_prompt_tokens,
-            previous_ack=previous_ack,
-        )
         started = time.time()
         row: Dict[str, Any] = {
             "ts": utc_now_iso(),
@@ -176,21 +221,23 @@ def run_probe(
             message, usage = llm.chat(
                 messages,
                 model=model,
-                tools=None,
+                tools=probe_tool_schema(),
                 reasoning_effort="high",
                 max_tokens=max_tokens,
-                tool_choice=None,
+                tool_choice="auto",
                 interaction_id=interaction_id,
                 force_user_initiator=(round_idx == 1),
             )
             assistant_content = message.get("content") if isinstance(message, dict) else str(message)
-            previous_ack = str(assistant_content)
+            tool_result_payload = append_tool_exchange(messages, message, round_idx=round_idx, task_id=task_id)
             row.update(
                 {
                     "status": "ok",
                     "duration_sec": round(time.time() - started, 3),
                     "usage": usage,
                     "assistant_content": assistant_content,
+                    "tool_calls": message.get("tool_calls") if isinstance(message, dict) else None,
+                    "tool_result_payload": tool_result_payload,
                     "session_stats": safe_session_stats(interaction_id),
                 }
             )
