@@ -105,16 +105,33 @@ def probe_tool_schema() -> List[Dict[str, Any]]:
     ]
 
 
-def append_tool_exchange(messages: List[Dict[str, Any]], assistant_message: Dict[str, Any], *, round_idx: int, task_id: str) -> str:
+def append_tool_exchange(messages: List[Dict[str, Any]], assistant_message: Dict[str, Any], *, round_idx: int, task_id: str) -> Dict[str, Any]:
     tool_calls = assistant_message.get("tool_calls") or []
+    messages.append(assistant_message)
     if not tool_calls:
-        raise RuntimeError(f"Assistant returned no tool_calls on round {round_idx}")
+        reminder = (
+            f"Probe enforcement: plain-text assistant output on round {round_idx} is ignored. "
+            f"On the next turn you MUST call the tool `{PROBE_TOOL_NAME}` exactly once and continue the same task."
+        )
+        messages.append({"role": "system", "content": reminder})
+        return {
+            "kind": "reminder_only",
+            "payload": reminder,
+        }
     call = tool_calls[0]
     function = call.get("function") or {}
     name = function.get("name")
     if name != PROBE_TOOL_NAME:
-        raise RuntimeError(f"Unexpected tool name on round {round_idx}: {name!r}")
-    messages.append(assistant_message)
+        reminder = (
+            f"Probe enforcement: unexpected tool {name!r} on round {round_idx}. "
+            f"Next turn call `{PROBE_TOOL_NAME}` exactly once."
+        )
+        messages.append({"role": "system", "content": reminder})
+        return {
+            "kind": "unexpected_tool",
+            "payload": reminder,
+            "tool_name": name,
+        }
     tool_call_id = call.get("id") or f"probe-call-{round_idx}"
     tool_payload = {
         "ok": True,
@@ -131,7 +148,11 @@ def append_tool_exchange(messages: List[Dict[str, Any]], assistant_message: Dict
             "content": json.dumps(tool_payload, ensure_ascii=False),
         }
     )
-    return json.dumps(tool_payload, ensure_ascii=False)
+    return {
+        "kind": "tool_result",
+        "payload": json.dumps(tool_payload, ensure_ascii=False),
+        "tool_name": name,
+    }
 
 
 def classify_error(exc: BaseException) -> Dict[str, Any]:
@@ -224,12 +245,12 @@ def run_probe(
                 tools=probe_tool_schema(),
                 reasoning_effort="high",
                 max_tokens=max_tokens,
-                tool_choice="required",
+                tool_choice="auto",
                 interaction_id=interaction_id,
                 force_user_initiator=(round_idx == 1),
             )
             assistant_content = message.get("content") if isinstance(message, dict) else str(message)
-            tool_result_payload = append_tool_exchange(messages, message, round_idx=round_idx, task_id=task_id)
+            tool_exchange = append_tool_exchange(messages, message, round_idx=round_idx, task_id=task_id)
             row.update(
                 {
                     "status": "ok",
@@ -237,7 +258,8 @@ def run_probe(
                     "usage": usage,
                     "assistant_content": assistant_content,
                     "tool_calls": message.get("tool_calls") if isinstance(message, dict) else None,
-                    "tool_result_payload": tool_result_payload,
+                    "tool_exchange_kind": tool_exchange.get("kind"),
+                    "tool_result_payload": tool_exchange.get("payload"),
                     "session_stats": safe_session_stats(interaction_id),
                 }
             )
