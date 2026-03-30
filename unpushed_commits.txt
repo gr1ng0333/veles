@@ -1,0 +1,2 @@
+3318f47 feat: add context_inspect tool — per-section token breakdown of LLM context
+9ab4b24 v6.88.0: new tool budget_forecast — burn rate, runway, spend breakdown by category/model, daily history
