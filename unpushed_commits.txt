@@ -1,0 +1,1 @@
+6f7b357 fix: copilot_capacity_bypass actually skips capacity gate in queue.py
