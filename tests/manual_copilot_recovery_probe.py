@@ -57,31 +57,33 @@ def build_large_payload(*, model: str, task_id: str, interaction_id: str, round_
     return "".join(body_parts)
 
 
-def build_messages(*, model: str, task_id: str, interaction_id: str, round_idx: int, target_tokens: int) -> List[Dict[str, str]]:
+def build_messages(
+    *,
+    model: str,
+    task_id: str,
+    interaction_id: str,
+    round_idx: int,
+    target_tokens: int,
+    previous_ack: Optional[str],
+) -> List[Dict[str, str]]:
     owner_message = build_large_payload(
         model=model,
         task_id=task_id,
         interaction_id=interaction_id,
-        round_idx=round_idx,
+        round_idx=1,
         target_tokens=target_tokens,
     )
-    return [
-        {
-            "role": "user",
-            "content": owner_message,
-        },
-        {
-            "role": "assistant",
-            "content": "ACK bootstrap 00000000",
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Continue the same owner task under the same interaction. Round={round_idx}. "
-                f"Return exactly: ACK {round_idx} {task_id[:8]}"
-            ),
-        },
+    control = (
+        "You are continuing the SAME owner task under the SAME Copilot interaction. "
+        f"Current probe round is {round_idx}. Return exactly: ACK {round_idx} {task_id[:8]}"
+    )
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": control},
+        {"role": "user", "content": owner_message},
     ]
+    if previous_ack is not None:
+        messages.append({"role": "assistant", "content": previous_ack})
+    return messages
 
 
 def classify_error(exc: BaseException) -> Dict[str, Any]:
@@ -147,6 +149,8 @@ def run_probe(
     write_jsonl(output_path, header)
     print(json.dumps(header, ensure_ascii=False), flush=True)
 
+    previous_ack: Optional[str] = None
+
     for round_idx in range(1, rounds + 1):
         messages = build_messages(
             model=model,
@@ -154,6 +158,7 @@ def run_probe(
             interaction_id=interaction_id,
             round_idx=round_idx,
             target_tokens=target_prompt_tokens,
+            previous_ack=previous_ack,
         )
         started = time.time()
         row: Dict[str, Any] = {
@@ -164,6 +169,7 @@ def run_probe(
             "model": model,
             "round": round_idx,
             "force_user_initiator": round_idx == 1,
+            "expected_initiator": "user" if round_idx == 1 else "agent",
             "estimated_prompt_tokens_local": estimate_tokens(json.dumps(messages, ensure_ascii=False)),
         }
         try:
@@ -177,12 +183,14 @@ def run_probe(
                 interaction_id=interaction_id,
                 force_user_initiator=(round_idx == 1),
             )
+            assistant_content = message.get("content") if isinstance(message, dict) else str(message)
+            previous_ack = str(assistant_content)
             row.update(
                 {
                     "status": "ok",
                     "duration_sec": round(time.time() - started, 3),
                     "usage": usage,
-                    "assistant_content": (message.get("content") if isinstance(message, dict) else str(message)),
+                    "assistant_content": assistant_content,
                     "session_stats": safe_session_stats(interaction_id),
                 }
             )
