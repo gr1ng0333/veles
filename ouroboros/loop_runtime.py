@@ -9,6 +9,7 @@ import os
 import pathlib
 import queue
 import time
+import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 PROMPT_TOKEN_GUARD_THRESHOLD = 40000
