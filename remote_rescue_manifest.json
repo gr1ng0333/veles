@@ -1,0 +1,9 @@
+{
+  "task_id": "362973ba",
+  "reason": "task_completed_without_push",
+  "ref": "refs/veles-rescue/362973ba/20260331T190607Z",
+  "base_branch": "veles",
+  "source_head_sha": "4e54439e2ec341d7ef083f9582616e6a274f21d4",
+  "snapshot_path": "/opt/veles-data/archive/rescue/20260331_190607_f63e7cb1",
+  "generated_at": "2026-03-31T19:06:07.295403+00:00"
+}
