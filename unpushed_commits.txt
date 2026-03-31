@@ -1,0 +1,1 @@
+020307f v7.1.1: Fix Copilot hard round limit — no 400 on task finalization
