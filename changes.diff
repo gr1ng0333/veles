@@ -1,0 +1,189 @@
+diff --git a/VERSION b/VERSION
+index ef09838..a8a1887 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-7.1.1
+\ No newline at end of file
++7.1.2
+diff --git a/ouroboros/consciousness.py b/ouroboros/consciousness.py
+index 8bb6e2f..c6c9aba 100644
+--- a/ouroboros/consciousness.py
++++ b/ouroboros/consciousness.py
+@@ -313,6 +313,9 @@ class BackgroundConsciousness:
+ 
+         if not unchecked:
+             # All checked \u2014 start new cycle
++            alerted_keys = [k for k in self._audit_state if k.startswith("alerted_")]
++            for k in alerted_keys:
++                del self._audit_state[k]
+             self._audit_state["checked"] = {}
+             self._audit_state["cycle_completed_at"] = utc_now_iso()
+             _save_audit_state(self._audit_state_path, self._audit_state)
+@@ -391,6 +394,9 @@ class BackgroundConsciousness:
+                 "OK" if import_result == "OK" else "FAIL",
+             )
+ 
++            # Alert if import failed
++            self._maybe_alert_import_failure(module_name, import_result)
++
+             # Mark as checked
+             self._audit_state.setdefault("checked", {})[module_name] = {
+                 "at": utc_now_iso(),
+@@ -427,6 +433,51 @@ class BackgroundConsciousness:
+     # Helpers
+     # -------------------------------------------------------------------
+ 
++
++
++    def _maybe_alert_import_failure(self, module_name: str, import_result: str) -> None:
++        """Send one Telegram alert per module per audit cycle when import fails."""
++        if import_result == 'OK':
++            return
++        if self._event_queue is None:
++            return
++        chat_id = self._owner_chat_id_fn()
++        if chat_id is None:
++            return
++        alerted_key = f"alerted_{module_name}"
++        if self._audit_state.get(alerted_key):
++            return
++        self._audit_state[alerted_key] = True
++        _save_audit_state(self._audit_state_path, self._audit_state)
++        err_short = import_result[:300].strip()
++        nl = chr(10)
++        text = nl.join([
++            "\U0001f6a8 Auditor: import failed",
++            f"<code>{module_name}</code>",
++            f"<code>{err_short}</code>",
++            "",
++            "Module will crash at runtime. Check /healthcheck for details.",
++        ])
++        try:
++            self._event_queue.put({
++                "type": "send_message",
++                "chat_id": chat_id,
++                "text": text,
++                "format": "html",
++                "is_progress": False,
++                "chat_scope": "main",
++            })
++            append_jsonl(self._drive_root / "logs" / "events.jsonl", {
++                "ts": utc_now_iso(),
++                "type": "consciousness_alert",
++                "module": module_name,
++                "reason": "import_failed",
++                "error": import_result[:200],
++            })
++        except Exception as e:
++            log.warning("Failed to send consciousness alert: %s", e)
++
++
+     def _load_bg_prompt(self) -> str:
+         prompt_path = self._repo_dir / "prompts" / "CONSCIOUSNESS.md"
+         if prompt_path.exists():
+diff --git a/ouroboros/copilot_proxy.py b/ouroboros/copilot_proxy.py
+index d6456a5..1eec9ff 100644
+--- a/ouroboros/copilot_proxy.py
++++ b/ouroboros/copilot_proxy.py
+@@ -60,6 +60,26 @@ class CopilotServerCooldownError(RuntimeError):
+         )
+ 
+ 
++
++
++class CopilotContextLengthError(RuntimeError):
++    """Raised when Copilot returns HTTP 400 due to context length exceeded."""
++    def __init__(
++        self,
++        *,
++        account_idx: int,
++        interaction_id: Optional[str],
++        body_preview: str = "",
++    ) -> None:
++        self.account_idx = account_idx
++        self.interaction_id = interaction_id
++        self.body_preview = body_preview
++        super().__init__(
++            f"Copilot context length exceeded on account #{account_idx}; "
++            f"interaction={(interaction_id or '?')[:8]}"
++        )
++
++
+ def _track_session(interaction_id: Optional[str], usage: Dict[str, Any], initiator: str) -> Dict[str, Any]:
+     """Track cumulative stats for a Copilot agentic session. Returns session stats."""
+     if not interaction_id:
+@@ -256,20 +276,17 @@ def _call_with_rotation(
+                     body_preview = e.read().decode(errors="replace")[:500]
+                 except Exception:
+                     pass
+-                if e.code in (500, 502, 503):
+-                    _accounts_impl._on_server_error_cooldown(idx, _SERVER_ERROR_COOLDOWN_SEC)
++                if e.code == 400 and "context_length_exceeded" in body_preview.lower():
+                     log.warning(
+-                        "[copilot_api_error] HTTP %d (account #%d): server cooldown %ds, interaction=%s, body=%s",
+-                        e.code, idx, _SERVER_ERROR_COOLDOWN_SEC, (interaction_id or "?")[:8], body_preview,
++                        "[copilot_api_error] HTTP 400 context_length_exceeded (account #%d) interaction=%s",
++                        idx, (interaction_id or "?")[:8],
+                     )
+-                    raise CopilotServerCooldownError(
++                    raise CopilotContextLengthError(
+                         account_idx=idx,
+-                        status_code=e.code,
+-                        cooldown_sec=_SERVER_ERROR_COOLDOWN_SEC,
+                         interaction_id=interaction_id,
+                         body_preview=body_preview,
+                     )
+-                log.error("[copilot_api_error] HTTP %d: %s", e.code, body_preview)
++                log.error("[copilot_api_error] HTTP %d (account #%d): %s", e.code, idx, body_preview)
+                 raise
+             except (urllib.error.URLError, OSError, TimeoutError) as e:
+                 last_error = e
+diff --git a/ouroboros/loop_runtime.py b/ouroboros/loop_runtime.py
+index 47573f8..fbf317a 100644
+--- a/ouroboros/loop_runtime.py
++++ b/ouroboros/loop_runtime.py
+@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
+ PROMPT_TOKEN_GUARD_THRESHOLD = 40000
+ 
+ from ouroboros.context import compact_tool_history, compact_tool_history_llm
+-from ouroboros.copilot_proxy import CopilotServerCooldownError
++from ouroboros.copilot_proxy import CopilotServerCooldownError, CopilotContextLengthError
+ from ouroboros.llm import LLMClient, normalize_reasoning_effort, model_transport, reasoning_rank
+ from ouroboros.model_modes import execution_style_for_active_mode, get_runtime_diagnostics, max_rounds_for_active_mode, tools_enabled_for_active_mode
+ from ouroboros.tools.registry import ToolRegistry
+@@ -443,6 +443,23 @@ def _call_llm_with_fallback(
+             )
+             time.sleep(cooldown_sec)
+             continue
++        if transport == "copilot" and isinstance(primary_exc, CopilotContextLengthError):
++            # Context too large for Copilot — trigger compaction and retry the round
++            append_jsonl(drive_logs / "events.jsonl", {
++                "ts": utc_now_iso(),
++                "type": "copilot_context_overflow",
++                "task_id": task_id,
++                "round": round_idx,
++                "model": active_model,
++                "interaction_id": interaction_id,
++                "account_idx": primary_exc.account_idx,
++            })
++            emit_progress(
++                f"⚠️ Copilot HTTP 400: context_length_exceeded. Принудительно компактирую историю и повторяю раунд."
++            )
++            # Signal context layer to compact on next round
++            accumulated_usage["_force_compaction"] = 8  # keep_recent=8
++            continue
+         primary_reason = f"timeout/error: {primary_exc or primary_error_text}" if (primary_exc or primary_error_text) else "empty response"
+         if primary_exc is None and not _is_transport_timeout_error(RuntimeError(primary_reason), transport):
+             return None
+@@ -823,6 +840,10 @@ def _prepare_round_or_finalize(
+             return round_cap_finalize
+ 
+     _drain_incoming_messages(messages, incoming_messages, drive_root, task_id, event_queue, owner_msg_seen)
++    # Force compaction if requested by CopilotContextLengthError handler
++    _force_compact_keep = state["accumulated_usage"].pop("_force_compaction", None)
++    if _force_compact_keep is not None:
++        messages[:] = compact_tool_history_llm(messages, keep_recent=int(_force_compact_keep))
+     messages[:], state["active_model"], state["active_effort"] = _apply_context_overrides_and_compaction(
+         tools=tools,
+         messages=messages,

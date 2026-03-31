@@ -1,0 +1,4 @@
+M VERSION
+ M ouroboros/consciousness.py
+ M ouroboros/copilot_proxy.py
+ M ouroboros/loop_runtime.py
