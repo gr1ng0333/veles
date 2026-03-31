@@ -301,3 +301,14 @@ class TestSystemMessageProvenance:
         assert "←" in result
         assert "→" in result
         assert "📋" not in result  # no system messages here
+
+
+def test_context_policy_section_mentions_copilot_round_phases():
+    from ouroboros.context import _build_copilot_round_policy_section
+
+    policy = _build_copilot_round_policy_section()
+    assert "Copilot Round Policy" in policy
+    assert "30 раундов" in policy
+    assert "Раунды 1–10" in policy
+    assert "Раунды 11–20" in policy
+    assert "Раунды 21–30" in policy

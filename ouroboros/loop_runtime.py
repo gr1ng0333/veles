@@ -9,7 +9,6 @@ import os
 import pathlib
 import queue
 import time
-import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 PROMPT_TOKEN_GUARD_THRESHOLD = 40000
@@ -43,36 +42,13 @@ from ouroboros.loop import (
 )
 
 
-COPILOT_EVOLUTION_INTERACTION_ROLLOVER_ROUND = 30
+COPILOT_MAX_ROUNDS = 30
 
 
-def _should_rollover_copilot_interaction(*, task_type: str, active_model: str, round_idx: int) -> bool:
-    return (
-        task_type == "evolution"
-        and model_transport(active_model) == "copilot"
-        and round_idx > 1
-        and (round_idx - 1) % COPILOT_EVOLUTION_INTERACTION_ROLLOVER_ROUND == 0
-    )
-
-
-def _maybe_rollover_copilot_interaction(
-    *,
-    state: Dict[str, Any],
-    task_type: str,
-    emit_progress: Callable[[str], None],
-) -> None:
-    round_idx = int(state.get("round_idx") or 0)
-    active_model = str(state.get("active_model") or "")
-    if not _should_rollover_copilot_interaction(task_type=task_type, active_model=active_model, round_idx=round_idx):
-        state["force_user_initiator"] = False
-        return
-    previous = state.get("interaction_id")
-    state["interaction_id"] = str(uuid.uuid4())
-    state["force_user_initiator"] = True
-    emit_progress(
-        "🔄 Copilot evolution rollover: после 30 agent-раундов открываю новый premium-thread "
-        f"({str(previous or '?')[:8]} → {state['interaction_id'][:8]})."
-    )
+def _copilot_max_rounds_cap(default_max_rounds: int, active_model: str) -> int:
+    if model_transport(active_model) != "copilot":
+        return default_max_rounds
+    return min(default_max_rounds, COPILOT_MAX_ROUNDS)
 
 
 def _consume_force_user_initiator(state: Dict[str, Any]) -> bool:

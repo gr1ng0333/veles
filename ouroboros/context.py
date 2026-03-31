@@ -18,8 +18,39 @@ from ouroboros.utils import (
     utc_now_iso, read_text, clip_text, estimate_tokens, get_git_info,
 )
 from ouroboros.memory import Memory
+from ouroboros.llm import model_transport
 
 log = logging.getLogger(__name__)
+
+
+def _build_copilot_round_policy_section() -> str:
+    return (
+        "## Copilot Round Policy\n\n"
+        "Если активная модель идёт через `copilot/*`, это жёсткий протокол, а не рекомендация.\n\n"
+        "- Абсолютный потолок: **30 раундов на весь Copilot-loop**.\n"
+        "- Не создавай новый premium-thread / interaction_id после 30-го раунда.\n"
+        "- Один loop-раунд должен по возможности включать **несколько независимых tool calls**, а не один микрошаг.\n"
+        "- Не трать Copilot-раунд на `repo_read` одного файла, если можно за тот же раунд собрать весь минимально нужный срез.\n\n"
+        "### Фазовая политика\n\n"
+        "**Раунды 1–10 — разведка и сужение гипотезы**\n"
+        "- собирай контекст батчами;\n"
+        "- предпочитай несколько чтений/проверок за раунд;\n"
+        "- не дроби задачу на one-file-per-round без причины.\n\n"
+        "**Раунды 11–20 — изменение системы**\n"
+        "- переходи от чтения к патчу;\n"
+        "- запускай узкие проверки;\n"
+        "- не зависай в read-only цикле.\n\n"
+        "**Раунды 21–30 — финализация**\n"
+        "- задача должна выйти в commit / push / ясный handoff;\n"
+        "- запрещены рыхлые микрошаги и декоративные уточнения;\n"
+        "- если всё ещё нет результата, сворачивайся в конкретное состояние, а не продолжай бесконечный loop.\n\n"
+        "### Антипаттерны для Copilot\n\n"
+        "- два и более подряд read-only раунда без сужения гипотезы;\n"
+        "- один trivial tool на жирном контексте;\n"
+        "- дорогой раунд с минимальным сдвигом по задаче;\n"
+        "- попытка дожить до 31+ раунда вместо того, чтобы завершить работу раньше.\n"
+    )
+
 
 
 def _build_user_content(task: Dict[str, Any]) -> Any:
@@ -443,6 +474,10 @@ def build_llm_messages(
     checklists_md = _safe_read(env.repo_path("prompts/CHECKLISTS.md"), fallback="")
     if checklists_md.strip():
         static_text += "\n\n" + clip_text(checklists_md, 2500)
+
+    active_model = str(os.environ.get("OUROBOROS_MODEL") or "")
+    if model_transport(active_model) == "copilot":
+        static_text += "\n\n" + _build_copilot_round_policy_section()
 
     if needs_full_context:
         readme_limit = 2000 if task_type == "evolution" else 180000
