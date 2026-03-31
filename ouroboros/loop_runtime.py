@@ -958,7 +958,6 @@ def _run_single_round(
         return prepared
 
     round_idx = state["round_idx"]
-    _maybe_rollover_copilot_interaction(state=state, task_type=task_type, emit_progress=emit_progress)
     force_user_initiator = _consume_force_user_initiator(state)
     if force_user_initiator:
         state["accumulated_usage"]["_force_user_initiator"] = True
