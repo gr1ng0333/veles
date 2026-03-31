@@ -5,7 +5,7 @@ from unittest import mock
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from ouroboros.loop_runtime import _maybe_sleep_before_evolution_copilot_request
+from ouroboros.loop_runtime import _copilot_max_rounds_cap, _maybe_sleep_before_evolution_copilot_request
 
 
 def test_sleep_for_copilot_evolution_after_first_round():
@@ -56,3 +56,10 @@ def test_sleep_for_fallback_request_even_on_round_one():
             phase='fallback',
         )
     sleep_mock.assert_called_once()
+
+
+def test_copilot_max_rounds_cap_applies_to_all_copilot_models():
+    assert _copilot_max_rounds_cap(200, "copilot/claude-sonnet-4.6") == 30
+    assert _copilot_max_rounds_cap(100, "copilot/claude-opus-4.6") == 30
+    assert _copilot_max_rounds_cap(30, "copilot/claude-haiku-4.5") == 30
+    assert _copilot_max_rounds_cap(200, "codex/gpt-5.4") == 200

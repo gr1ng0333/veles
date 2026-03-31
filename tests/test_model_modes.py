@@ -217,7 +217,7 @@ def test_opus_agentic_loop_mode():
     mode = MODEL_MODES["opus"]
     assert mode.execution_style == "loop"
     assert mode.tools_enabled is True
-    assert mode.max_rounds == 100
+    assert mode.max_rounds == 30
 
 
 def test_sonnet_agentic_loop_mode():
@@ -225,7 +225,7 @@ def test_sonnet_agentic_loop_mode():
     mode = MODEL_MODES["sonnet"]
     assert mode.execution_style == "loop"
     assert mode.tools_enabled is True
-    assert mode.max_rounds == 50
+    assert mode.max_rounds == 30
 
 
 def test_haiku_extended_rounds():
@@ -242,3 +242,9 @@ def test_copilot_modes_all_loop():
         mode = MODEL_MODES[key]
         assert mode.execution_style == "loop", f"{key} must be loop, got {mode.execution_style}"
         assert mode.tools_enabled is True, f"{key} must have tools enabled"
+
+
+def test_copilot_modes_are_capped_at_30_rounds() -> None:
+    assert MODEL_MODES["haiku"].max_rounds == 30
+    assert MODEL_MODES["sonnet"].max_rounds == 30
+    assert MODEL_MODES["opus"].max_rounds == 30
