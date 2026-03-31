@@ -1,16 +1,8 @@
-"""
-Ouroboros — Background Consciousness (Watchdog + Advisor).
+"""Ouroboros \u2014 Background System Auditor.
 
-A read-only background daemon that wakes periodically to check system
-health, reflect on recent activity, and report insights to the owner.
-
-The consciousness:
-- Wakes every ~15 minutes (±3 min randomization)
-- Reads logs, state, memory for context (READ-ONLY)
-- Makes a single LLM call without tools
-- Sends a Telegram message to the owner if noteworthy, or stays silent
-- NEVER creates tasks, writes files, or modifies state
-- Anti-spam throttle: health alerts ≤1/15min, insights ≤1/2hr
+A background daemon that wakes periodically to audit one module of the
+codebase at a time. Writes findings to healthcheck.md. Never sends
+messages to the owner chat. Never modifies code.
 """
 
 from __future__ import annotations
@@ -19,53 +11,183 @@ import json
 import logging
 import os
 import pathlib
-import queue
 import random
+import subprocess
 import threading
 import time
 import traceback
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from ouroboros.utils import (
-    utc_now_iso, read_text, append_jsonl, clip_text,
-)
+from ouroboros.utils import utc_now_iso, read_text, append_jsonl, clip_text
 from ouroboros.llm import LLMClient, model_transport, transport_model_name
 from ouroboros.model_modes import get_background_model, get_background_reasoning_effort
 
 log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Audit state helpers
+# ---------------------------------------------------------------------------
 
-_DEFAULT_MONITOR_STATE = {
-    "wakeup_count": 0,
-    "known_issue_numbers": [],
-    "last_issues_check": "1970-01-01T00:00:00Z",
-    "last_budget_alert": "1970-01-01T00:00:00Z",
-    "last_budget_alert_level": "none",
-}
+def _discover_modules(repo_dir: pathlib.Path) -> List[str]:
+    """Discover all Python modules under ouroboros/ and supervisor/."""
+    modules = []
+    for pkg in ("ouroboros", "supervisor"):
+        pkg_dir = repo_dir / pkg
+        if not pkg_dir.is_dir():
+            continue
+        for py in sorted(pkg_dir.rglob("*.py")):
+            rel = py.relative_to(repo_dir)
+            # Convert path to dotted module name
+            parts = list(rel.parts)
+            if parts[-1] == "__init__.py":
+                parts = parts[:-1]
+            else:
+                parts[-1] = parts[-1].removesuffix(".py")
+            if parts:
+                modules.append(".".join(parts))
+    return modules
 
 
-def _normalize_monitor_state(raw: Any) -> Dict[str, Any]:
-    base = dict(_DEFAULT_MONITOR_STATE)
-    if isinstance(raw, dict):
-        base.update(raw)
+def _load_audit_state(path: pathlib.Path) -> Dict[str, Any]:
     try:
-        base["wakeup_count"] = max(0, int(base.get("wakeup_count", 0)))
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        base["wakeup_count"] = 0
-    known = base.get("known_issue_numbers")
-    if not isinstance(known, list):
-        base["known_issue_numbers"] = []
-    return base
+        pass
+    return {"checked": {}, "queue_index": 0}
 
 
-def _calc_next_wakeup_at(seconds: float) -> str:
-    dt = datetime.now(timezone.utc).timestamp() + float(max(0.0, seconds))
-    return datetime.fromtimestamp(dt, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+def _save_audit_state(path: pathlib.Path, state: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
+
+def _check_import(module_name: str, repo_dir: pathlib.Path) -> str:
+    """Try `python -c 'import <module>'` and return result."""
+    try:
+        result = subprocess.run(
+            ["python", "-c", f"import {module_name}"],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            return "OK"
+        return (result.stderr or result.stdout or "unknown error")[:500]
+    except subprocess.TimeoutExpired:
+        return "TIMEOUT (15s)"
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+def _grep_recent_errors(module_name: str, drive_root: pathlib.Path) -> str:
+    """Get last 5 error-like events mentioning this module from events.jsonl."""
+    short_name = module_name.split(".")[-1]
+    events_path = drive_root / "logs" / "events.jsonl"
+    if not events_path.exists():
+        return "(no events.jsonl)"
+    try:
+        # Tail last 500 lines, search for module name in error events
+        lines = events_path.read_text(encoding="utf-8", errors="replace").splitlines()[-500:]
+        matches = []
+        for line in lines:
+            if short_name not in line:
+                continue
+            try:
+                ev = json.loads(line)
+                etype = ev.get("type", "")
+                if "error" in etype.lower() or "traceback" in str(ev.get("error", "")).lower():
+                    matches.append(line[:300])
+            except Exception:
+                continue
+        if not matches:
+            return "(no recent errors for this module)"
+        return "\n".join(matches[-5:])
+    except Exception as e:
+        return f"(error reading logs: {e})"
+
+
+def _read_module_source(module_name: str, repo_dir: pathlib.Path) -> str:
+    """Read module source code."""
+    parts = module_name.split(".")
+    # Try as file first
+    file_path = repo_dir / "/".join(parts[:-1]) / f"{parts[-1]}.py" if len(parts) > 1 else repo_dir / f"{parts[0]}.py"
+    if not file_path.exists():
+        # Try as package __init__.py
+        file_path = repo_dir / "/".join(parts) / "__init__.py"
+    if not file_path.exists():
+        return f"(cannot find source for {module_name})"
+    try:
+        return file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return f"(error reading {file_path}: {e})"
+
+
+def _write_healthcheck(
+    drive_root: pathlib.Path,
+    module_name: str,
+    verdict: str,
+    details: str,
+    import_result: str,
+) -> None:
+    """Append or update module entry in healthcheck.md."""
+    hc_path = drive_root / "memory" / "healthcheck.md"
+    hc_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read existing content
+    existing = ""
+    if hc_path.exists():
+        try:
+            existing = hc_path.read_text(encoding="utf-8")
+        except Exception:
+            existing = ""
+
+    # Remove old entry for this module if exists
+    lines = existing.splitlines(keepends=True)
+    new_lines: list = []
+    skip_until_next_module = False
+    for line in lines:
+        if line.startswith(f"### {module_name}"):
+            skip_until_next_module = True
+            continue
+        if skip_until_next_module and line.startswith("### "):
+            skip_until_next_module = False
+        if not skip_until_next_module:
+            new_lines.append(line)
+
+    existing_clean = "".join(new_lines).rstrip()
+
+    # Add header if missing
+    if not existing_clean.startswith("# Healthcheck"):
+        existing_clean = f"# Healthcheck Report\n\n_Auto-generated by background auditor. Request via `/healthcheck`._\n\n_Last updated: {utc_now_iso()}_\n" + existing_clean
+    else:
+        # Update timestamp
+        import re
+        existing_clean = re.sub(
+            r"_Last updated:.*?_",
+            f"_Last updated: {utc_now_iso()}_",
+            existing_clean,
+            count=1,
+        )
+
+    # Format new entry
+    icon = "\u2705" if verdict == "OK" else "\u26a0\ufe0f"
+    entry = f"\n\n### {module_name}\n{icon} **{verdict}** | import: {import_result}\n"
+    if verdict != "OK" and details.strip():
+        entry += f"\n{details.strip()}\n"
+
+    hc_path.write_text(existing_clean + entry, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Main class
+# ---------------------------------------------------------------------------
 
 class BackgroundConsciousness:
-    """Read-only background watchdog and advisor for Ouroboros."""
+    """Background system auditor for Ouroboros."""
 
     def __init__(
         self,
@@ -86,11 +208,6 @@ class BackgroundConsciousness:
         self._stop_event = threading.Event()
         self._wakeup_event = threading.Event()
         self._next_wakeup_sec: float = 900.0
-        self._observations: queue.Queue = queue.Queue()
-
-        # Anti-spam throttle (monotonic timestamps)
-        self._last_health_alert_ts: float = 0.0
-        self._last_insight_ts: float = 0.0
 
         # Budget tracking
         self._bg_spent_usd: float = 0.0
@@ -98,10 +215,12 @@ class BackgroundConsciousness:
             os.environ.get("OUROBOROS_BG_BUDGET_PCT", "10")
         )
 
-        self._monitor_state: Dict[str, Any] = _normalize_monitor_state(self._load_monitor_state())
+        # Audit state
+        self._audit_state_path = drive_root / "memory" / "audit_state.json"
+        self._audit_state = _load_audit_state(self._audit_state_path)
 
     # -------------------------------------------------------------------
-    # Lifecycle
+    # Lifecycle (unchanged API)
     # -------------------------------------------------------------------
 
     @property
@@ -127,55 +246,39 @@ class BackgroundConsciousness:
             return "Background consciousness is not running."
         self._running = False
         self._stop_event.set()
-        self._wakeup_event.set()  # Unblock sleep
+        self._wakeup_event.set()
         return "Background consciousness stopping."
 
     def pause(self) -> None:
-        """Pause during task execution to avoid budget contention."""
         self._paused = True
 
     def resume(self) -> None:
-        """Resume after task completes."""
         self._paused = False
         self._wakeup_event.set()
 
     def inject_observation(self, text: str) -> None:
-        """Push an event the consciousness should notice."""
-        try:
-            self._observations.put_nowait(text)
-        except queue.Full:
-            pass
+        """Legacy API compat \u2014 no-op in auditor mode."""
+        pass
 
     # -------------------------------------------------------------------
     # Main loop
     # -------------------------------------------------------------------
 
     def _loop(self) -> None:
-        """Daemon thread: sleep → wake → think → sleep."""
         while not self._stop_event.is_set():
-            # Fixed 15-minute interval ±3 minutes randomization
             self._next_wakeup_sec = 900.0 + random.uniform(-180, 180)
-            self._monitor_state["next_wakeup_interval_seconds"] = int(self._next_wakeup_sec)
-            self._monitor_state["next_wakeup_at"] = _calc_next_wakeup_at(self._next_wakeup_sec)
-            self._save_monitor_state()
-
-            # Wait for next wakeup
             self._wakeup_event.clear()
             self._wakeup_event.wait(timeout=self._next_wakeup_sec)
 
             if self._stop_event.is_set():
                 break
-
-            # Skip if paused (task running)
             if self._paused:
                 continue
-
-            # Budget check
             if not self._check_budget():
                 continue
 
             try:
-                self._think()
+                self._audit_one_module()
             except Exception as e:
                 append_jsonl(self._drive_root / "logs" / "events.jsonl", {
                     "ts": utc_now_iso(),
@@ -185,7 +288,6 @@ class BackgroundConsciousness:
                 })
 
     def _check_budget(self) -> bool:
-        """Check if background consciousness is within its budget allocation."""
         try:
             total_budget = float(os.environ.get("TOTAL_BUDGET", "1"))
             if total_budget <= 0:
@@ -193,44 +295,49 @@ class BackgroundConsciousness:
             max_bg = total_budget * (self._bg_budget_pct / 100.0)
             return self._bg_spent_usd < max_bg
         except Exception:
-            log.warning("Failed to check background consciousness budget", exc_info=True)
             return True
 
-    def _monitor_state_path(self) -> pathlib.Path:
-        return self._drive_root / "memory" / "monitor_state.json"
-
-    def _load_monitor_state(self) -> Dict[str, Any]:
-        path = self._monitor_state_path()
-        try:
-            if path.exists():
-                return _normalize_monitor_state(json.loads(read_text(path)))
-        except Exception as e:
-            log.debug("Failed to load monitor_state.json: %s", e)
-        return _normalize_monitor_state({})
-
-    def _save_monitor_state(self) -> None:
-        path = self._monitor_state_path()
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(self._monitor_state, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception as e:
-            log.debug("Failed to save monitor_state.json: %s", e)
-
     # -------------------------------------------------------------------
-    # Think cycle
+    # Core: audit one module per wakeup
     # -------------------------------------------------------------------
 
-    def _think(self) -> None:
-        """One thinking cycle: build context, single LLM call, handle response."""
-        context = self._build_context()
+    def _audit_one_module(self) -> None:
+        """Pick next unchecked module, audit it, write result."""
+        modules = _discover_modules(self._repo_dir)
+        if not modules:
+            return
+
+        # Find next unchecked module
+        checked = self._audit_state.get("checked", {})
+        unchecked = [m for m in modules if m not in checked]
+
+        if not unchecked:
+            # All checked \u2014 start new cycle
+            self._audit_state["checked"] = {}
+            self._audit_state["cycle_completed_at"] = utc_now_iso()
+            _save_audit_state(self._audit_state_path, self._audit_state)
+            unchecked = modules
+
+        module_name = unchecked[0]
+
+        # 1. Check import
+        import_result = _check_import(module_name, self._repo_dir)
+
+        # 2. Read source (cap at 4000 chars for context budget)
+        source = _read_module_source(module_name, self._repo_dir)
+        source_clipped = clip_text(source, 4000)
+
+        # 3. Grep recent errors
+        recent_errors = _grep_recent_errors(module_name, self._drive_root)
+
+        # 4. Build LLM context and ask
+        prompt = self._load_bg_prompt()
+        system_msg = f"{prompt}\n\n## \u041c\u043e\u0434\u0443\u043b\u044c: {module_name}\n\n### \u0418\u043c\u043f\u043e\u0440\u0442-\u0447\u0435\u043a\n{import_result}\n\n### \u041a\u043e\u0434\n```python\n{source_clipped}\n```\n\n### \u041f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0435 \u043e\u0448\u0438\u0431\u043a\u0438 \u0438\u0437 \u043b\u043e\u0433\u043e\u0432\n{recent_errors}"
+
         model = self._model
-
         messages = [
-            {"role": "system", "content": context},
-            {"role": "user", "content": "Wake up. Observe and report."},
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": f"\u041f\u0440\u043e\u0432\u0435\u0440\u044c \u043c\u043e\u0434\u0443\u043b\u044c {module_name}."},
         ]
 
         try:
@@ -244,7 +351,7 @@ class BackgroundConsciousness:
             cost = float(usage.get("cost") or 0)
             self._bg_spent_usd += cost
 
-            # Write BG spending to global state so it's visible in budget tracking
+            # Update global budget
             try:
                 from supervisor.state import update_budget_from_usage
                 update_budget_from_usage({
@@ -254,9 +361,8 @@ class BackgroundConsciousness:
                     "cached_tokens": usage.get("cached_tokens", 0),
                 })
             except Exception:
-                log.debug("Failed to update global budget from BG consciousness", exc_info=True)
+                pass
 
-            # Report usage to supervisor
             if self._event_queue is not None:
                 self._event_queue.put({
                     "type": "llm_usage",
@@ -267,211 +373,62 @@ class BackgroundConsciousness:
                     "category": "consciousness",
                 })
 
-            final_content = (msg.get("content") or "").strip()
+            content = (msg.get("content") or "").strip()
 
-            # Handle response: NOTHING_TO_REPORT → silence, else → maybe send
-            if "NOTHING_TO_REPORT" in final_content:
-                log.debug("Consciousness: nothing to report")
-            elif final_content:
-                self._maybe_send_to_owner(final_content)
+            # Parse verdict
+            verdict = "OK"
+            if "ISSUES_FOUND" in content:
+                verdict = "ISSUES_FOUND"
+            elif "VERDICT: OK" in content:
+                verdict = "OK"
 
-            thought_preview = (final_content or "")[:300]
+            # Write to healthcheck.md
+            _write_healthcheck(
+                self._drive_root,
+                module_name,
+                verdict,
+                content,
+                "OK" if import_result == "OK" else "FAIL",
+            )
 
-            # Log the thought
+            # Mark as checked
+            self._audit_state.setdefault("checked", {})[module_name] = {
+                "at": utc_now_iso(),
+                "verdict": verdict,
+            }
+            _save_audit_state(self._audit_state_path, self._audit_state)
+
+            # Log
             append_jsonl(self._drive_root / "logs" / "events.jsonl", {
                 "ts": utc_now_iso(),
-                "type": "consciousness_thought",
-                "thought_preview": thought_preview,
+                "type": "consciousness_audit",
+                "module": module_name,
+                "verdict": verdict,
+                "import_ok": import_result == "OK",
                 "cost_usd": cost,
-                "rounds": 1,
                 "model": model,
-                "requested_model": model,
-                "transport": model_transport(model),
-                "actual_model": transport_model_name(model),
-                "reasoning_effort": get_background_reasoning_effort(),
             })
-
-            now_iso = utc_now_iso()
-            self._monitor_state["wakeup_count"] = int(self._monitor_state.get("wakeup_count", 0)) + 1
-            self._monitor_state["last_thought_at"] = now_iso
-            self._monitor_state["last_thought_preview"] = thought_preview
-            self._monitor_state["last_model"] = model
-            self._monitor_state["last_transport"] = model_transport(model)
-            self._monitor_state["last_actual_model"] = transport_model_name(model)
-            self._monitor_state["last_reasoning_effort"] = get_background_reasoning_effort()
-            self._monitor_state["last_rounds"] = 1
-            self._monitor_state["next_wakeup_interval_seconds"] = int(self._next_wakeup_sec)
-            self._monitor_state["next_wakeup_at"] = _calc_next_wakeup_at(self._next_wakeup_sec)
-            self._save_monitor_state()
 
         except Exception as e:
             append_jsonl(self._drive_root / "logs" / "events.jsonl", {
                 "ts": utc_now_iso(),
                 "type": "consciousness_llm_error",
+                "module": module_name,
                 "error": repr(e),
             })
-            err_now_iso = utc_now_iso()
-            self._monitor_state["last_thought_at"] = err_now_iso
-            self._monitor_state["last_thought_preview"] = f"error: {repr(e)}"[:300]
-            self._save_monitor_state()
+            # Mark as checked even on error (retry next cycle)
+            self._audit_state.setdefault("checked", {})[module_name] = {
+                "at": utc_now_iso(),
+                "verdict": f"ERROR: {repr(e)[:100]}",
+            }
+            _save_audit_state(self._audit_state_path, self._audit_state)
 
     # -------------------------------------------------------------------
-    # Owner messaging with anti-spam throttle
-    # -------------------------------------------------------------------
-
-    def _maybe_send_to_owner(self, text: str) -> None:
-        """Send message to owner via Telegram, respecting anti-spam throttle.
-
-        Health alerts (⚠️): max 1 per 15 minutes.
-        Background insights (🔍): max 1 per 2 hours.
-        """
-        now = time.monotonic()
-        is_health_alert = "\u26a0\ufe0f" in text or "Health Alert" in text
-
-        if is_health_alert:
-            if now - self._last_health_alert_ts < 900:  # 15 min
-                log.debug("Consciousness: health alert throttled")
-                return
-            self._last_health_alert_ts = now
-        else:
-            if now - self._last_insight_ts < 7200:  # 2 hours
-                log.debug("Consciousness: insight throttled")
-                return
-            self._last_insight_ts = now
-
-        chat_id = self._owner_chat_id_fn()
-        if not chat_id:
-            log.debug("Consciousness: no owner chat_id, cannot send")
-            return
-
-        if self._event_queue is not None:
-            self._event_queue.put({
-                "type": "send_message",
-                "chat_id": chat_id,
-                "text": text,
-                "format": "markdown",
-                "is_progress": False,
-                "ts": utc_now_iso(),
-            })
-
-        append_jsonl(self._drive_root / "logs" / "events.jsonl", {
-            "ts": utc_now_iso(),
-            "type": "consciousness_advisor_message",
-            "is_health_alert": is_health_alert,
-            "text_preview": text[:200],
-        })
-
-    # -------------------------------------------------------------------
-    # Context building (lightweight)
+    # Helpers
     # -------------------------------------------------------------------
 
     def _load_bg_prompt(self) -> str:
-        """Load consciousness system prompt from file."""
         prompt_path = self._repo_dir / "prompts" / "CONSCIOUSNESS.md"
         if prompt_path.exists():
             return read_text(prompt_path)
-        return "You are Ouroboros in background consciousness mode. Think."
-
-    def _build_context(self) -> str:
-        _lang_rule = (
-            "LANGUAGE RULE: Always respond in Russian (русский язык) unless the user "
-            "explicitly writes in English. This applies to all messages, status reports, "
-            "evolution logs, and consciousness outputs. Internal tool calls and code "
-            "can remain in English."
-        )
-        parts = [_lang_rule + "\n\n" + self._load_bg_prompt()]
-
-        # Bible (abbreviated)
-        bible_path = self._repo_dir / "BIBLE.md"
-        if bible_path.exists():
-            bible = read_text(bible_path)
-            parts.append("## BIBLE.md\n\n" + clip_text(bible, 12000))
-
-        # Identity
-        identity_path = self._drive_root / "memory" / "identity.md"
-        if identity_path.exists():
-            parts.append("## Identity\n\n" + clip_text(
-                read_text(identity_path), 6000))
-
-        # Scratchpad
-        scratchpad_path = self._drive_root / "memory" / "scratchpad.md"
-        if scratchpad_path.exists():
-            parts.append("## Scratchpad\n\n" + clip_text(
-                read_text(scratchpad_path), 8000))
-
-        # Dialogue summary for continuity
-        summary_path = self._drive_root / "memory" / "dialogue_summary.md"
-        if summary_path.exists():
-            summary_text = read_text(summary_path)
-            if summary_text.strip():
-                parts.append("## Dialogue Summary\n\n" + clip_text(summary_text, 4000))
-
-        # Recent observations
-        observations = []
-        while not self._observations.empty():
-            try:
-                observations.append(self._observations.get_nowait())
-            except queue.Empty:
-                break
-        if observations:
-            parts.append("## Recent observations\n\n" + "\n".join(
-                f"- {o}" for o in observations[-10:]))
-
-        # Recent commits for reflection
-        try:
-            import subprocess
-            git_log = subprocess.run(
-                ["git", "log", "--oneline", "-10"],
-                cwd=str(self._repo_dir),
-                capture_output=True, text=True, timeout=5,
-            )
-            if git_log.returncode == 0 and git_log.stdout.strip():
-                parts.append(f"\n## Recent commits\n```\n{git_log.stdout.strip()}\n```")
-        except Exception:
-            pass  # Non-critical, skip silently
-
-        # Recent task results for reflection
-        try:
-            results_dir = self._drive_root / "task_results"
-            if results_dir.exists():
-                result_files = sorted(results_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)[:3]
-                if result_files:
-                    summaries = []
-                    for rf in result_files:
-                        try:
-                            data = json.loads(rf.read_text(encoding="utf-8"))
-                            task_text = str(data.get("task_text", ""))[:200]
-                            status = data.get("status", "?")
-                            result_preview = str(data.get("result", ""))[:300]
-                            summaries.append(f"- [{status}] {task_text}\n  Result: {result_preview}")
-                        except Exception:
-                            continue
-                    if summaries:
-                        parts.append(f"\n## Recent task results\n" + "\n".join(summaries))
-        except Exception:
-            pass  # Non-critical
-
-        # Runtime info + state
-        runtime_lines = [f"UTC: {utc_now_iso()}"]
-        runtime_lines.append(f"BG budget spent: ${self._bg_spent_usd:.4f}")
-        runtime_lines.append(f"Current wakeup interval: {self._next_wakeup_sec}s")
-
-        # Read state.json for budget remaining
-        try:
-            state_path = self._drive_root / "state" / "state.json"
-            if state_path.exists():
-                state_data = json.loads(read_text(state_path))
-                total_budget = float(os.environ.get("TOTAL_BUDGET", "1"))
-                spent = float(state_data.get("spent_usd", 0))
-                if total_budget > 0:
-                    remaining = max(0, total_budget - spent)
-                    runtime_lines.append(f"Budget remaining: ${remaining:.2f} / ${total_budget:.2f}")
-        except Exception as e:
-            log.debug("Failed to read state for budget info: %s", e)
-
-        # Show current model
-        runtime_lines.append(f"Current model: {self._model}")
-
-        parts.append("## Runtime\n\n" + "\n".join(runtime_lines))
-
-        return "\n\n".join(parts)
+        return "You are a system auditor. Check the module for issues."

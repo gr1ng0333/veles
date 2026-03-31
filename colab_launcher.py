@@ -695,6 +695,30 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         persisted = set_codex_reasoning_effort(effort)
         send_with_budget(chat_id, f"✅ Reasoning effort switched to {persisted}\n" + mode_summary_text())
         return True
+    if lowered.startswith("/healthcheck"):
+        hc_path = DRIVE_ROOT / "memory" / "healthcheck.md"
+        if hc_path.exists():
+            hc_text = hc_path.read_text(encoding="utf-8")
+            if hc_text.strip():
+                try:
+                    from supervisor.telegram import get_tg
+                    tg = get_tg()
+                    ok, err = tg.send_document(
+                        chat_id,
+                        hc_text.encode("utf-8"),
+                        "healthcheck.md",
+                        caption="🧩 Healthcheck report",
+                        mime_type="text/markdown",
+                    )
+                    if not ok:
+                        send_with_budget(chat_id, f"⚠️ Failed to send healthcheck: {err}")
+                except Exception as e:
+                    send_with_budget(chat_id, f"⚠️ Error: {e}")
+            else:
+                send_with_budget(chat_id, "🧩 Healthcheck is empty. Enable background consciousness (`/bg start`) and wait for audit cycles.")
+        else:
+            send_with_budget(chat_id, "🧩 No healthcheck report yet. Enable background consciousness (`/bg start`) and wait for audit cycles.")
+        return True
     if lowered.startswith("/model"):
         send_with_budget(chat_id, mode_summary_text())
         return True
