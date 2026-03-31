@@ -93,6 +93,16 @@ def _maybe_sleep_before_evolution_copilot_request(
     time.sleep(delay_sec)
 
 
+def _extract_last_assistant_content(messages: List[Dict[str, Any]]) -> Optional[str]:
+    """Find the last non-empty assistant message content from message history."""
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            if content and content.strip():
+                return content.strip()
+    return None
+
+
 def _maybe_handle_hard_round_limit(
     *,
     round_idx: int,
@@ -113,6 +123,17 @@ def _maybe_handle_hard_round_limit(
     if round_idx <= max_rounds:
         return None
     finish_reason = f"⚠️ Task exceeded MAX_ROUNDS ({max_rounds}). Consider decomposing into subtasks via schedule_task."
+
+    # For Copilot: do NOT call LLM again — the thread is likely exhausted
+    # and will return 400. Instead, use last assistant content as final response.
+    transport = model_transport(active_model)
+    if transport == "copilot":
+        last_content = _extract_last_assistant_content(messages)
+        final_text = last_content or finish_reason
+        log.info("Copilot hard round limit reached (round %d/%d), returning last assistant content", round_idx, max_rounds)
+        return final_text, accumulated_usage, llm_trace
+
+    # For non-Copilot transports: try to get a summary from LLM
     messages.append({"role": "system", "content": f"[ROUND_LIMIT] {finish_reason}"})
     try:
         final_msg, _ = _call_llm_with_retry(
@@ -156,6 +177,40 @@ def _maybe_emit_round_warning(
     llm_trace["assistant_notes"].append(warn[:320])
     return True
 
+COPILOT_WRAP_UP_ROUNDS_BEFORE = 2  # inject wrap-up N rounds before hard limit
+
+
+def _maybe_inject_copilot_wrap_up(
+    *,
+    round_idx: int,
+    max_rounds: int,
+    active_model: str,
+    messages: List[Dict[str, Any]],
+    llm_trace: Dict[str, Any],
+    wrap_up_injected: bool,
+) -> bool:
+    """For Copilot: inject a wrap-up warning N rounds before the hard limit.
+    
+    This gives the LLM time to save scratchpad, commit, and form a final answer
+    BEFORE the hard limit kills the loop without another LLM call.
+    """
+    if wrap_up_injected:
+        return True
+    if model_transport(active_model) != "copilot":
+        return False
+    wrap_up_at = max_rounds - COPILOT_WRAP_UP_ROUNDS_BEFORE
+    if round_idx < wrap_up_at:
+        return False
+    remaining = max_rounds - round_idx
+    warn = (
+        f"⚠️ [COPILOT WRAP-UP] Осталось {remaining} раундов до принудительного завершения (лимит {max_rounds}). "
+        "После лимита НЕ будет дополнительного LLM-вызова для суммаризации. "
+        "Прямо сейчас: сохрани scratchpad (update_scratchpad), допиши что важно, сформируй финальный ответ. "
+        "Следующий раунд может быть последним."
+    )
+    messages.append({"role": "system", "content": warn})
+    llm_trace["assistant_notes"].append(f"copilot_wrap_up_at_round_{round_idx}")
+    return True
 
 def _maybe_force_finalize_by_round_cap(
     *,
@@ -737,6 +792,15 @@ def _prepare_round_or_finalize(
         llm_trace=state["llm_trace"],
     )
 
+    state["copilot_wrap_up_injected"] = _maybe_inject_copilot_wrap_up(
+        round_idx=round_idx,
+        max_rounds=state["max_rounds"],
+        active_model=state["active_model"],
+        messages=messages,
+        llm_trace=state["llm_trace"],
+        wrap_up_injected=state["copilot_wrap_up_injected"],
+    )
+
     if _should_finalize_by_round_cap(round_idx, state["recent_progress"], state["anti"]):
         round_cap_finalize = _maybe_force_finalize_by_round_cap(
             round_idx=round_idx,
@@ -1057,6 +1121,7 @@ def run_llm_loop_impl(
         "runtime_diagnostics": runtime_diagnostics,
         "interaction_id": str(uuid.uuid4()),
         "force_user_initiator": False,
+        "copilot_wrap_up_injected": False,
     }
     # If caller provides a persistent executor (direct-chat), reuse it and
     # do NOT shut it down when this task ends — it survives across messages.
