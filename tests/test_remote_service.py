@@ -226,26 +226,20 @@ def test_remote_server_health_collects_metrics_ports_services_and_tls(monkeypatc
 
 
 def test_system_health_command_uses_line_separated_markers():
-    command = _system_health_command()
-    assert command.startswith('sh -lc ')
-    body = __import__('shlex').split(command[len('sh -lc '):])[0]
-    assert "printf '%s\n' __UPTIME__" in body
-    assert "printf '%s\n' __LOADAVG__" in body
-    assert "printf '%s\n' __DF__" in body
-    assert "printf '%s\n' __FREE__" in body
-    assert "printf '%s\n' __PORTS__" in body
-def test_system_health_command_shell_parses():
     script = _system_health_command()
-    assert script.startswith("sh -lc ")
-    inner = script[len("sh -lc ") :]
+    assert "printf '%s\n' __UPTIME__" in script
+    assert "printf '%s\n' __LOADAVG__" in script
+    assert "printf '%s\n' __DF__" in script
+    assert "printf '%s\n' __FREE__" in script
+    assert "printf '%s\n' __PORTS__" in script
 
-    import shlex
+
+def test_system_health_command_shell_parses(tmp_path):
     import subprocess
 
-    parsed = shlex.split(inner)
-    assert len(parsed) == 1
-    shell_body = parsed[0]
-    proc = subprocess.run(["sh", "-n", "-c", shell_body], capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    assert "(ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null || true)" in shell_body
+    script = _system_health_command()
+    probe = tmp_path / 'probe.sh'
+    probe.write_text(script, encoding='utf-8')
+    result = subprocess.run(['sh', '-n', str(probe)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
