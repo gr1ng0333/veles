@@ -61,6 +61,10 @@ dialogue consolidation (`consolidator.py`), post-task reflection (`reflection.py
 safety pre-check (`safety.py`), structured plans (`plans.py`),
 stagnation detection (`antistagnation.py`), model modes (`model_modes.py`).
 
+### Remote / SSH (`ouroboros/tools/`)
+
+Server registry and auth bootstrap (`ssh_targets.py`), SSH key lifecycle (`ssh_key_management.py`), remote filesystem operations (`remote_filesystem.py`), service control and health snapshots (`remote_service.py`), and capability overview (`remote_operator_overview.py`). This is the native backend contour for other servers. When the task moves from shell access to panel UI (for example 3x-ui or VMmanager), the browser toolchain becomes the frontend half of the same remote-operations stack.
+
 ### Transport (ouroboros/)
 
 Codex proxy (`codex_proxy.py`, `codex_proxy_accounts.py`, `codex_proxy_format.py`,
