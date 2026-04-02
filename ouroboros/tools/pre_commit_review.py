@@ -566,31 +566,34 @@ def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
             name="pre_commit_review",
-            description=(
-                "Fast static pre-commit checklist runner. "
-                "Runs all 12 CHECKLISTS.md items (bible compliance, secrets, syntax, "
-                "shrink guard, version bump, tool registration, etc.) against staged diff "
-                "or a specific git ref. Returns PASS/FAIL verdict in <1 second, no LLM calls. "
-                "Use before every commit as a cheap sanity check. "
-                "For deep semantic review use multi_model_review instead."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "staged": {
-                        "type": "boolean",
-                        "description": "Review staged changes (default: true). Set false to review unstaged diff vs HEAD.",
+            schema={
+                "name": "pre_commit_review",
+                "description": (
+                    "Fast static pre-commit checklist runner. "
+                    "Runs all 12 CHECKLISTS.md items (bible compliance, secrets, syntax, "
+                    "shrink guard, version bump, tool registration, etc.) against staged diff "
+                    "or a specific git ref. Returns PASS/FAIL verdict in <1 second, no LLM calls. "
+                    "Use before every commit as a cheap sanity check. "
+                    "For deep semantic review use multi_model_review instead."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "staged": {
+                            "type": "boolean",
+                            "description": "Review staged changes (default: true). Set false to review unstaged diff vs HEAD.",
+                        },
+                        "ref": {
+                            "type": "string",
+                            "description": "Optional git commit ref to review (e.g. 'HEAD', 'abc1234'). Overrides staged.",
+                        },
+                        "verbose": {
+                            "type": "boolean",
+                            "description": "Include detail for PASS/N/A items too (default: false, only shows FAIL/WARN detail).",
+                        },
                     },
-                    "ref": {
-                        "type": "string",
-                        "description": "Optional git commit ref to review (e.g. 'HEAD', 'abc1234'). Overrides staged.",
-                    },
-                    "verbose": {
-                        "type": "boolean",
-                        "description": "Include detail for PASS/N/A items too (default: false, only shows FAIL/WARN detail).",
-                    },
+                    "required": [],
                 },
-                "required": [],
             },
             handler=lambda ctx, **kw: _run_pre_commit_review(ctx, **kw),
         )
