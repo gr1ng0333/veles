@@ -59,7 +59,7 @@ def test_sleep_for_fallback_request_even_on_round_one():
 
 
 def test_copilot_max_rounds_cap_applies_to_all_copilot_models():
-    assert _copilot_max_rounds_cap(200, "copilot/claude-sonnet-4.6") == 30
-    assert _copilot_max_rounds_cap(100, "copilot/claude-opus-4.6") == 30
-    assert _copilot_max_rounds_cap(30, "copilot/claude-haiku-4.5") == 30
+    assert _copilot_max_rounds_cap(200, "copilot/claude-sonnet-4.6") == 280
+    assert _copilot_max_rounds_cap(100, "copilot/claude-opus-4.6") == 280
+    assert _copilot_max_rounds_cap(30, "copilot/claude-haiku-4.5") == 280
     assert _copilot_max_rounds_cap(200, "codex/gpt-5.4") == 200

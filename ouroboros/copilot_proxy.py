@@ -118,9 +118,9 @@ def _do_request(
     headers = {
         "Authorization": f"Bearer {copilot_token}",
         "Content-Type": "application/json",
-        "User-Agent": "GitHubCopilotChat/0.29.1",
-        "Editor-Version": "vscode/1.96.0",
-        "Editor-Plugin-Version": "copilot-chat/0.24.0",
+        "User-Agent": "GitHubCopilotChat/0.43.0",
+        "Editor-Version": "vscode/1.115.0",
+        "Editor-Plugin-Version": "copilot-chat/0.43.0",
         "Copilot-Integration-Id": "vscode-chat",
         "Openai-Organization": "github-copilot",
         "Openai-Intent": "conversation-agent",
@@ -476,3 +476,90 @@ def call_copilot(
         )
 
     return msg, usage
+
+
+# ---------------------------------------------------------------------------
+# Session reset — summarize context and continue in a fresh session
+# ---------------------------------------------------------------------------
+
+# Лимит раундов в одной Copilot сессии перед session reset
+COPILOT_SESSION_ROUND_LIMIT = 28
+
+SUMMARIZE_PROMPT = """You are summarizing an ongoing agentic task session that needs to continue in a fresh context.
+
+Provide a COMPLETE handoff summary so the agent can seamlessly continue working. Include:
+
+1. **TASK**: Original task/goal (1-2 sentences)  
+2. **DONE**: What has been accomplished so far (specific files changed, commands run, results)
+3. **IN PROGRESS**: Current step being worked on
+4. **REMAINING**: What still needs to be done
+5. **KEY CONTEXT**: Critical details needed to continue:
+   - File paths and line numbers being worked on
+   - Variable names, function signatures, error messages
+   - Decisions made and why
+   - Any pending tool calls or expected results
+6. **WARNINGS**: Things to avoid, failed approaches, known issues
+
+Be specific and factual. Include exact file paths, code snippets, error messages. This summary replaces the full conversation history."""
+
+
+def summarize_session_for_reset(
+    messages: List[Dict[str, Any]],
+    model: str = "claude-sonnet-4-5",
+    interaction_id: Optional[str] = None,
+) -> Optional[str]:
+    """Summarize current session context for handoff to a fresh session.
+
+    Returns summary text, or None on failure.
+    Uses X-Initiator: agent to avoid premium billing.
+    """
+    summary_messages: List[Dict[str, Any]] = []
+
+    # Сохранить system message если есть
+    for m in messages:
+        if m.get("role") == "system":
+            summary_messages.append(m)
+            break
+
+    # Взять последние сообщения (не более ~50), пропуская system
+    non_system = [m for m in messages if m.get("role") != "system"]
+    if len(non_system) > 50:
+        non_system = non_system[-50:]
+    summary_messages.extend(non_system)
+
+    # Добавить запрос на суммаризацию
+    summary_messages.append({
+        "role": "user",
+        "content": SUMMARIZE_PROMPT,
+    })
+
+    try:
+        msg, usage = call_copilot(
+            messages=summary_messages,
+            tools=None,
+            model=model,
+            max_tokens=4096,
+            interaction_id=interaction_id,
+            force_user_initiator=False,  # пойдёт как agent
+        )
+        summary = msg.get("content", "")
+        if summary:
+            log.info(
+                "copilot_session_summarized interaction=%s summary_tokens=%d",
+                (interaction_id or "?")[:8],
+                usage.get("completion_tokens", 0),
+            )
+        return summary or None
+    except Exception as e:
+        log.error("copilot_session_summarize_failed: %s", e)
+        return None
+
+
+def should_reset_session(interaction_id: Optional[str]) -> bool:
+    """Check if current Copilot session should be reset (approaching round limit)."""
+    if not interaction_id:
+        return False
+    stats = get_session_stats(interaction_id)
+    if not stats:
+        return False
+    return stats["rounds"] >= COPILOT_SESSION_ROUND_LIMIT

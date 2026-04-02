@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 PROMPT_TOKEN_GUARD_THRESHOLD = 40000
 
 from ouroboros.context import compact_tool_history, compact_tool_history_llm
-from ouroboros.copilot_proxy import CopilotServerCooldownError
+from ouroboros.copilot_proxy import CopilotServerCooldownError, should_reset_session, summarize_session_for_reset, COPILOT_SESSION_ROUND_LIMIT
 from ouroboros.llm import LLMClient, normalize_reasoning_effort, model_transport, reasoning_rank
 from ouroboros.model_modes import execution_style_for_active_mode, get_runtime_diagnostics, max_rounds_for_active_mode, tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
@@ -43,13 +43,15 @@ from ouroboros.loop import (
 )
 
 
-COPILOT_MAX_ROUNDS = 30
+MAX_SESSION_RESETS = 10
+COPILOT_MAX_ROUNDS = COPILOT_SESSION_ROUND_LIMIT * MAX_SESSION_RESETS  # 280
 
 
 def _copilot_max_rounds_cap(default_max_rounds: int, active_model: str) -> int:
     if model_transport(active_model) != "copilot":
         return default_max_rounds
-    return min(default_max_rounds, COPILOT_MAX_ROUNDS)
+    # Ensure Copilot loop can run for at least MAX_SESSION_RESETS full sessions
+    return max(default_max_rounds, COPILOT_MAX_ROUNDS)
 
 
 def _consume_force_user_initiator(state: Dict[str, Any]) -> bool:
@@ -985,6 +987,91 @@ def _process_llm_response_or_continue(
     )
 
 
+def _maybe_apply_session_reset(
+    *,
+    state: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+    emit_progress: Callable[[str], None],
+) -> None:
+    """For Copilot transport: reset session every COPILOT_SESSION_ROUND_LIMIT rounds.
+
+    Summarizes context, creates a new interaction_id, and rebuilds messages so
+    the agentic loop can continue in a fresh session without HTTP 500 errors.
+    No-op for non-Copilot transports.
+    """
+    if model_transport(state["active_model"]) != "copilot":
+        return
+
+    interaction_id = state.get("interaction_id")
+    if not should_reset_session(interaction_id):
+        return
+
+    session_resets_done = state.get("session_resets_count", 0)
+    if session_resets_done >= MAX_SESSION_RESETS:
+        log.warning(
+            "copilot_session_reset_limit_reached resets=%d max=%d interaction=%s",
+            session_resets_done, MAX_SESSION_RESETS, (interaction_id or "?")[:8],
+        )
+        return
+
+    from ouroboros.llm import transport_model_name
+    model_name = transport_model_name(state["active_model"])
+
+    emit_progress(
+        f"🔄 Copilot session reset #{session_resets_done + 1}/{MAX_SESSION_RESETS}: "
+        f"summarizing {COPILOT_SESSION_ROUND_LIMIT} rounds..."
+    )
+
+    summary = summarize_session_for_reset(
+        messages=messages,
+        model=model_name,
+        interaction_id=interaction_id,
+    )
+
+    if summary:
+        old_interaction_id = interaction_id
+        new_interaction_id = str(uuid.uuid4())
+        state["interaction_id"] = new_interaction_id
+        state["session_resets_count"] = session_resets_done + 1
+
+        # Rebuild messages: keep system prompt + summary as handoff context
+        new_messages: List[Dict[str, Any]] = []
+        for m in messages:
+            if m.get("role") == "system":
+                new_messages.append(m)
+                break
+        new_messages.append({
+            "role": "assistant",
+            "content": (
+                "I've been working on this task. Let me review my progress and continue.\n\n"
+                + summary
+            ),
+        })
+        new_messages.append({
+            "role": "user",
+            "content": "Continue working on the task from where you left off. Pick up exactly where the summary indicates.",
+        })
+        # Last role="user" → call_copilot sets X-Initiator="user" for this first request.
+        # This is intentional: the new session starts with a fresh user turn.
+        messages[:] = new_messages
+
+        log.info(
+            "copilot_session_reset old=%s new=%s resets=%d/%d",
+            (old_interaction_id or "?")[:8], new_interaction_id[:8],
+            state["session_resets_count"], MAX_SESSION_RESETS,
+        )
+        emit_progress(
+            f"✅ Session reset #{state['session_resets_count']} complete: "
+            f"new session {new_interaction_id[:8]}"
+        )
+    else:
+        log.warning(
+            "copilot_session_reset_failed interaction=%s — continuing without reset",
+            (interaction_id or "?")[:8],
+        )
+        emit_progress("⚠️ Session reset failed: summary unavailable, continuing without reset")
+
+
 def _run_single_round(
     *,
     state: Dict[str, Any],
@@ -1020,6 +1107,8 @@ def _run_single_round(
     )
     if prepared is not None:
         return prepared
+
+    _maybe_apply_session_reset(state=state, messages=messages, emit_progress=emit_progress)
 
     round_idx = state["round_idx"]
     force_user_initiator = _consume_force_user_initiator(state)
@@ -1082,6 +1171,7 @@ def run_llm_loop_impl(
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
     max_rounds, anti, round_idx, no_progress_rounds, recent_progress, stagnation_check_injected, task_round_warn_emitted = _init_antistagnation_state()
+    max_rounds = _copilot_max_rounds_cap(max_rounds, active_model)
 
     from ouroboros.tools import tool_discovery as _td
 
@@ -1122,6 +1212,7 @@ def run_llm_loop_impl(
         "interaction_id": str(uuid.uuid4()),
         "force_user_initiator": False,
         "copilot_wrap_up_injected": False,
+        "session_resets_count": 0,
     }
     # If caller provides a persistent executor (direct-chat), reuse it and
     # do NOT shut it down when this task ends — it survives across messages.
