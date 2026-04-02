@@ -18,6 +18,8 @@ _READ_ONLY_TOOLS = [
 ]
 
 _MUTATING_TOOLS = [
+    'remote_mkdir',
+    'remote_write_file',
     'remote_project_fetch',
 ]
 
@@ -127,7 +129,7 @@ def remote_capabilities_overview(ctx: ToolContext) -> str:
                 'remote_project_discover',
             ],
             'command_execution': ['remote_command_exec'],
-            'materialization': ['remote_project_fetch'],
+            'materialization': ['remote_mkdir', 'remote_write_file', 'remote_project_fetch'],
             'composite_workflow': ['remote_investigate_project'],
         },
         'policy': {
