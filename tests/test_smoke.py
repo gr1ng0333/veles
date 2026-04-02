@@ -140,6 +140,22 @@ EXPECTED_TOOLS = [
     "plan_create", "plan_approve", "plan_reject", "plan_step_done", "plan_update", "plan_complete", "plan_status",
     # Growth tools
     "run_tests", "log_query", "http_request",
+    # Code analysis
+    "ast_analyze", "code_search", "dependency_graph",
+    # Budget
+    "budget_forecast",
+    # Context
+    "context_inspect",
+    # Git extended
+    "git_history",
+    # Pre-commit
+    "pre_commit_review",
+    # SSH key management
+    "ssh_key_generate", "ssh_key_list", "ssh_key_deploy",
+    # Task stats
+    "task_stats",
+    # TikTok
+    "tiktok_search", "tiktok_profile", "tiktok_metadata", "tiktok_history",
 ]
 
 
