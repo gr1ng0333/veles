@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import shlex
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.ssh_targets import (
@@ -13,6 +13,7 @@ from ouroboros.tools.ssh_targets import (
     _public_target_view,
     _run_ssh_probe,
 )
+from ouroboros.utils import utc_now_iso
 
 _REMOTE_FS_SCRIPT = r'''
 import base64
@@ -67,6 +68,47 @@ SOURCE_EXTENSIONS = {
 DEPLOY_EXTENSIONS = {".tar", ".tgz", ".gz", ".zip", ".jar", ".war", ".deb", ".rpm", ".min.js"}
 SKIP_WALK_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".cache", ".pytest_cache"}
 TEXT_SAMPLE_BYTES = 4096
+
+
+_WRITE_DENY_EXACT = {
+    "/etc/passwd",
+    "/etc/shadow",
+}
+_WRITE_DENY_PREFIXES = (
+    "/bin",
+    "/sbin",
+    "/usr/bin",
+    "/usr/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/lib",
+    "/lib64",
+    "/usr/lib",
+    "/usr/lib64",
+    "/boot",
+    "/dev",
+    "/proc",
+    "/sys",
+)
+
+
+def _deny_mutation_path(path):
+    normalized = os.path.normpath(path)
+    if normalized in _WRITE_DENY_EXACT:
+        raise PermissionError(f"remote write denied for critical path: {normalized}")
+    for prefix in _WRITE_DENY_PREFIXES:
+        if normalized == prefix or normalized.startswith(prefix + os.sep):
+            raise PermissionError(f"remote write denied for system/binary path: {normalized}")
+    return normalized
+
+
+def _guard_mutation_path(path):
+    normalized = os.path.normpath(path)
+    _deny_mutation_path(normalized)
+    _deny_mutation_path(os.path.realpath(normalized))
+    parent = os.path.dirname(normalized) or "/"
+    _deny_mutation_path(os.path.realpath(parent))
+    return normalized
 
 
 def _json_print(payload):
@@ -221,6 +263,36 @@ def _read_file(payload):
         "content": content,
         "truncated": truncated,
         "max_chars": max_chars,
+    }
+
+
+def _mkdir(payload):
+    path = _guard_mutation_path(_resolve_path(payload, payload.get("path")))
+    os.makedirs(path, exist_ok=True)
+    return {"status": "ok", "entry": _path_stat(path)}
+
+
+def _write_file(payload):
+    path = _guard_mutation_path(_resolve_path(payload, payload.get("path")))
+    mode = str(payload.get("mode") or "overwrite").strip().lower()
+    if mode not in {"overwrite", "append"}:
+        raise ValueError("mode must be 'overwrite' or 'append'")
+    content = payload.get("content")
+    if not isinstance(content, str):
+        raise ValueError("content must be a string")
+    parent = os.path.dirname(path) or "/"
+    if not os.path.isdir(parent):
+        raise FileNotFoundError(f"remote parent directory not found: {parent}")
+    existed_before = os.path.exists(path)
+    with open(path, "a" if mode == "append" else "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return {
+        "status": "ok",
+        "entry": _path_stat(path),
+        "mode": mode,
+        "chars_written": len(content),
+        "bytes_written": len(content.encode("utf-8")),
+        "previously_existed": existed_before,
     }
 
 
@@ -386,6 +458,10 @@ def main(request_b64):
             if not os.path.exists(path):
                 raise FileNotFoundError(f"remote path not found: {path}")
             result = {"status": "ok", "entry": _path_stat(path)}
+        elif op == "mkdir":
+            result = _mkdir(payload)
+        elif op == "write_file":
+            result = _write_file(payload)
         elif op == "find":
             result = _find(payload)
         elif op == "grep":
@@ -439,6 +515,30 @@ def _base_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     return {"base_root": record.get("default_remote_root") or "/"}
 
 
+def _normalize_write_mode(value: Any) -> str:
+    mode = str(value or "overwrite").strip().lower()
+    if mode not in {"overwrite", "append"}:
+        raise ValueError("mode must be either 'overwrite' or 'append'")
+    return mode
+
+
+def _append_remote_fs_event(ctx: ToolContext, operation: str, alias: str, path: str, status: str, **extra: Any) -> None:
+    event = {
+        "type": "remote_filesystem",
+        "operation": operation,
+        "alias": alias,
+        "path": path,
+        "status": status,
+        "ts": utc_now_iso(),
+    }
+    event.update({k: v for k, v in extra.items() if v is not None})
+    ctx.pending_events.append(event)
+
+
+def _error_payload(exc: Exception) -> str:
+    return json.dumps({"status": "error", "kind": exc.__class__.__name__, "error": str(exc)}, ensure_ascii=False)
+
+
 def _run_remote_fs(ctx: ToolContext, alias: str, op: str, payload: Dict[str, Any], timeout: int = 40) -> Dict[str, Any]:
     _bootstrap_session(ctx, alias)
     record = _get_target_record(ctx, alias)
@@ -467,6 +567,60 @@ def _remote_read_file(ctx: ToolContext, alias: str, path: str, max_chars: int = 
 
 def _remote_stat(ctx: ToolContext, alias: str, path: str = "") -> str:
     return json.dumps(_run_remote_fs(ctx, alias, "stat", {"path": path}), ensure_ascii=False)
+
+
+def _remote_mkdir(ctx: ToolContext, alias: str, path: str) -> str:
+    try:
+        result = _run_remote_fs(ctx, alias, "mkdir", {"path": path})
+    except Exception as exc:
+        _append_remote_fs_event(ctx, "mkdir", alias, path, "error", error=str(exc))
+        return _error_payload(exc)
+    entry = result.get("entry") if isinstance(result.get("entry"), dict) else {}
+    _append_remote_fs_event(ctx, "mkdir", alias, path, "ok", remote_absolute_path=entry.get("absolute_path"), entry_type=entry.get("type"))
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _remote_write_file(ctx: ToolContext, alias: str, path: str, content: str, mode: str = "overwrite") -> str:
+    try:
+        normalized_mode = _normalize_write_mode(mode)
+    except Exception as exc:
+        _append_remote_fs_event(ctx, "write_file", alias, path, "error", error=str(exc))
+        return _error_payload(exc)
+    try:
+        result = _run_remote_fs(
+            ctx,
+            alias,
+            "write_file",
+            {"path": path, "content": content, "mode": normalized_mode},
+            timeout=60,
+        )
+    except Exception as exc:
+        _append_remote_fs_event(
+            ctx,
+            "write_file",
+            alias,
+            path,
+            "error",
+            mode=normalized_mode,
+            chars_written=len(content),
+            bytes_written=len(content.encode("utf-8")),
+            error=str(exc),
+        )
+        return _error_payload(exc)
+    entry = result.get("entry") if isinstance(result.get("entry"), dict) else {}
+    _append_remote_fs_event(
+        ctx,
+        "write_file",
+        alias,
+        path,
+        "ok",
+        mode=normalized_mode,
+        chars_written=result.get("chars_written", len(content)),
+        bytes_written=result.get("bytes_written", len(content.encode("utf-8"))),
+        remote_absolute_path=entry.get("absolute_path"),
+        previously_existed=result.get("previously_existed"),
+    )
+    return json.dumps(result, ensure_ascii=False)
 
 
 def _remote_find(ctx: ToolContext, alias: str, root: str = "", name_glob: str = "*", max_depth: int = 6, max_results: int = 100) -> str:
@@ -576,6 +730,29 @@ def get_tools() -> List[ToolEntry]:
             },
             ["alias"],
             _remote_stat,
+        ),
+        _tool_entry(
+            "remote_mkdir",
+            "Create a directory on a registered SSH target with path guardrails against critical system locations.",
+            {
+                "alias": {"type": "string", "description": "SSH target alias"},
+                "path": {"type": "string", "description": "Remote directory path to create"},
+            },
+            ["alias", "path"],
+            _remote_mkdir,
+        ),
+        _tool_entry(
+            "remote_write_file",
+            "Write a text file on a registered SSH target with overwrite/append modes and guardrails against critical system paths.",
+            {
+                "alias": {"type": "string", "description": "SSH target alias"},
+                "path": {"type": "string", "description": "Remote file path"},
+                "content": {"type": "string", "description": "Text content to write"},
+                "mode": {"type": "string", "description": "Write mode: overwrite (default) or append"},
+            },
+            ["alias", "path", "content"],
+            _remote_write_file,
+            is_code_tool=True,
         ),
         _tool_entry(
             "remote_find",
