@@ -653,12 +653,15 @@ def _finalize_with_summary(
     event_queue: Optional[queue.Queue],
     accumulated_usage: Dict[str, Any],
     task_type: str,
+    tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    interaction_id: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     messages.append({"role": "system", "content": f"[FORCED_FINALIZE] {reason}"})
     try:
         final_msg, _ = _call_llm_with_retry(
-            llm, messages, active_model, None, active_effort,
-            max_retries, drive_logs, task_id, round_idx, event_queue, accumulated_usage, task_type
+            llm, messages, active_model, tool_schemas, active_effort,
+            max_retries, drive_logs, task_id, round_idx, event_queue, accumulated_usage, task_type,
+            interaction_id=interaction_id,
         )
         if final_msg and (final_msg.get("content") or "").strip():
             return final_msg.get("content") or reason, accumulated_usage, {"assistant_notes": [], "tool_calls": []}
