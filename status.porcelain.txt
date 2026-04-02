@@ -1,0 +1,6 @@
+M colab_launcher.py
+ M ouroboros/loop_runtime.py
+ M supervisor/doc_payload.py
+ M tests/test_copilot_evolution_pacing.py
+ M tests/test_copilot_fullback_handoff.py
+ M tests/test_smoke.py

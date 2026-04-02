@@ -1,0 +1,3 @@
+ac681f6 refactor: extract document_to_text_payload to supervisor/doc_payload.py
+13e74dc refactor: extract loop_fallback.py from loop_runtime (error detection, fallback chain)
+4401d57 refactor: extract loop_copilot.py from loop_runtime (session reset, wrap-up, round caps)
