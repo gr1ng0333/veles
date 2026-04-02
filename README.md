@@ -70,6 +70,10 @@
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
 ## Changelog
+
+### v7.1.8
+- Fixed `ssh_key_deploy` to reuse the working askpass-based SSH probe path for password-auth targets instead of a separate PTY flow that could hang on live servers.
+
 ### 6.85.1
 - Исправлен sticky routing фитнес-контура: `fitness_awaiting_reply` больше не захватывает любой следующий обычный текст и сбрасывается, если сообщение не похоже на фитнес-ответ.
 
@@ -92,6 +96,7 @@
 Слабее всего пока ведут себя **fresh timeline** и **comparison**, если SERP переполнен вторичными обзорами и не отдаёт первичку наверх.
 
 ## Changelog
+
 
 ### v6.84.7
 - Added isolated `ouroboros/fitness_consciousness.py`: separate fitness daemon with its own schedule (9:00 / 13:00 / 20:00 UTC+3), quiet-check retries, isolated fitness logs, scoped drive I/O, and question-aware `fitness_awaiting_reply` flagging.
@@ -960,6 +965,7 @@ python colab_launcher.py
 ---
 
 ## Changelog
+
 
 ### 6.83.1
 - Fix: restore missing return statement in get_reflection_model() — function was returning None, breaking all execution reflections and pattern register updates

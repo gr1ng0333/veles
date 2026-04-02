@@ -82,7 +82,7 @@ def test_ssh_key_deploy_switches_target_to_key_after_success(monkeypatch, tmp_pa
     (key_dir / 'prod-box').write_text('PRIVATE', encoding='utf-8')
     (key_dir / 'prod-box.pub').write_text('ssh-ed25519 AAAATEST prod-box@test', encoding='utf-8')
 
-    monkeypatch.setattr('ouroboros.tools.ssh_key_management._run_password_ssh_command', lambda cmd, password, timeout_sec: {'exit_code': 0, 'output': 'ok', 'password_prompt_seen': True})
+    monkeypatch.setattr('ouroboros.tools.ssh_key_management._run_ssh_probe', lambda _ctx, _record, command, timeout: type('CP', (), {'returncode': 0, 'stdout': 'ok', 'stderr': ''})())
     monkeypatch.setattr('ouroboros.tools.ssh_key_management._bootstrap_session', lambda _ctx, alias: {'status': 'ok', 'alias': alias})
     monkeypatch.setattr('ouroboros.tools.ssh_key_management._fingerprint', lambda _path: '256 SHA256:deploy prod-box@test (ED25519)')
 
@@ -95,6 +95,32 @@ def test_ssh_key_deploy_switches_target_to_key_after_success(monkeypatch, tmp_pa
     assert payload['verification']['status'] == 'ok'
 
 
+
+
+def test_ssh_key_deploy_uses_run_ssh_probe_for_password_targets(monkeypatch, tmp_path):
+    ctx = _ctx(tmp_path)
+    _ssh_target_register(ctx, alias='prod-box', host='203.0.113.10', user='root', auth_mode='password', password='secret')
+    key_dir = tmp_path / 'state' / 'ssh_keys'
+    key_dir.mkdir(parents=True, exist_ok=True)
+    (key_dir / 'prod-box').write_text('PRIVATE', encoding='utf-8')
+    (key_dir / 'prod-box.pub').write_text('ssh-ed25519 AAAATEST prod-box@test', encoding='utf-8')
+
+    calls = []
+
+    def fake_probe(_ctx, record, command, timeout):
+        calls.append({'alias': record['alias'], 'command': command, 'timeout': timeout, 'auth_mode': record['auth_mode']})
+        return type('CP', (), {'returncode': 0, 'stdout': 'ok', 'stderr': ''})()
+
+    monkeypatch.setattr('ouroboros.tools.ssh_key_management._run_ssh_probe', fake_probe)
+    monkeypatch.setattr('ouroboros.tools.ssh_key_management._bootstrap_session', lambda _ctx, alias: {'status': 'ok', 'alias': alias})
+    monkeypatch.setattr('ouroboros.tools.ssh_key_management._fingerprint', lambda _path: '256 SHA256:deploy prod-box@test (ED25519)')
+
+    payload = json.loads(ssh_key_deploy(ctx, alias='prod-box', key_name='prod-box', timeout_sec=33))
+
+    assert payload['status'] == 'ok'
+    assert calls and calls[0]['alias'] == 'prod-box'
+    assert calls[0]['timeout'] == 33
+    assert 'authorized_keys' in calls[0]['command']
 def test_ssh_key_deploy_reverts_registry_when_verification_fails(monkeypatch, tmp_path):
     ctx = _ctx(tmp_path)
     _ssh_target_register(ctx, alias='prod-box', host='203.0.113.10', user='root', auth_mode='password', password='secret')
@@ -103,7 +129,7 @@ def test_ssh_key_deploy_reverts_registry_when_verification_fails(monkeypatch, tm
     (key_dir / 'prod-box').write_text('PRIVATE', encoding='utf-8')
     (key_dir / 'prod-box.pub').write_text('ssh-ed25519 AAAATEST prod-box@test', encoding='utf-8')
 
-    monkeypatch.setattr('ouroboros.tools.ssh_key_management._run_password_ssh_command', lambda cmd, password, timeout_sec: {'exit_code': 0, 'output': 'ok', 'password_prompt_seen': True})
+    monkeypatch.setattr('ouroboros.tools.ssh_key_management._run_ssh_probe', lambda _ctx, _record, command, timeout: type('CP', (), {'returncode': 0, 'stdout': 'ok', 'stderr': ''})())
     monkeypatch.setattr('ouroboros.tools.ssh_key_management._bootstrap_session', lambda _ctx, alias: (_ for _ in ()).throw(SshConnectionError('auth_failed', 'still password only')))
 
     payload = json.loads(ssh_key_deploy(ctx, alias='prod-box', key_name='prod-box'))

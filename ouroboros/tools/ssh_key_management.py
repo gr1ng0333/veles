@@ -3,12 +3,9 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import pty
 import re
-import select
 import shlex
 import subprocess
-import time
 from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -20,6 +17,7 @@ from ouroboros.tools.ssh_targets import (
     _get_target_record,
     _load_registry,
     _public_target_view,
+    _run_ssh_probe,
     _save_registry,
 )
 
@@ -136,70 +134,6 @@ def _public_payload_for_key(ctx: ToolContext, key_name: Optional[str], public_ke
     return guessed_private, custom_path, public_key, guessed_private.name
 
 
-def _run_password_ssh_command(cmd: List[str], password: str, timeout_sec: int) -> Dict[str, Any]:
-    master_fd, slave_fd = pty.openpty()
-    started_at = time.time()
-    output_chunks: List[str] = []
-    password_sent = False
-    try:
-        process = subprocess.Popen(
-            cmd,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            text=False,
-            close_fds=True,
-        )
-        os.close(slave_fd)
-        slave_fd = -1
-
-        while True:
-            if time.time() - started_at > timeout_sec:
-                process.kill()
-                raise SshKeyManagementError('timeout', f'ssh password session timed out after {timeout_sec}s')
-
-            ready, _, _ = select.select([master_fd], [], [], 0.2)
-            if ready:
-                chunk = os.read(master_fd, 4096)
-                if chunk:
-                    text = chunk.decode('utf-8', errors='replace')
-                    output_chunks.append(text)
-                    lowered = ''.join(output_chunks).lower()
-                    if not password_sent and 'password:' in lowered:
-                        os.write(master_fd, (password + '\n').encode('utf-8'))
-                        password_sent = True
-                elif process.poll() is not None:
-                    break
-            elif process.poll() is not None:
-                break
-
-        exit_code = process.wait(timeout=2)
-    finally:
-        try:
-            os.close(master_fd)
-        except OSError:
-            pass
-        if slave_fd != -1:
-            try:
-                os.close(slave_fd)
-            except OSError:
-                pass
-
-    output = ''.join(output_chunks)
-    lowered = output.lower()
-    if 'permission denied' in lowered and 'password' in lowered:
-        raise SshKeyManagementError('auth_failed', 'ssh password authentication failed')
-    if 'host key verification failed' in lowered:
-        raise SshKeyManagementError('host_key_verification_failed', 'ssh host key verification failed')
-    if 'are you sure you want to continue connecting' in lowered:
-        raise SshKeyManagementError('host_key_confirmation_required', 'ssh host key confirmation is required; remove stale host key entry and retry')
-    return {
-        'exit_code': exit_code,
-        'output': output,
-        'password_prompt_seen': password_sent,
-    }
-
-
 def _run_key_ssh_command(ctx: ToolContext, record: Dict[str, Any], remote_command: str, timeout_sec: int) -> Dict[str, Any]:
     cmd = _base_ssh_command(ctx, record) + [remote_command]
     result = subprocess.run(
@@ -297,19 +231,20 @@ def ssh_key_deploy(
         secret_password = str(password or record.get('password') or '')
 
         if secret_password:
-            ssh_cmd = [
-                'ssh',
-                '-tt',
-                '-p', str(record['port']),
-                '-o', 'ConnectTimeout=10',
-                '-o', 'StrictHostKeyChecking=accept-new',
-                '-o', 'PreferredAuthentications=password',
-                '-o', 'PubkeyAuthentication=no',
-                '-o', 'NumberOfPasswordPrompts=1',
-                f"{record['user']}@{record['host']}",
-                remote_command,
-            ]
-            deploy_result = _run_password_ssh_command(ssh_cmd, secret_password, normalized_timeout)
+            if record.get('auth_mode') != 'password' or record.get('password') != secret_password:
+                registry = _load_registry(ctx)
+                targets = registry.setdefault('targets', {})
+                target_entry = targets.setdefault(record['alias'], {})
+                target_entry['password'] = secret_password
+                target_entry['auth_mode'] = 'password'
+                _save_registry(ctx, registry)
+                record = _get_target_record(ctx, alias)
+            probe_result = _run_ssh_probe(ctx, record, command=remote_command, timeout=normalized_timeout)
+            deploy_result = {
+                'exit_code': probe_result.returncode,
+                'output': (probe_result.stdout or '') + (probe_result.stderr or ''),
+                'password_prompt_seen': True,
+            }
         elif record.get('auth_mode') == 'key':
             deploy_result = _run_key_ssh_command(ctx, record, remote_command, normalized_timeout)
         else:
