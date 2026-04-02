@@ -15,11 +15,15 @@ _READ_ONLY_TOOLS = [
     'remote_grep',
     'remote_project_discover',
     'remote_command_exec',
+    'remote_service_status',
+    'remote_service_logs',
+    'remote_service_list',
 ]
 
 _MUTATING_TOOLS = [
     'remote_mkdir',
     'remote_write_file',
+    'remote_service_action',
     'remote_project_fetch',
 ]
 
