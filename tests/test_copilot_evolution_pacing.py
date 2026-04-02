@@ -5,11 +5,15 @@ from unittest import mock
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from ouroboros.loop_runtime import _copilot_max_rounds_cap, _maybe_sleep_before_evolution_copilot_request
+# Functions moved to loop_copilot; loop_runtime re-exports them as aliases.
+from ouroboros.loop_copilot import (
+    copilot_max_rounds_cap as _copilot_max_rounds_cap,
+    maybe_sleep_before_evolution_copilot_request as _maybe_sleep_before_evolution_copilot_request,
+)
 
 
 def test_sleep_for_copilot_evolution_after_first_round():
-    with mock.patch('ouroboros.loop_runtime.time.sleep') as sleep_mock:
+    with mock.patch('ouroboros.loop_copilot.time.sleep') as sleep_mock:
         _maybe_sleep_before_evolution_copilot_request(
             task_type='evolution',
             active_model='copilot/claude-sonnet-4.6',
@@ -20,7 +24,7 @@ def test_sleep_for_copilot_evolution_after_first_round():
 
 
 def test_skip_sleep_for_first_primary_round():
-    with mock.patch('ouroboros.loop_runtime.time.sleep') as sleep_mock:
+    with mock.patch('ouroboros.loop_copilot.time.sleep') as sleep_mock:
         _maybe_sleep_before_evolution_copilot_request(
             task_type='evolution',
             active_model='copilot/claude-sonnet-4.6',
@@ -31,7 +35,7 @@ def test_skip_sleep_for_first_primary_round():
 
 
 def test_skip_sleep_for_codex_or_non_evolution():
-    with mock.patch('ouroboros.loop_runtime.time.sleep') as sleep_mock:
+    with mock.patch('ouroboros.loop_copilot.time.sleep') as sleep_mock:
         _maybe_sleep_before_evolution_copilot_request(
             task_type='task',
             active_model='copilot/claude-sonnet-4.6',
@@ -48,7 +52,7 @@ def test_skip_sleep_for_codex_or_non_evolution():
 
 
 def test_sleep_for_fallback_request_even_on_round_one():
-    with mock.patch('ouroboros.loop_runtime.time.sleep') as sleep_mock:
+    with mock.patch('ouroboros.loop_copilot.time.sleep') as sleep_mock:
         _maybe_sleep_before_evolution_copilot_request(
             task_type='evolution',
             active_model='copilot/claude-haiku-4.5',
