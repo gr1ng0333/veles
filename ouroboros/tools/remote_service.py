@@ -199,15 +199,15 @@ def _list_services_command() -> str:
 def _system_health_command() -> str:
     script = " ; ".join(
         [
-            r"printf __UPTIME__\n",
+            "printf '%s\n' __UPTIME__",
             r"cat /proc/uptime 2>/dev/null || true",
-            r"printf __LOADAVG__\n",
+            "printf '%s\n' __LOADAVG__",
             r"cat /proc/loadavg 2>/dev/null || true",
-            r"printf __DF__\n",
+            "printf '%s\n' __DF__",
             r"df -P -k / 2>/dev/null || true",
-            r"printf __FREE__\n",
+            "printf '%s\n' __FREE__",
             r"free -b 2>/dev/null || true",
-            r"printf __PORTS__\n",
+            "printf '%s\n' __PORTS__",
             r"(ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null || true)",
         ]
     )
