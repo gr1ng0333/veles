@@ -1,7 +1,7 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.1.14-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.1.15-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
@@ -67,6 +67,15 @@
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
 ## Changelog
+
+### v7.1.15
+- Raised TASK_MAX_ROUNDS to 280 for all transports; fixed `_finalize_with_summary` passing `tools=None` causing 400 errors; pass `interaction_id` through finalize chain.
+
+### v7.1.14
+- Refactored `loop_runtime.py` (1334 → 975 lines): extracted `loop_copilot.py`, `loop_fallback.py`, `supervisor/doc_payload.py`; reduced complexity limit to 1000.
+
+### v7.1.13
+- Fixed Copilot wrap-up trigger to use `session_round % 28 >= 26`; removed stale `_copilot_diag.py`.
 
 ### v7.1.8
 - Fixed `ssh_key_deploy` to reuse the working askpass-based SSH probe path for password-auth targets instead of a separate PTY flow that could hang on live servers.
