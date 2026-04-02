@@ -16,7 +16,7 @@ from ouroboros.doc_ingest import ingest_legacy_word_document
 def document_to_text_payload(
     doc: Dict[str, Any],
     caption: str,
-    tg: Any,  # TelegramClient — avoid circular import
+    tg: Any,  # TelegramClient
     chat_id: int,
     drive_root: pathlib.Path,
     send_with_budget: Callable,
@@ -41,17 +41,15 @@ def document_to_text_payload(
         'xml', 'sql', 'log', 'env', 'gitignore', 'dockerfile',
     }
     image_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'}
-
-    def archive(raw_b64: str, detected_mime: Optional[str], kind: str) -> Any:
-        return save_incoming_artifact(
-            drive_root, filename=file_name, file_base64=raw_b64, content_kind=kind,
-            mime_type=detected_mime or mime_type or 'application/octet-stream',
-            chat_id=chat_id, caption=caption, metadata={
-                'message_id': int(message_id or 0),
-                'telegram_file_id': file_id or '',
-                'activation_mode': 'immediate' if has_caption else 'deferred',
-            },
-        )
+    archive = lambda raw_b64, detected_mime, kind: save_incoming_artifact(
+        drive_root, filename=file_name, file_base64=raw_b64, content_kind=kind,
+        mime_type=detected_mime or mime_type or 'application/octet-stream',
+        chat_id=chat_id, caption=caption, metadata={
+            'message_id': int(message_id or 0),
+            'telegram_file_id': file_id or '',
+            'activation_mode': 'immediate' if has_caption else 'deferred',
+        },
+    )
 
     if ((mime_type or '').strip().lower().startswith('image/') or file_ext in image_extensions) and file_id:
         b64, detected_mime = tg.download_file_base64(file_id)
@@ -171,3 +169,7 @@ def document_to_text_payload(
             return None, None, True
     send_with_budget(chat_id, f'⚠️ Формат .{file_ext or "bin"} не поддерживается для немедленной обработки. Файл сохранён во входящий архив.')
     return None, None, True
+
+# ----------------------------
+# 5) Bootstrap repo
+# ----------------------------

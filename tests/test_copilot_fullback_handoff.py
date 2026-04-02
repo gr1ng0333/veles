@@ -42,7 +42,8 @@ def test_call_with_rotation_waits_soft_cooldown_before_terminal_error(monkeypatc
 
 
 def test_call_llm_with_fallback_handoffs_same_round_to_codex(monkeypatch):
-    from ouroboros import loop_runtime
+    import ouroboros.loop_fallback as loop_fallback_mod
+    from ouroboros.loop_fallback import call_llm_with_fallback
 
     calls = []
     sleeps = []
@@ -61,14 +62,13 @@ def test_call_llm_with_fallback_handoffs_same_round_to_codex(monkeypatch):
         accumulated_usage["_last_llm_error_model"] = model
         return {"content": "codex rescue"}, 0.0
 
-    monkeypatch.setattr(loop_runtime, "_call_llm_with_retry", fake_call)
     monkeypatch.setattr(
-        loop_runtime,
-        "_maybe_sleep_before_evolution_copilot_request",
+        loop_fallback_mod,
+        "maybe_sleep_before_evolution_copilot_request",
         lambda **kwargs: sleeps.append((kwargs["active_model"], kwargs["phase"])),
     )
 
-    msg = loop_runtime._call_llm_with_fallback(
+    msg = call_llm_with_fallback(
         llm=None,
         messages=[{"role": "user", "content": "continue"}],
         active_model="copilot/claude-sonnet-4.6",
@@ -83,6 +83,7 @@ def test_call_llm_with_fallback_handoffs_same_round_to_codex(monkeypatch):
         task_type="evolution",
         emit_progress=progress.append,
         interaction_id="ix-1",
+        _call_llm_with_retry_fn=fake_call,
     )
 
     assert msg["content"] == "codex rescue"
