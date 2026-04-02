@@ -1,0 +1,116 @@
+diff --git a/ouroboros/tools/git_history.py b/ouroboros/tools/git_history.py
+index 6c4f4a8..f9bd625 100644
+--- a/ouroboros/tools/git_history.py
++++ b/ouroboros/tools/git_history.py
+@@ -242,29 +242,26 @@ def get_tools() -> List[ToolEntry]:
+         ToolEntry(
+             name="git_history",
+             schema={
+-                "type": "function",
+-                "function": {
+-                    "name": "git_history",
+-                    "description": "Inspect git history in structured JSON form.",
+-                    "parameters": {
+-                        "type": "object",
+-                        "properties": {
+-                            "mode": {"type": "string"},
+-                            "branch": {"type": "string"},
+-                            "limit": {"type": "integer"},
+-                            "since": {"type": "string"},
+-                            "until": {"type": "string"},
+-                            "author": {"type": "string"},
+-                            "grep": {"type": "string"},
+-                            "path": {"type": "string"},
+-                            "include_stats": {"type": "boolean"},
+-                            "include_body": {"type": "boolean"},
+-                            "pattern": {"type": "string"},
+-                            "ref": {"type": "string"},
+-                            "include_diff": {"type": "boolean"},
+-                            "ref1": {"type": "string"},
+-                            "ref2": {"type": "string"},
+-                        },
++                "name": "git_history",
++                "description": "Inspect git history in structured JSON form.",
++                "parameters": {
++                    "type": "object",
++                    "properties": {
++                        "mode": {"type": "string"},
++                        "branch": {"type": "string"},
++                        "limit": {"type": "integer"},
++                        "since": {"type": "string"},
++                        "until": {"type": "string"},
++                        "author": {"type": "string"},
++                        "grep": {"type": "string"},
++                        "path": {"type": "string"},
++                        "include_stats": {"type": "boolean"},
++                        "include_body": {"type": "boolean"},
++                        "pattern": {"type": "string"},
++                        "ref": {"type": "string"},
++                        "include_diff": {"type": "boolean"},
++                        "ref1": {"type": "string"},
++                        "ref2": {"type": "string"},
+                     },
+                 },
+             },
+diff --git a/ouroboros/tools/pre_commit_review.py b/ouroboros/tools/pre_commit_review.py
+index 279dc1c..fe9f9e6 100644
+--- a/ouroboros/tools/pre_commit_review.py
++++ b/ouroboros/tools/pre_commit_review.py
+@@ -566,31 +566,34 @@ def get_tools() -> List[ToolEntry]:
+     return [
+         ToolEntry(
+             name="pre_commit_review",
+-            description=(
+-                "Fast static pre-commit checklist runner. "
+-                "Runs all 12 CHECKLISTS.md items (bible compliance, secrets, syntax, "
+-                "shrink guard, version bump, tool registration, etc.) against staged diff "
+-                "or a specific git ref. Returns PASS/FAIL verdict in <1 second, no LLM calls. "
+-                "Use before every commit as a cheap sanity check. "
+-                "For deep semantic review use multi_model_review instead."
+-            ),
+-            parameters={
+-                "type": "object",
+-                "properties": {
+-                    "staged": {
+-                        "type": "boolean",
+-                        "description": "Review staged changes (default: true). Set false to review unstaged diff vs HEAD.",
+-                    },
+-                    "ref": {
+-                        "type": "string",
+-                        "description": "Optional git commit ref to review (e.g. 'HEAD', 'abc1234'). Overrides staged.",
+-                    },
+-                    "verbose": {
+-                        "type": "boolean",
+-                        "description": "Include detail for PASS/N/A items too (default: false, only shows FAIL/WARN detail).",
++            schema={
++                "name": "pre_commit_review",
++                "description": (
++                    "Fast static pre-commit checklist runner. "
++                    "Runs all 12 CHECKLISTS.md items (bible compliance, secrets, syntax, "
++                    "shrink guard, version bump, tool registration, etc.) against staged diff "
++                    "or a specific git ref. Returns PASS/FAIL verdict in <1 second, no LLM calls. "
++                    "Use before every commit as a cheap sanity check. "
++                    "For deep semantic review use multi_model_review instead."
++                ),
++                "parameters": {
++                    "type": "object",
++                    "properties": {
++                        "staged": {
++                            "type": "boolean",
++                            "description": "Review staged changes (default: true). Set false to review unstaged diff vs HEAD.",
++                        },
++                        "ref": {
++                            "type": "string",
++                            "description": "Optional git commit ref to review (e.g. 'HEAD', 'abc1234'). Overrides staged.",
++                        },
++                        "verbose": {
++                            "type": "boolean",
++                            "description": "Include detail for PASS/N/A items too (default: false, only shows FAIL/WARN detail).",
++                        },
+                     },
++                    "required": [],
+                 },
+-                "required": [],
+             },
+             handler=lambda ctx, **kw: _run_pre_commit_review(ctx, **kw),
+         )
