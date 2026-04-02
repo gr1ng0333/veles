@@ -67,12 +67,6 @@
 - Freshness иногда известна только частично: тогда контур понижает уверенность, но всё ещё может дать полезный, не финальный ответ.
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
-#### v7.1.0 — Background Auditor + /healthcheck
-- Background consciousness rewritten as system auditor: checks one module per 15-min cycle, writes findings to `healthcheck.md`
-- New `/healthcheck` command: sends audit report as Telegram document
-- No more chat spam from background consciousness
-- Audit state persisted in `audit_state.json` with per-module checklist
-
 ## Changelog
 ### 6.85.1
 - Исправлен sticky routing фитнес-контура: `fitness_awaiting_reply` больше не захватывает любой следующий обычный текст и сбрасывается, если сообщение не похоже на фитнес-ответ.
