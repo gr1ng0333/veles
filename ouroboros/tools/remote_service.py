@@ -197,14 +197,21 @@ def _list_services_command() -> str:
 
 
 def _system_health_command() -> str:
-    return (
-        "sh -lc '"
-        "printf __UPTIME__\n; cat /proc/uptime 2>/dev/null || true; "
-        "printf __LOADAVG__\n; cat /proc/loadavg 2>/dev/null || true; "
-        "printf __DF__\n; df -P -k / 2>/dev/null || true; "
-        "printf __FREE__\n; free -b 2>/dev/null || true; "
-        "printf __PORTS__\n; (ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null || true)'"
+    script = " ; ".join(
+        [
+            r"printf __UPTIME__\n",
+            r"cat /proc/uptime 2>/dev/null || true",
+            r"printf __LOADAVG__\n",
+            r"cat /proc/loadavg 2>/dev/null || true",
+            r"printf __DF__\n",
+            r"df -P -k / 2>/dev/null || true",
+            r"printf __FREE__\n",
+            r"free -b 2>/dev/null || true",
+            r"printf __PORTS__\n",
+            r"(ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null || true)",
+        ]
     )
+    return f"sh -lc {shlex.quote(script)}"
 
 
 def _parse_health_sections(stdout: str) -> Dict[str, str]:
