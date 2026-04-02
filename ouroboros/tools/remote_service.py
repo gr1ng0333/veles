@@ -211,7 +211,7 @@ def _system_health_command() -> str:
             r"(ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null || true)",
         ]
     )
-    return f"sh -lc {shlex.quote(script)}"
+    return script
 
 
 def _parse_health_sections(stdout: str) -> Dict[str, str]:
