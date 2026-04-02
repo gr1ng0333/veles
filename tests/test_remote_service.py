@@ -8,6 +8,7 @@ from ouroboros.tools.remote_service import (
     _remote_service_list,
     _remote_service_logs,
     _remote_service_status,
+    _system_health_command,
 )
 from ouroboros.tools.ssh_targets import _ssh_target_register
 
@@ -221,3 +222,19 @@ def test_remote_server_health_collects_metrics_ports_services_and_tls(monkeypatc
     assert payload['services'][0]['ok'] is True
     assert payload['tls'][0]['ok'] is True
     assert any(event.get('type') == 'remote_server_health' for event in ctx.pending_events)
+
+def test_system_health_command_shell_parses():
+    script = _system_health_command()
+    assert script.startswith("sh -lc ")
+    inner = script[len("sh -lc ") :]
+
+    import shlex
+    import subprocess
+
+    parsed = shlex.split(inner)
+    assert len(parsed) == 1
+    shell_body = parsed[0]
+    proc = subprocess.run(["sh", "-n", "-c", shell_body], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert "(ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null || true)" in shell_body
+
