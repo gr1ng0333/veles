@@ -29,6 +29,9 @@ _TARGET_TOOLS = [
     'ssh_target_register',
     'ssh_target_list',
     'ssh_target_get',
+    'ssh_key_generate',
+    'ssh_key_list',
+    'ssh_key_deploy',
     'ssh_session_bootstrap',
     'ssh_target_ping',
 ]
@@ -77,8 +80,8 @@ def _recommended_workflows(target_count: int) -> List[Dict[str, Any]]:
         {
             'key': 'target_bootstrap',
             'when': 'First contact with a remote machine',
-            'steps': ['ssh_target_register', 'ssh_target_list', 'ssh_session_bootstrap', 'ssh_target_ping'],
-            'summary': register_hint,
+            'steps': ['ssh_target_register', 'ssh_key_generate', 'ssh_key_deploy', 'ssh_session_bootstrap', 'ssh_target_ping'],
+            'summary': register_hint + ' Generate a key once, deploy it, then use key-based sessions by default.',
         },
         {
             'key': 'read_only_investigation',

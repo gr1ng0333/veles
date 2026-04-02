@@ -5,6 +5,21 @@ import subprocess
 import pytest
 
 from ouroboros.tools.registry import ToolContext, ToolRegistry
+
+
+def _schema_names(registry: ToolRegistry) -> set[str]:
+    names = set()
+    for item in registry.schemas():
+        fn = item.get('function') if isinstance(item, dict) else None
+        if isinstance(fn, dict):
+            if 'name' in fn:
+                names.add(fn['name'])
+            elif isinstance(fn.get('function'), dict) and 'name' in fn['function']:
+                names.add(fn['function']['name'])
+        elif isinstance(item, dict) and 'name' in item:
+            names.add(item['name'])
+    return names
+
 from ouroboros.tools.ssh_targets import (
     _SESSION_CACHE,
     SshConnectionError,
@@ -32,7 +47,7 @@ def _clear_cache():
 def test_ssh_tools_registered():
     tmp = pathlib.Path('/tmp')
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
-    names = {t['function']['name'] for t in registry.schemas()}
+    names = _schema_names(registry)
     assert 'ssh_target_register' in names
     assert 'ssh_target_list' in names
     assert 'ssh_target_get' in names

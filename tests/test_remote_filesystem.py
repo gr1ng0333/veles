@@ -3,6 +3,17 @@ import json
 import subprocess
 
 from ouroboros.tools.registry import ToolRegistry
+
+
+def _schema_names(registry: ToolRegistry) -> set[str]:
+    names: set[str] = set()
+    for schema in registry.schemas():
+        fn = schema.get('function') or {}
+        name = fn.get('name') or schema.get('name')
+        if name:
+            names.add(name)
+    return names
+
 from ouroboros.tools.remote_filesystem import _discovery_roots, _remote_python_command
 
 
@@ -10,7 +21,7 @@ from ouroboros.tools.remote_filesystem import _discovery_roots, _remote_python_c
 def test_remote_filesystem_tools_registered():
     tmp = pathlib.Path('/tmp')
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
-    names = {t['function']['name'] for t in registry.schemas()}
+    names = _schema_names(registry)
     expected = {
         'remote_list_dir',
         'remote_read_file',
