@@ -105,6 +105,24 @@ def _normalize_path_list(values: Optional[List[str]]) -> List[str]:
     return result
 
 
+def _normalize_string_list(values: Optional[List[str]]) -> List[str]:
+    result: List[str] = []
+    for item in values or []:
+        text = str(item or "").strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _normalize_port_list(values: Optional[List[Any]]) -> List[int]:
+    result: List[int] = []
+    for item in values or []:
+        port = _normalize_port(item)
+        if port not in result:
+            result.append(port)
+    return result
+
+
 def _normalize_target_record(
     *,
     alias: str,
@@ -115,6 +133,9 @@ def _normalize_target_record(
     label: str = "",
     default_remote_root: str = "",
     known_projects_paths: Optional[List[str]] = None,
+    known_services: Optional[List[str]] = None,
+    known_ports: Optional[List[Any]] = None,
+    known_tls_domains: Optional[List[str]] = None,
     ssh_key_path: str = "",
     password: str = "",
 ) -> Dict[str, Any]:
@@ -141,6 +162,9 @@ def _normalize_target_record(
         "label": (label or alias_norm).strip() or alias_norm,
         "default_remote_root": (default_remote_root or "").strip(),
         "known_projects_paths": _normalize_path_list(known_projects_paths),
+        "known_services": _normalize_string_list(known_services),
+        "known_ports": _normalize_port_list(known_ports),
+        "known_tls_domains": _normalize_string_list(known_tls_domains),
         "ssh_key_path": key_path,
         "password": secret_password,
     }
@@ -156,6 +180,9 @@ def _public_target_view(record: Dict[str, Any]) -> Dict[str, Any]:
         "label": record.get("label", record["alias"]),
         "default_remote_root": record.get("default_remote_root", ""),
         "known_projects_paths": list(record.get("known_projects_paths") or []),
+        "known_services": list(record.get("known_services") or []),
+        "known_ports": list(record.get("known_ports") or []),
+        "known_tls_domains": list(record.get("known_tls_domains") or []),
         "ssh_key_path": record.get("ssh_key_path", "") if record.get("auth_mode") == "key" else "",
         "has_password": bool(record.get("password")) if record.get("auth_mode") == "password" else False,
     }
@@ -300,6 +327,9 @@ def _ssh_target_register(
     label: str = "",
     default_remote_root: str = "",
     known_projects_paths: Optional[List[str]] = None,
+    known_services: Optional[List[str]] = None,
+    known_ports: Optional[List[Any]] = None,
+    known_tls_domains: Optional[List[str]] = None,
     ssh_key_path: str = "",
     password: str = "",
 ) -> str:
@@ -312,6 +342,9 @@ def _ssh_target_register(
         label=label,
         default_remote_root=default_remote_root,
         known_projects_paths=known_projects_paths,
+        known_services=known_services,
+        known_ports=known_ports,
+        known_tls_domains=known_tls_domains,
         ssh_key_path=ssh_key_path,
         password=password,
     )
@@ -406,6 +439,9 @@ def get_tools() -> List[ToolEntry]:
                 "label": {"type": "string", "description": "Optional human-friendly label"},
                 "default_remote_root": {"type": "string", "description": "Default remote working root"},
                 "known_projects_paths": {"type": "array", "items": {"type": "string"}, "description": "Known project directories on the remote host"},
+                "known_services": {"type": "array", "items": {"type": "string"}, "description": "systemd units that should stay healthy on the host"},
+                "known_ports": {"type": "array", "items": {"type": "integer"}, "description": "TCP ports that should be listening on the host"},
+                "known_tls_domains": {"type": "array", "items": {"type": "string"}, "description": "TLS domains to check from the controller side"},
                 "ssh_key_path": {"type": "string", "description": "Required for auth_mode=key"},
                 "password": {"type": "string", "description": "Required for auth_mode=password"},
             },

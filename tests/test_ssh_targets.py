@@ -165,3 +165,28 @@ def test_normalize_probe_error(stderr, expected_kind):
     error = _normalize_probe_error(stderr, 255)
     assert isinstance(error, SshConnectionError)
     assert error.kind == expected_kind
+
+
+def test_ssh_target_register_persists_health_metadata(tmp_path):
+    ctx = _ctx(tmp_path)
+    payload = json.loads(
+        _ssh_target_register(
+            ctx,
+            alias='prod-box',
+            host='203.0.113.10',
+            user='root',
+            auth_mode='password',
+            password='secret',
+            known_services=['nginx.service', 'xray.service'],
+            known_ports=[22, 443, 2053],
+            known_tls_domains=['example.com', 'vpn.example.com'],
+        )
+    )
+
+    target = payload['target']
+    assert target['known_services'] == ['nginx.service', 'xray.service']
+    assert target['known_ports'] == [22, 443, 2053]
+    assert target['known_tls_domains'] == ['example.com', 'vpn.example.com']
+
+    listed = json.loads(_ssh_target_list(ctx))
+    assert listed['targets'][0]['known_ports'] == [22, 443, 2053]

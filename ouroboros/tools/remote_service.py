@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import shlex
+import socket
+import ssl
 import subprocess
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -19,6 +22,8 @@ _MAX_TIMEOUT_SEC = 120
 _DEFAULT_LOG_LINES = 50
 _MAX_LOG_LINES = 500
 _MAX_OUTPUT_CHARS = 20000
+_DEFAULT_TLS_TIMEOUT_SEC = 5
+_TLS_WARNING_DAYS = 21
 _ALLOWED_ACTIONS = {"restart", "start", "stop", "reload"}
 _SYSTEMCTL_LIST_FLAGS = "systemctl list-units --type=service --state=running --all --no-pager --no-legend --plain"
 
@@ -189,6 +194,310 @@ def _systemctl_action_command(service_name: str, action: str) -> str:
 
 def _list_services_command() -> str:
     return _SYSTEMCTL_LIST_FLAGS
+
+
+def _system_health_command() -> str:
+    return (
+        "sh -lc '"
+        "printf __UPTIME__\n; cat /proc/uptime 2>/dev/null || true; "
+        "printf __LOADAVG__\n; cat /proc/loadavg 2>/dev/null || true; "
+        "printf __DF__\n; df -P -k / 2>/dev/null || true; "
+        "printf __FREE__\n; free -b 2>/dev/null || true; "
+        "printf __PORTS__\n; (ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null || true)'"
+    )
+
+
+def _parse_health_sections(stdout: str) -> Dict[str, str]:
+    sections: Dict[str, List[str]] = {}
+    current = None
+    for raw_line in (stdout or "").splitlines():
+        line = raw_line.rstrip("\n")
+        if line in {"__UPTIME__", "__LOADAVG__", "__DF__", "__FREE__", "__PORTS__"}:
+            current = line.strip("_").lower()
+            sections[current] = []
+            continue
+        if current is not None:
+            sections[current].append(line)
+    return {key: "\n".join(value).strip() for key, value in sections.items()}
+
+
+def _parse_uptime_seconds(section: str) -> float | None:
+    first = (section or "").split()
+    if not first:
+        return None
+    try:
+        return float(first[0])
+    except Exception:
+        return None
+
+
+def _parse_load_average(section: str) -> List[float]:
+    parts = (section or "").split()[:3]
+    values: List[float] = []
+    for item in parts:
+        try:
+            values.append(float(item))
+        except Exception:
+            break
+    return values
+
+
+def _parse_root_disk_usage(section: str) -> Dict[str, Any]:
+    lines = [line for line in (section or "").splitlines() if line.strip()]
+    if len(lines) < 2:
+        return {}
+    parts = lines[1].split()
+    if len(parts) < 6:
+        return {}
+    used_pct_raw = parts[4].rstrip("%")
+    try:
+        used_pct = int(used_pct_raw)
+    except Exception:
+        used_pct = None
+    return {
+        "filesystem": parts[0],
+        "total_kb": int(parts[1]) if parts[1].isdigit() else parts[1],
+        "used_kb": int(parts[2]) if parts[2].isdigit() else parts[2],
+        "available_kb": int(parts[3]) if parts[3].isdigit() else parts[3],
+        "used_pct": used_pct,
+        "mount": parts[5],
+    }
+
+
+def _parse_memory_usage(section: str) -> Dict[str, Any]:
+    lines = [line for line in (section or "").splitlines() if line.strip()]
+    mem_line = next((line for line in lines if line.startswith("Mem:")), "")
+    if not mem_line:
+        return {}
+    parts = mem_line.split()
+    if len(parts) < 7:
+        return {}
+    total = int(parts[1])
+    used = int(parts[2])
+    free = int(parts[3])
+    shared = int(parts[4])
+    buff_cache = int(parts[5])
+    available = int(parts[6])
+    available_pct = round((available / total) * 100, 2) if total else None
+    return {
+        "total_bytes": total,
+        "used_bytes": used,
+        "free_bytes": free,
+        "shared_bytes": shared,
+        "buff_cache_bytes": buff_cache,
+        "available_bytes": available,
+        "available_pct": available_pct,
+    }
+
+
+def _extract_port(endpoint: str) -> int | None:
+    text = (endpoint or "").strip()
+    if not text:
+        return None
+    if text.startswith("[") and "]:" in text:
+        text = text.rsplit("]:", 1)[-1]
+    elif ":" in text:
+        text = text.rsplit(":", 1)[-1]
+    text = text.strip()
+    if not text.isdigit():
+        return None
+    port = int(text)
+    if 1 <= port <= 65535:
+        return port
+    return None
+
+
+def _parse_listening_ports(section: str) -> List[int]:
+    ports: List[int] = []
+    for line in (section or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split()
+        local = ""
+        if stripped.startswith("tcp") and len(parts) >= 4:
+            local = parts[3]
+        elif len(parts) >= 4:
+            local = parts[3]
+        port = _extract_port(local)
+        if port is not None and port not in ports:
+            ports.append(port)
+    return sorted(ports)
+
+
+def _check_tls_domain(domain: str, timeout_sec: int = _DEFAULT_TLS_TIMEOUT_SEC) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "domain": domain,
+        "port": 443,
+        "status": "error",
+        "ok": False,
+    }
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((domain, 443), timeout=timeout_sec) as sock:
+            with context.wrap_socket(sock, server_hostname=domain) as tls_sock:
+                cert = tls_sock.getpeercert()
+        not_after = cert.get("notAfter", "")
+        if not not_after:
+            payload["error"] = "missing certificate expiry"
+            return payload
+        expires_at = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        days_remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds() // 86400)
+        payload.update(
+            {
+                "status": "ok" if days_remaining >= _TLS_WARNING_DAYS else "warn",
+                "ok": days_remaining >= _TLS_WARNING_DAYS,
+                "expires_at": expires_at.isoformat(),
+                "days_remaining": days_remaining,
+                "subject": cert.get("subject", []),
+                "issuer": cert.get("issuer", []),
+            }
+        )
+        if days_remaining < _TLS_WARNING_DAYS:
+            payload["error"] = f"certificate expires in {days_remaining} days"
+        return payload
+    except Exception as exc:
+        payload["error"] = str(exc)
+        return payload
+
+
+def _system_health_flags(system: Dict[str, Any]) -> List[Dict[str, Any]]:
+    flags: List[Dict[str, Any]] = []
+    uptime_seconds = system.get("uptime_seconds")
+    flags.append({
+        "key": "uptime",
+        "status": "ok" if uptime_seconds is not None else "warn",
+        "summary": f"Uptime: {int(uptime_seconds)}s" if uptime_seconds is not None else "Uptime unavailable",
+    })
+    disk = system.get("root_disk") or {}
+    disk_used_pct = disk.get("used_pct")
+    flags.append({
+        "key": "root_disk",
+        "status": "ok" if isinstance(disk_used_pct, int) and disk_used_pct < 90 else "warn",
+        "summary": f"Root disk used: {disk_used_pct}%" if disk_used_pct is not None else "Root disk usage unavailable",
+    })
+    memory = system.get("memory") or {}
+    memory_available_pct = memory.get("available_pct")
+    flags.append({
+        "key": "memory",
+        "status": "ok" if isinstance(memory_available_pct, (int, float)) and memory_available_pct >= 10 else "warn",
+        "summary": f"Available memory: {memory_available_pct}%" if memory_available_pct is not None else "Memory availability unavailable",
+    })
+    load = system.get("load_average") or []
+    flags.append({
+        "key": "load_average",
+        "status": "ok" if load else "warn",
+        "summary": f"Load average: {load}" if load else "Load average unavailable",
+    })
+    return flags
+
+
+def _remote_server_health(ctx: ToolContext, alias: str, *, timeout_sec: Any = None) -> str:
+    normalized_alias = _normalize_alias(alias)
+    try:
+        timeout = _normalize_timeout(timeout_sec)
+        record = _get_target_record(ctx, normalized_alias)
+        result = _run_remote_command(ctx, normalized_alias, _system_health_command(), timeout=timeout)
+        sections = _parse_health_sections(result["stdout"])
+        system = {
+            "uptime_seconds": _parse_uptime_seconds(sections.get("uptime", "")),
+            "load_average": _parse_load_average(sections.get("loadavg", "")),
+            "root_disk": _parse_root_disk_usage(sections.get("df", "")),
+            "memory": _parse_memory_usage(sections.get("free", "")),
+            "listening_ports": _parse_listening_ports(sections.get("ports", "")),
+        }
+
+        port_checks = []
+        for port in list(record.get("known_ports") or []):
+            listening = port in system["listening_ports"]
+            port_checks.append({
+                "port": port,
+                "listening": listening,
+                "status": "ok" if listening else "error",
+                "ok": listening,
+            })
+
+        service_checks = []
+        for service_name in list(record.get("known_services") or []):
+            svc = _run_remote_command(ctx, normalized_alias, _systemctl_status_command(service_name), timeout=timeout)
+            parsed = _parse_systemctl_show(svc["stdout"])
+            service_ok = svc["returncode"] == 0 and parsed.get("active_state") == "active"
+            service_checks.append({
+                "service_name": service_name,
+                "status": "ok" if service_ok else "error",
+                "ok": service_ok,
+                "returncode": svc["returncode"],
+                "service": parsed,
+                "stderr": _trim_output(svc["stderr"]),
+            })
+
+        tls_checks = [_check_tls_domain(domain) for domain in list(record.get("known_tls_domains") or [])]
+
+        flags = _system_health_flags(system)
+        flags.extend({
+            "key": f"port:{item['port']}",
+            "status": item["status"],
+            "summary": f"Port {item['port']} listening" if item["ok"] else f"Port {item['port']} is not listening",
+        } for item in port_checks)
+        flags.extend({
+            "key": f"service:{item['service_name']}",
+            "status": item["status"],
+            "summary": f"Service {item['service_name']} is active" if item["ok"] else f"Service {item['service_name']} is not active",
+        } for item in service_checks)
+        flags.extend({
+            "key": f"tls:{item['domain']}",
+            "status": item["status"],
+            "summary": f"TLS {item['domain']} expires in {item.get('days_remaining')} days" if item.get("ok") else f"TLS {item['domain']} check failed: {item.get('error', 'unknown error')}",
+        } for item in tls_checks)
+
+        red_flags = sum(1 for item in flags if item["status"] == "error")
+        warn_flags = sum(1 for item in flags if item["status"] == "warn")
+        green_flags = sum(1 for item in flags if item["status"] == "ok")
+        overall_status = "ok" if red_flags == 0 and warn_flags == 0 else "warn" if red_flags == 0 else "error"
+
+        payload = {
+            "status": "ok",
+            "alias": normalized_alias,
+            "checked_at": utc_now_iso(),
+            "summary": {
+                "overall_status": overall_status,
+                "green_flags": green_flags,
+                "warning_flags": warn_flags,
+                "red_flags": red_flags,
+                "checked_ports": len(port_checks),
+                "checked_services": len(service_checks),
+                "checked_tls_domains": len(tls_checks),
+            },
+            "system": system,
+            "ports": port_checks,
+            "services": service_checks,
+            "tls": tls_checks,
+            "flags": flags,
+            "stderr": _trim_output(result["stderr"]),
+        }
+        _append_audit(
+            ctx,
+            {
+                "type": "remote_server_health",
+                "alias": normalized_alias,
+                "overall_status": overall_status,
+                "red_flags": red_flags,
+                "warning_flags": warn_flags,
+            },
+        )
+        return json.dumps(payload, ensure_ascii=False)
+    except (RemoteServiceError, SshConnectionError) as exc:
+        _append_audit(
+            ctx,
+            {
+                "type": "remote_server_health",
+                "status": "error",
+                "alias": normalized_alias,
+                "kind": exc.kind,
+                "error": exc.message,
+            },
+        )
+        return _error_payload(exc.kind, exc.message, alias=normalized_alias)
 
 
 def _parse_systemctl_show(stdout: str) -> Dict[str, Any]:
@@ -500,5 +809,15 @@ def get_tools() -> List[ToolEntry]:
             },
             required=["alias"],
             handler=lambda ctx, alias, timeout_sec=None: _remote_service_list(ctx, alias, timeout_sec=timeout_sec),
+        ),
+        _tool_entry(
+            name="remote_server_health",
+            description="Collect a structured health snapshot for a registered SSH target, including expected ports, services, and TLS domains.",
+            properties={
+                "alias": {"type": "string", "description": "Registered SSH target alias."},
+                "timeout_sec": {"type": "integer", "description": f"SSH timeout in seconds (1-{_MAX_TIMEOUT_SEC})."},
+            },
+            required=["alias"],
+            handler=lambda ctx, alias, timeout_sec=None: _remote_server_health(ctx, alias, timeout_sec=timeout_sec),
         ),
     ]

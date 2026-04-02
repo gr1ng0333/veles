@@ -18,6 +18,7 @@ _READ_ONLY_TOOLS = [
     'remote_service_status',
     'remote_service_logs',
     'remote_service_list',
+    'remote_server_health',
 ]
 
 _MUTATING_TOOLS = [
@@ -75,6 +76,9 @@ def _registry_targets(ctx: ToolContext) -> List[Dict[str, Any]]:
             'auth_mode': public['auth_mode'],
             'default_remote_root': public.get('default_remote_root') or '',
             'known_projects_paths': public.get('known_projects_paths') or [],
+            'known_services': public.get('known_services') or [],
+            'known_ports': public.get('known_ports') or [],
+            'known_tls_domains': public.get('known_tls_domains') or [],
             'has_recommended_root': bool((public.get('default_remote_root') or '').strip() or (public.get('known_projects_paths') or [])),
         })
     return items
@@ -106,6 +110,18 @@ def _recommended_workflows(target_count: int) -> List[Dict[str, Any]]:
             'when': 'Need one end-to-end operator verdict',
             'steps': ['remote_investigate_project'],
             'summary': 'Runs discover -> inspect -> fetch -> summary as one transparent workflow.',
+        },
+        {
+            'key': 'service_ops',
+            'when': 'Need to inspect or control systemd services',
+            'steps': ['remote_service_status', 'remote_service_logs', 'remote_service_list', 'remote_service_action'],
+            'summary': 'Use service-specific tools for status, logs, list and controlled restart/start/stop/reload actions.',
+        },
+        {
+            'key': 'server_health',
+            'when': 'Need one structured snapshot of server health',
+            'steps': ['remote_server_health'],
+            'summary': 'Checks uptime, load, disk, memory, expected ports, expected services, and TLS domains from the target registry.',
         },
     ]
 
