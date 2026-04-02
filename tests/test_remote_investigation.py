@@ -5,6 +5,16 @@ from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.tools.remote_investigation import _remote_investigate_project
 
 
+
+def _schema_names(registry: ToolRegistry) -> set[str]:
+    names: set[str] = set()
+    for schema in registry.schemas():
+        fn = schema.get('function') or {}
+        name = fn.get('name') or schema.get('name')
+        if name:
+            names.add(name)
+    return names
+
 def _ctx(tmp_path: pathlib.Path) -> ToolContext:
     return ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
 
@@ -12,7 +22,7 @@ def _ctx(tmp_path: pathlib.Path) -> ToolContext:
 def test_remote_investigation_tool_registered():
     tmp = pathlib.Path('/tmp')
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
-    names = {t['function']['name'] for t in registry.schemas()}
+    names = _schema_names(registry)
     assert 'remote_investigate_project' in names
 
 
