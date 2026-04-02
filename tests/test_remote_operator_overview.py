@@ -60,4 +60,28 @@ def test_remote_capabilities_overview_summarizes_targets_and_workflows(tmp_path)
     assert payload['recommended_workflows'][0]['key'] == 'target_bootstrap'
     assert 'ssh_key_generate' in payload['recommended_workflows'][0]['steps']
     assert 'ssh_key_deploy' in payload['recommended_workflows'][0]['steps']
-    assert any(step == 'remote_investigate_project' for step in payload['recommended_workflows'][-1]['steps'])
+    assert any('remote_investigate_project' in flow['steps'] for flow in payload['recommended_workflows'])
+
+
+def test_remote_capabilities_overview_includes_health_metadata_and_tool(tmp_path):
+    ctx = _ctx(tmp_path)
+    _ssh_target_register(
+        ctx,
+        alias='edge-box',
+        host='203.0.113.20',
+        user='root',
+        auth_mode='password',
+        password='secret',
+        known_services=['nginx.service'],
+        known_ports=[22, 443],
+        known_tls_domains=['example.com'],
+    )
+
+    payload = json.loads(remote_capabilities_overview(ctx))
+    target = next(item for item in payload['targets'] if item['alias'] == 'edge-box')
+
+    assert 'remote_server_health' in payload['policy']['read_only_tools']
+    assert target['known_services'] == ['nginx.service']
+    assert target['known_ports'] == [22, 443]
+    assert target['known_tls_domains'] == ['example.com']
+    assert any(flow['key'] == 'server_health' for flow in payload['recommended_workflows'])
