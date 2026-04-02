@@ -54,7 +54,9 @@ def test_remote_capabilities_overview_summarizes_targets_and_workflows(tmp_path)
     assert payload['targets'][0]['alias'] == 'prod-box'
     assert payload['targets'][0]['has_recommended_root'] is True
     assert 'remote_project_fetch' in payload['policy']['mutating_tools']
+    assert 'remote_service_action' in payload['policy']['mutating_tools']
     assert 'remote_command_exec' in payload['policy']['read_only_tools']
+    assert 'remote_service_status' in payload['policy']['read_only_tools']
     assert payload['recommended_workflows'][0]['key'] == 'target_bootstrap'
     assert 'ssh_key_generate' in payload['recommended_workflows'][0]['steps']
     assert 'ssh_key_deploy' in payload['recommended_workflows'][0]['steps']
