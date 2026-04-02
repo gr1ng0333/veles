@@ -179,7 +179,7 @@ def _maybe_emit_round_warning(
     llm_trace["assistant_notes"].append(warn[:320])
     return True
 
-COPILOT_WRAP_UP_ROUNDS_BEFORE = 2  # inject wrap-up N rounds before hard limit
+COPILOT_WRAP_UP_ROUNDS_BEFORE = 2  # inject wrap-up N rounds before session boundary
 
 
 def _maybe_inject_copilot_wrap_up(
@@ -191,27 +191,45 @@ def _maybe_inject_copilot_wrap_up(
     llm_trace: Dict[str, Any],
     wrap_up_injected: bool,
 ) -> bool:
-    """For Copilot: inject a wrap-up warning N rounds before the hard limit.
-    
-    This gives the LLM time to save scratchpad, commit, and form a final answer
-    BEFORE the hard limit kills the loop without another LLM call.
+    """For Copilot: inject a wrap-up warning N rounds before the session boundary.
+
+    With session reset every COPILOT_SESSION_ROUND_LIMIT rounds, fires at
+    round 26 and 27 of each session (not at the global max_rounds cap).
+    For non-Copilot transports, fires N rounds before the global max_rounds.
     """
     if wrap_up_injected:
         return True
     if model_transport(active_model) != "copilot":
+        # Non-Copilot: keep original behaviour (N rounds before hard limit)
+        wrap_up_at = max_rounds - COPILOT_WRAP_UP_ROUNDS_BEFORE
+        if round_idx < wrap_up_at:
+            return False
+        remaining = max_rounds - round_idx
+        warn = (
+            f"⚠️ [WRAP-UP] Осталось {remaining} раундов до принудительного завершения (лимит {max_rounds}). "
+            "Прямо сейчас: сохрани scratchpad (update_scratchpad), допиши что важно, сформируй финальный ответ. "
+            "Следующий раунд может быть последним."
+        )
+        messages.append({"role": "system", "content": warn})
+        llm_trace["assistant_notes"].append(f"wrap_up_at_round_{round_idx}")
+        return True
+    # Copilot: trigger based on position within current 28-round session
+    session_round = round_idx % COPILOT_SESSION_ROUND_LIMIT
+    if session_round == 0:
+        # round_idx is exactly at a session boundary (shouldn't wrap-up now)
         return False
-    wrap_up_at = max_rounds - COPILOT_WRAP_UP_ROUNDS_BEFORE
-    if round_idx < wrap_up_at:
+    rounds_until_boundary = COPILOT_SESSION_ROUND_LIMIT - session_round
+    if rounds_until_boundary > COPILOT_WRAP_UP_ROUNDS_BEFORE:
         return False
-    remaining = max_rounds - round_idx
     warn = (
-        f"⚠️ [COPILOT WRAP-UP] Осталось {remaining} раундов до принудительного завершения (лимит {max_rounds}). "
-        "После лимита НЕ будет дополнительного LLM-вызова для суммаризации. "
-        "Прямо сейчас: сохрани scratchpad (update_scratchpad), допиши что важно, сформируй финальный ответ. "
-        "Следующий раунд может быть последним."
+        f"⚠️ [COPILOT SESSION BOUNDARY] Через {rounds_until_boundary} раунда(ов) произойдёт session reset "
+        f"(шаг {session_round}/{COPILOT_SESSION_ROUND_LIMIT}). "
+        "Контекст будет суммаризован и задача продолжится в новой сессии. "
+        "Доведи текущий шаг до стабильной точки: сохрани scratchpad, зафиксируй промежуточные результаты. "
+        "Незавершённые tool calls или несохранённые данные будут потеряны."
     )
     messages.append({"role": "system", "content": warn})
-    llm_trace["assistant_notes"].append(f"copilot_wrap_up_at_round_{round_idx}")
+    llm_trace["assistant_notes"].append(f"copilot_session_boundary_at_round_{round_idx}")
     return True
 
 def _maybe_force_finalize_by_round_cap(
@@ -1033,6 +1051,7 @@ def _maybe_apply_session_reset(
         new_interaction_id = str(uuid.uuid4())
         state["interaction_id"] = new_interaction_id
         state["session_resets_count"] = session_resets_done + 1
+        state["copilot_wrap_up_injected"] = False  # reset so wrap-up fires again next session
 
         # Rebuild messages: keep system prompt + summary as handoff context
         new_messages: List[Dict[str, Any]] = []
