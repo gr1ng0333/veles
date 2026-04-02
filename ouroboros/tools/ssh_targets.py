@@ -256,9 +256,7 @@ def _run_ssh_probe(ctx: ToolContext, record: Dict[str, Any], *, command: str = "
         env["SSH_ASKPASS"] = str(askpass_path)
         env["VELES_SSH_PASSWORD"] = password
         env["DISPLAY"] = env.get("DISPLAY") or "veles-ssh"
-        ssh_cmd = ["setsid", "-w", *ssh_cmd]
-        ssh_cmd.insert(1, "env")
-        ssh_cmd.insert(2, "SSH_ASKPASS_REQUIRE=force")
+        ssh_cmd = ["env", "SSH_ASKPASS_REQUIRE=force", "setsid", "-w", *ssh_cmd]
     return subprocess.run(ssh_cmd, cwd=ctx.repo_dir, capture_output=True, text=True, timeout=timeout, env=env)
 
 

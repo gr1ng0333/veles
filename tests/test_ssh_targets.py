@@ -26,6 +26,7 @@ from ouroboros.tools.ssh_targets import (
     _normalize_probe_error,
     _normalize_target_record,
     _public_target_view,
+    _run_ssh_probe,
     _ssh_session_bootstrap,
     _ssh_target_get,
     _ssh_target_list,
@@ -190,3 +191,28 @@ def test_ssh_target_register_persists_health_metadata(tmp_path):
 
     listed = json.loads(_ssh_target_list(ctx))
     assert listed['targets'][0]['known_ports'] == [22, 443, 2053]
+
+def test_run_ssh_probe_password_mode_places_env_before_setsid(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path)
+    record = _normalize_target_record(
+        alias='lab-box',
+        host='192.0.2.10',
+        user='root',
+        auth_mode='password',
+        password='secret',
+    )
+    captured = {}
+
+    def fake_subprocess_run(cmd, **kwargs):
+        captured['cmd'] = cmd
+        captured['env'] = kwargs.get('env', {})
+        return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+    monkeypatch.setattr('ouroboros.tools.ssh_targets.subprocess.run', fake_subprocess_run)
+
+    _run_ssh_probe(ctx, record, command='true', timeout=5)
+
+    assert captured['cmd'][:4] == ['env', 'SSH_ASKPASS_REQUIRE=force', 'setsid', '-w']
+    assert captured['env']['VELES_SSH_PASSWORD'] == 'secret'
+    assert captured['env']['SSH_ASKPASS'].endswith('state/ssh_askpass.sh')
+
