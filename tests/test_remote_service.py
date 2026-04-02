@@ -223,6 +223,17 @@ def test_remote_server_health_collects_metrics_ports_services_and_tls(monkeypatc
     assert payload['tls'][0]['ok'] is True
     assert any(event.get('type') == 'remote_server_health' for event in ctx.pending_events)
 
+
+
+def test_system_health_command_uses_line_separated_markers():
+    command = _system_health_command()
+    assert command.startswith('sh -lc ')
+    body = __import__('shlex').split(command[len('sh -lc '):])[0]
+    assert "printf '%s\n' __UPTIME__" in body
+    assert "printf '%s\n' __LOADAVG__" in body
+    assert "printf '%s\n' __DF__" in body
+    assert "printf '%s\n' __FREE__" in body
+    assert "printf '%s\n' __PORTS__" in body
 def test_system_health_command_shell_parses():
     script = _system_health_command()
     assert script.startswith("sh -lc ")
