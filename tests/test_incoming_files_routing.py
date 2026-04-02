@@ -2,38 +2,13 @@ import pathlib
 import tempfile
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, Optional, Tuple
 
-from ouroboros.artifacts import _INBOX_CONFIRMATION_STATE, list_incoming_artifacts, save_incoming_artifact, schedule_inbox_confirmation
-
-
-BOOTSTRAP_MARKER = '# ----------------------------\n# 5) Bootstrap repo'
-
-
-source = pathlib.Path('/opt/veles/colab_launcher.py').read_text(encoding='utf-8')
-start = source.index('def _document_to_text_payload')
-end = source.index(BOOTSTRAP_MARKER)
-snippet = source[start:end]
-send_calls = []
-ns = {
-    'Any': Any,
-    'Dict': Dict,
-    'Optional': Optional,
-    'Tuple': Tuple,
-    'pathlib': pathlib,
-    'save_incoming_artifact': save_incoming_artifact,
-    'os': __import__('os'),
-    'send_calls': send_calls,
-    'send_with_budget': lambda chat_id, text: send_calls.append((chat_id, text)),
-    'schedule_inbox_confirmation': lambda chat_id, file_name, sender: schedule_inbox_confirmation(chat_id, file_name, sender, window_sec=0.05),
-    'TelegramClient': object,
-}
-exec(snippet, ns)
-DOCUMENT_TO_TEXT = ns['_document_to_text_payload']
+from ouroboros.artifacts import _INBOX_CONFIRMATION_STATE, list_incoming_artifacts, schedule_inbox_confirmation
+from supervisor.doc_payload import document_to_text_payload as DOCUMENT_TO_TEXT
 
 
 def test_incoming_files_routing_archives_deferred_batches_and_immediate_captioned_files():
-    send_calls.clear()
+    send_calls = []
     _INBOX_CONFIRMATION_STATE.clear()
     tmp = pathlib.Path(tempfile.mkdtemp())
     raw = 'cHJpbnQoMSkK'
@@ -42,6 +17,7 @@ def test_incoming_files_routing_archives_deferred_batches_and_immediate_captione
         'f2': (raw, 'text/x-python'),
         'f3': (raw, 'text/x-python'),
     }.get(file_id, (None, '')))
+    send_budget = lambda chat_id, text: send_calls.append((chat_id, text))
 
     payload, image_data, handled = DOCUMENT_TO_TEXT(
         {'file_id': 'f1', 'file_name': 'one.py', 'mime_type': 'text/x-python'},
@@ -49,6 +25,7 @@ def test_incoming_files_routing_archives_deferred_batches_and_immediate_captione
         tg,
         42,
         tmp,
+        send_budget,
         1001,
     )
     assert handled is True
@@ -61,6 +38,7 @@ def test_incoming_files_routing_archives_deferred_batches_and_immediate_captione
         tg,
         42,
         tmp,
+        send_budget,
         1002,
     )
     time.sleep(0.12)
@@ -81,6 +59,7 @@ def test_incoming_files_routing_archives_deferred_batches_and_immediate_captione
         tg,
         43,
         tmp,
+        send_budget,
         1003,
     )
     assert handled is True
