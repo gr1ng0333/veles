@@ -167,6 +167,8 @@ def _maybe_force_finalize_by_round_cap(
     accumulated_usage: Dict[str, Any],
     llm_trace: Dict[str, Any],
     task_type: str,
+    tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    interaction_id: Optional[str] = None,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     if not should_force_round_finalize(round_idx, recent_progress, anti):
         return None
@@ -188,6 +190,8 @@ def _maybe_force_finalize_by_round_cap(
         event_queue=event_queue,
         accumulated_usage=accumulated_usage,
         task_type=task_type,
+        tool_schemas=tool_schemas,
+        interaction_id=interaction_id,
     )
     llm_trace["assistant_notes"].append(reason[:320])
     return final_text, accumulated_usage, llm_trace
@@ -261,6 +265,8 @@ def _maybe_force_finalize_by_stagnation(
     accumulated_usage: Dict[str, Any],
     llm_trace: Dict[str, Any],
     task_type: str,
+    tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    interaction_id: Optional[str] = None,
 ) -> Tuple[Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]], bool]:
     action = stagnation_action(no_progress_rounds, anti, stagnation_check_injected)
     if action == "inject_self_check":
@@ -292,6 +298,8 @@ def _maybe_force_finalize_by_stagnation(
         event_queue=event_queue,
         accumulated_usage=accumulated_usage,
         task_type=task_type,
+        tool_schemas=tool_schemas,
+        interaction_id=interaction_id,
     )
     llm_trace["assistant_notes"].append(reason[:320])
     return (final_text, accumulated_usage, llm_trace), stagnation_check_injected
@@ -453,6 +461,8 @@ def _finalize_due_to_reason(
     accumulated_usage: Dict[str, Any],
     llm_trace: Dict[str, Any],
     task_type: str,
+    tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    interaction_id: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     final_text, accumulated_usage, _ = _finalize_with_summary(
         reason=reason,
@@ -467,6 +477,8 @@ def _finalize_due_to_reason(
         event_queue=event_queue,
         accumulated_usage=accumulated_usage,
         task_type=task_type,
+        tool_schemas=tool_schemas,
+        interaction_id=interaction_id,
     )
     llm_trace["assistant_notes"].append(reason[:320])
     return final_text, accumulated_usage, llm_trace
@@ -529,6 +541,8 @@ def _prepare_round_or_finalize(
             accumulated_usage=state["accumulated_usage"],
             llm_trace=state["llm_trace"],
             task_type=task_type,
+            tool_schemas=state.get("tool_schemas"),
+            interaction_id=state.get("interaction_id"),
         )
 
     _maybe_inject_self_check(round_idx, state["max_rounds"], messages, state["accumulated_usage"], emit_progress)
@@ -566,6 +580,8 @@ def _prepare_round_or_finalize(
             accumulated_usage=state["accumulated_usage"],
             llm_trace=state["llm_trace"],
             task_type=task_type,
+            tool_schemas=state.get("tool_schemas"),
+            interaction_id=state.get("interaction_id"),
         )
         if round_cap_finalize is not None:
             return round_cap_finalize
@@ -640,6 +656,8 @@ def _process_llm_response_or_continue(
             accumulated_usage=state["accumulated_usage"],
             llm_trace=state["llm_trace"],
             task_type=task_type,
+            tool_schemas=state.get("tool_schemas"),
+            interaction_id=state.get("interaction_id"),
         )
 
     if is_small_completion_stagnation(
@@ -666,6 +684,8 @@ def _process_llm_response_or_continue(
             accumulated_usage=state["accumulated_usage"],
             llm_trace=state["llm_trace"],
             task_type=task_type,
+            tool_schemas=state.get("tool_schemas"),
+            interaction_id=state.get("interaction_id"),
         )
 
     tool_calls = msg.get("tool_calls") or []
@@ -712,6 +732,8 @@ def _process_llm_response_or_continue(
         accumulated_usage=state["accumulated_usage"],
         llm_trace=state["llm_trace"],
         task_type=task_type,
+        tool_schemas=state.get("tool_schemas"),
+        interaction_id=state.get("interaction_id"),
     )
     if stagnation_result is not None:
         return stagnation_result
@@ -874,6 +896,7 @@ def run_llm_loop_impl(
         "force_user_initiator": False,
         "copilot_wrap_up_injected": False,
         "session_resets_count": 0,
+        "tool_schemas": tool_schemas,
     }
     # If caller provides a persistent executor (direct-chat), reuse it and
     # do NOT shut it down when this task ends — it survives across messages.
