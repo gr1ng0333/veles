@@ -14,6 +14,8 @@ from ouroboros.tools.memory_search import (
     _split_into_chunks,
     _load_chat,
     _load_md,
+    _load_task_reflections,
+    _load_dialogue_blocks,
     _build_corpus,
     _compute_idf,
     _score,
@@ -44,6 +46,11 @@ def _write_jsonl(path: pathlib.Path, messages: list[dict]) -> None:
 def _write_md(path: pathlib.Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(content), encoding="utf-8")
+
+
+def _write_json(path: pathlib.Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
 # ── Tokenizer ─────────────────────────────────────────────────────────────────
@@ -155,6 +162,171 @@ def test_load_md_missing_file(tmp_path):
     assert chunks == []
 
 
+# ── Task reflections loader ───────────────────────────────────────────────────
+
+
+def test_load_task_reflections_basic(tmp_path):
+    ref_path = tmp_path / "logs" / "task_reflections.jsonl"
+    records = [
+        {
+            "ts": "2026-04-01T10:00:00+00:00",
+            "task_id": "abc123",
+            "goal": "Fix the SSH key deploy timeout issue on remote server",
+            "rounds": 15,
+            "max_rounds": 30,
+            "error_count": 2,
+            "key_markers": ["TOOL_TIMEOUT"],
+            "reflection": "The root cause was a hardcoded 30s timeout in registry.py "
+                          "for repo_write_commit. Fixed by increasing to 90s.",
+        },
+        {
+            "ts": "2026-04-02T10:00:00+00:00",
+            "task_id": "def456",
+            "goal": "Implement skills system for task-scoped context injection",
+            "rounds": 7,
+            "max_rounds": 30,
+            "error_count": 0,
+            "key_markers": [],
+            "reflection": "Created skill_load tool, context.py injection, and _map.md. "
+                          "All 30 tests green on first run.",
+        },
+    ]
+    _write_jsonl(ref_path, records)
+    chunks = _load_task_reflections(tmp_path)
+    assert len(chunks) >= 2
+    texts = " ".join(c.text for c in chunks)
+    assert "SSH" in texts or "ssh" in texts.lower()
+    assert "skill" in texts.lower()
+
+
+def test_load_task_reflections_skips_failed(tmp_path):
+    ref_path = tmp_path / "logs" / "task_reflections.jsonl"
+    records = [
+        {
+            "ts": "2026-03-20T10:00:00+00:00",
+            "task_id": "fail001",
+            "goal": "Some task that failed reflection generation",
+            "rounds": 10,
+            "max_rounds": 30,
+            "error_count": 1,
+            "key_markers": [],
+            "reflection": "(reflection generation failed: Error code: 401 - auth error)",
+        },
+        {
+            "ts": "2026-03-21T10:00:00+00:00",
+            "task_id": "ok002",
+            "goal": "Another task with valid reflection about copilot billing",
+            "rounds": 5,
+            "max_rounds": 30,
+            "error_count": 0,
+            "key_markers": [],
+            "reflection": "Discovered that session reset billing used wrong initiator header.",
+        },
+    ]
+    _write_jsonl(ref_path, records)
+    chunks = _load_task_reflections(tmp_path)
+    # Failed reflection's content should not appear but goal still indexed
+    texts = " ".join(c.text for c in chunks)
+    assert "reflection generation failed" not in texts
+    assert "copilot" in texts.lower()
+
+
+def test_load_task_reflections_missing_file(tmp_path):
+    chunks = _load_task_reflections(tmp_path)
+    assert chunks == []
+
+
+def test_load_task_reflections_combined_text(tmp_path):
+    """Goal and reflection should both be searchable in the combined chunk."""
+    ref_path = tmp_path / "logs" / "task_reflections.jsonl"
+    _write_jsonl(ref_path, [{
+        "ts": "2026-04-01T10:00:00+00:00",
+        "task_id": "combo1",
+        "goal": "Understand copilot interaction_id rollover mechanism",
+        "rounds": 28,
+        "max_rounds": 30,
+        "error_count": 0,
+        "key_markers": [],
+        "reflection": "Found that new thread created every 28 rounds via uuid4.",
+    }])
+    chunks = _load_task_reflections(tmp_path)
+    assert len(chunks) >= 1
+    combined = " ".join(c.text for c in chunks)
+    # Both goal and reflection text should be present
+    assert "copilot" in combined.lower()
+    assert "uuid4" in combined.lower()
+
+
+# ── Dialogue blocks loader ────────────────────────────────────────────────────
+
+
+def test_load_dialogue_blocks_basic(tmp_path):
+    blocks_path = tmp_path / "memory" / "dialogue_blocks.json"
+    blocks = [
+        {
+            "ts": "2026-04-03T19:10:00+00:00",
+            "type": "era",
+            "range": "2026-03-25 to 2026-03-28",
+            "message_count": 700,
+            "content": (
+                "In this period I fixed the Copilot accounting bug where backend rounds "
+                "were counted instead of premium user requests. The interaction_id "
+                "normalization resolved duplicate billing entries across sessions."
+            ),
+        },
+        {
+            "ts": "2026-04-03T19:15:00+00:00",
+            "type": "episode",
+            "range": "2026-03-28 to 2026-03-29",
+            "message_count": 100,
+            "content": (
+                "Implemented fitness bot as separate repository. "
+                "Removed built-in fitness contour from main Veles codebase. "
+                "Discovered Telegram token leak in scratchpad."
+            ),
+        },
+    ]
+    _write_json(blocks_path, blocks)
+    chunks = _load_dialogue_blocks(tmp_path)
+    assert len(chunks) >= 2
+    texts = " ".join(c.text for c in chunks)
+    assert "copilot" in texts.lower()
+    assert "fitness" in texts.lower()
+    # Source labels should include range
+    sources = {c.source for c in chunks}
+    assert any("2026-03-25" in s for s in sources)
+
+
+def test_load_dialogue_blocks_missing_file(tmp_path):
+    chunks = _load_dialogue_blocks(tmp_path)
+    assert chunks == []
+
+
+def test_load_dialogue_blocks_wrong_format(tmp_path):
+    """Non-list JSON should return empty without crashing."""
+    blocks_path = tmp_path / "memory" / "dialogue_blocks.json"
+    blocks_path.parent.mkdir(parents=True, exist_ok=True)
+    blocks_path.write_text('{"key": "value"}', encoding="utf-8")
+    chunks = _load_dialogue_blocks(tmp_path)
+    assert chunks == []
+
+
+def test_load_dialogue_blocks_skips_empty_content(tmp_path):
+    blocks_path = tmp_path / "memory" / "dialogue_blocks.json"
+    blocks = [
+        {"ts": "2026-04-01T10:00:00+00:00", "range": "test", "content": ""},
+        {"ts": "2026-04-01T10:01:00+00:00", "range": "test2",
+         "content": "Valid block content about SSH deployment and key management."},
+    ]
+    _write_json(blocks_path, blocks)
+    chunks = _load_dialogue_blocks(tmp_path)
+    assert len(chunks) >= 1
+    assert all(c.text.strip() for c in chunks)
+
+
+# ── Full corpus ───────────────────────────────────────────────────────────────
+
+
 def test_build_corpus_empty(tmp_path):
     corpus = _build_corpus(tmp_path)
     assert corpus == []
@@ -181,6 +353,36 @@ def test_build_corpus_with_data(tmp_path):
     assert any("chat" in s for s in sources)
     assert any("knowledge" in s for s in sources)
     assert any("identity" in s for s in sources)
+
+
+def test_build_corpus_includes_reflections_and_dialogue(tmp_path):
+    """Reflections and dialogue blocks must appear in the corpus."""
+    # reflections
+    ref_path = tmp_path / "logs" / "task_reflections.jsonl"
+    _write_jsonl(ref_path, [{
+        "ts": "2026-04-01T10:00:00+00:00",
+        "task_id": "r001",
+        "goal": "Fix Copilot timeout issues in registry TOOL_TIMEOUT_OVERRIDES",
+        "rounds": 20,
+        "max_rounds": 30,
+        "error_count": 3,
+        "key_markers": ["TOOL_TIMEOUT"],
+        "reflection": "Increased timeout for repo_write_commit from 30s to 90s.",
+    }])
+    # dialogue blocks
+    blocks_path = tmp_path / "memory" / "dialogue_blocks.json"
+    _write_json(blocks_path, [{
+        "ts": "2026-04-03T10:00:00+00:00",
+        "type": "episode",
+        "range": "2026-04-01 to 2026-04-02",
+        "message_count": 50,
+        "content": "Skills system was implemented: skill_load tool, context injection, _map.md.",
+    }])
+
+    corpus = _build_corpus(tmp_path)
+    sources = {c.source for c in corpus}
+    assert any("reflection" in s for s in sources), f"No reflection sources in: {sources}"
+    assert any("dialogue" in s for s in sources), f"No dialogue sources in: {sources}"
 
 
 # ── TF-IDF scoring ────────────────────────────────────────────────────────────
@@ -303,6 +505,44 @@ def test_memory_search_tool_top_k_clamp(tmp_path):
     assert "⚠️" not in result or "no results" in result
 
 
+def test_memory_search_finds_reflections(tmp_path):
+    """End-to-end: reflection data is searchable via tool API."""
+    ref_path = tmp_path / "logs" / "task_reflections.jsonl"
+    _write_jsonl(ref_path, [{
+        "ts": "2026-04-02T10:00:00+00:00",
+        "task_id": "e2e001",
+        "goal": "Fix copilot push timeout in registry timeout overrides",
+        "rounds": 25,
+        "max_rounds": 30,
+        "error_count": 2,
+        "key_markers": ["TOOL_TIMEOUT"],
+        "reflection": "Increased repo_write_commit timeout from 30s to 90s in TOOL_TIMEOUT_OVERRIDES.",
+    }])
+    ctx = _make_ctx(tmp_path)
+    result = _memory_search(ctx, "copilot timeout registry")
+    assert "reflection" in result
+    assert "score=" in result
+
+
+def test_memory_search_finds_dialogue_blocks(tmp_path):
+    """End-to-end: dialogue block data is searchable via tool API."""
+    blocks_path = tmp_path / "memory" / "dialogue_blocks.json"
+    _write_json(blocks_path, [{
+        "ts": "2026-04-03T10:00:00+00:00",
+        "type": "era",
+        "range": "2026-03-25 to 2026-03-28",
+        "message_count": 700,
+        "content": (
+            "Copilot accounting fix: premium request counting was wrong. "
+            "interaction_id normalization resolved billing duplicates."
+        ),
+    }])
+    ctx = _make_ctx(tmp_path)
+    result = _memory_search(ctx, "copilot accounting billing")
+    assert "dialogue" in result
+    assert "score=" in result
+
+
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 
@@ -321,6 +561,9 @@ def test_get_tools_schema_valid():
     props = schema["parameters"]["properties"]
     assert "query" in props
     assert "top_k" in props
+    # description should mention the new sources
+    assert "reflections" in schema["description"] or "reflection" in schema["description"]
+    assert "dialogue" in schema["description"]
 
 
 def test_get_tools_handler_callable():
