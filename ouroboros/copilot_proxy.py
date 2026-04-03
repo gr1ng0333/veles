@@ -8,6 +8,7 @@ Uses urllib only (no requests dependency).
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -260,19 +261,6 @@ def _call_with_rotation(
                     body_preview = e.read().decode(errors="replace")[:500]
                 except Exception:
                     pass
-                if e.code in (500, 502, 503):
-                    _accounts_impl._on_server_error_cooldown(idx, _SERVER_ERROR_COOLDOWN_SEC)
-                    log.warning(
-                        "[copilot_api_error] HTTP %d (account #%d): server cooldown %ds, interaction=%s, body=%s",
-                        e.code, idx, _SERVER_ERROR_COOLDOWN_SEC, (interaction_id or "?")[:8], body_preview,
-                    )
-                    raise CopilotServerCooldownError(
-                        account_idx=idx,
-                        status_code=e.code,
-                        cooldown_sec=_SERVER_ERROR_COOLDOWN_SEC,
-                        interaction_id=interaction_id,
-                        body_preview=body_preview,
-                    )
                 log.error("[copilot_api_error] HTTP %d: %s", e.code, body_preview)
                 raise
             except (urllib.error.URLError, OSError, TimeoutError) as e:
@@ -285,6 +273,172 @@ def _call_with_rotation(
                     time.sleep(2 ** attempt)
                     continue
                 break
+
+
+# ---------------------------------------------------------------------------
+# Helpers extracted from call_copilot
+# ---------------------------------------------------------------------------
+
+def _dump_diag_payload(
+    payload: Dict[str, Any],
+    interaction_id: str,
+    initiator: str,
+    model: str,
+) -> None:
+    """Write first-request diagnostic payload to copilot_diag.jsonl (once per interaction)."""
+    if interaction_id in _diag_seen_interactions:
+        return
+    with _diag_lock:
+        if interaction_id in _diag_seen_interactions:
+            return
+        _diag_seen_interactions.add(interaction_id)
+
+    try:
+        import pathlib
+
+        diag_payload = copy.deepcopy(payload)
+        diag_messages = diag_payload.get("messages", [])
+        for i, m in enumerate(diag_messages):
+            content = m.get("content", "")
+            if isinstance(content, list):
+                parts_info = [
+                    f"part[{j}]: len={len(p.get('text',''))}, cache_control={'cache_control' in p}"
+                    for j, p in enumerate(content)
+                    if isinstance(p, dict)
+                ]
+                m["_diag_content"] = f"MULTIPART ({len(content)} parts): {parts_info}"
+                m["content"] = f"<multipart {len(content)} parts>"
+            elif isinstance(content, str):
+                m["_diag_content"] = f"STRING len={len(content)}, preview={content[:200]}"
+                m["content"] = f"<string len={len(content)}>"
+            if m.get("tool_calls"):
+                m["_diag_tool_calls"] = f"{len(m['tool_calls'])} tool_calls"
+
+        diag_tools = diag_payload.get("tools", [])
+        import datetime as _dt
+        diag_data = {
+            "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "type": "copilot_payload_diag",
+            "interaction_id": interaction_id[:8],
+            "initiator": initiator,
+            "model": model,
+            "message_count": len(diag_messages),
+            "message_roles": [m.get("role", "?") for m in diag_messages],
+            "stream": diag_payload.get("stream"),
+            "max_tokens": diag_payload.get("max_tokens"),
+            "tool_choice": diag_payload.get("tool_choice"),
+            "reasoning_effort": diag_payload.get("reasoning_effort"),
+            "tools_count": len(diag_tools),
+            "tools_sample": [t.get("function", {}).get("name", "?") for t in diag_tools[:5]],
+            "messages_detail": [
+                {
+                    "idx": i,
+                    "role": m.get("role"),
+                    "content_info": m.get("_diag_content", "?"),
+                    "has_tool_calls": bool(m.get("tool_calls")),
+                }
+                for i, m in enumerate(diag_messages)
+            ],
+        }
+        diag_path = pathlib.Path("/opt/veles-data/logs/copilot_diag.jsonl")
+        diag_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(diag_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(diag_data, ensure_ascii=False) + "\n")
+        log.info(
+            "copilot_payload_diag interaction=%s roles=%s tools=%d initiator=%s",
+            interaction_id[:8],
+            [m.get("role") for m in diag_messages],
+            len(diag_tools),
+            initiator,
+        )
+    except Exception as e:
+        log.warning("copilot_diag_error: %s", e)
+
+
+def _merge_choices(response_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge multiple choices from Copilot response into one assistant message.
+
+    Claude Sonnet may split content and each tool_call into separate choices.
+    This merges them so callers see all tool_calls together plus any text content.
+    """
+    choices = response_data.get("choices", [{}])
+    msg: Dict[str, Any] = {}
+    merged_tool_calls: List[Dict[str, Any]] = []
+    for ch in choices:
+        part = ch.get("message", {})
+        if part.get("tool_calls"):
+            merged_tool_calls.extend(part["tool_calls"])
+            msg.setdefault("role", part.get("role", "assistant"))
+        if part.get("content"):
+            msg.setdefault("role", part.get("role", "assistant"))
+            msg.setdefault("content", part["content"])
+    if merged_tool_calls:
+        msg["tool_calls"] = merged_tool_calls
+    if not msg:
+        msg = (choices[0] if choices else {}).get("message", {})
+    if not msg.get("role"):
+        msg["role"] = "assistant"
+    return msg
+
+
+def _execute_single_account(
+    payload: Dict[str, Any],
+    initiator: str,
+    interaction_id: Optional[str],
+) -> Tuple[Dict[str, Any], int]:
+    """Execute request via single-account path (no rotation). Returns (response_data, account_idx)."""
+    result = _accounts_impl._get_active_account()
+    if result is None:
+        raise RuntimeError("No Copilot account configured")
+    acc, idx = result
+    last_error: Optional[Exception] = None
+
+    for attempt in range(MAX_RETRIES + 1):
+        copilot_token = _accounts_impl._ensure_copilot_token(
+            acc, idx, urllib.request.urlopen,
+        )
+        if not copilot_token:
+            raise RuntimeError("No Copilot API token available")
+
+        api_base = acc.get("copilot_api_base", COPILOT_DEFAULT_API_BASE)
+        endpoint = api_base.rstrip("/") + "/chat/completions"
+
+        try:
+            response_data = _do_request(
+                copilot_token, payload, endpoint=endpoint,
+                initiator=initiator, interaction_id=interaction_id,
+            )
+            _accounts_impl._record_successful_request(idx)
+            return response_data, idx
+        except urllib.error.HTTPError as e:
+            last_error = e
+            if e.code in (401, 403) and attempt < MAX_RETRIES:
+                log.warning(
+                    "[copilot_api_error] HTTP %d, forcing token re-exchange (attempt %d)",
+                    e.code, attempt + 1,
+                )
+                acc["expires_at"] = 0
+                continue
+            body_preview = ""
+            try:
+                body_preview = e.read().decode(errors="replace")[:500]
+            except Exception:
+                pass
+            log.error("[copilot_api_error] HTTP %d: %s", e.code, body_preview)
+            raise
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                log.warning(
+                    "[copilot_api_error] Network error (attempt %d): %s",
+                    attempt + 1, e,
+                )
+                time.sleep(2 ** attempt)
+                continue
+            raise
+    raise RuntimeError(
+        f"Copilot request failed after {MAX_RETRIES + 1} attempts: {last_error}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -342,81 +496,9 @@ def call_copilot(
         model, initiator, interaction_id or "none", sum(len(json.dumps(m)) for m in messages) // 4,
     )
 
-    # === DIAGNOSTIC: dump first request payload per interaction ===
-    if interaction_id and interaction_id not in _diag_seen_interactions:
-        with _diag_lock:
-            _diag_seen_interactions.add(interaction_id)
-        try:
-            import copy
-            diag_payload = copy.deepcopy(payload)
-            diag_messages = diag_payload.get("messages", [])
-            for i, m in enumerate(diag_messages):
-                content = m.get("content", "")
-                if isinstance(content, list):
-                    parts_info = []
-                    for j, part in enumerate(content):
-                        if isinstance(part, dict):
-                            text = part.get("text", "")
-                            has_cache = "cache_control" in part
-                            parts_info.append(f"part[{j}]: len={len(text)}, cache_control={has_cache}")
-                    m["_diag_content"] = f"MULTIPART ({len(content)} parts): {parts_info}"
-                    m["content"] = f"<multipart {len(content)} parts>"
-                elif isinstance(content, str):
-                    m["_diag_content"] = f"STRING len={len(content)}, preview={content[:200]}"
-                    m["content"] = f"<string len={len(content)}>"
-                if m.get("tool_calls"):
-                    m["_diag_tool_calls"] = f"{len(m['tool_calls'])} tool_calls"
-
-            diag_tools = diag_payload.get("tools", [])
-            diag_payload["_diag_tools_count"] = len(diag_tools)
-            diag_payload["_diag_tools_names"] = (
-                [t.get("function", {}).get("name", "?") for t in diag_tools[:5]]
-                if diag_tools else []
-            )
-            diag_payload.pop("tools", None)
-
-            import json as _json
-            _diag_data = {
-                "ts": __import__("datetime").datetime.now(
-                    __import__("datetime").timezone.utc
-                ).isoformat(),
-                "type": "copilot_payload_diag",
-                "interaction_id": interaction_id[:8],
-                "initiator": initiator,
-                "model": model,
-                "message_count": len(diag_messages),
-                "message_roles": [m.get("role", "?") for m in diag_messages],
-                "payload_keys": list(diag_payload.keys()),
-                "stream": diag_payload.get("stream"),
-                "max_tokens": diag_payload.get("max_tokens"),
-                "tool_choice": diag_payload.get("tool_choice"),
-                "reasoning_effort": diag_payload.get("reasoning_effort"),
-                "tools_count": diag_payload.get("_diag_tools_count", 0),
-                "tools_sample": diag_payload.get("_diag_tools_names", []),
-                "messages_detail": [
-                    {
-                        "idx": i,
-                        "role": m.get("role"),
-                        "content_info": m.get("_diag_content", "?"),
-                        "has_tool_calls": bool(m.get("tool_calls")),
-                    }
-                    for i, m in enumerate(diag_messages)
-                ],
-            }
-            _diag_path = __import__("pathlib").Path("/opt/veles-data/logs/copilot_diag.jsonl")
-            _diag_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(_diag_path, "a", encoding="utf-8") as f:
-                f.write(_json.dumps(_diag_data, ensure_ascii=False) + "\n")
-            log.info(
-                "copilot_payload_diag interaction=%s roles=%s tools=%d initiator=%s",
-                interaction_id[:8],
-                [m.get("role") for m in diag_messages],
-                len(diag_tools),
-                initiator,
-            )
-        except Exception as e:
-            log.warning("copilot_diag_error: %s", e)
-    # === END DIAGNOSTIC ===
+    # Dump first-request diagnostic payload (once per interaction)
+    if interaction_id:
+        _dump_diag_payload(payload, interaction_id, initiator, model)
 
     # Warn if context is getting large for Copilot
     approx_context_chars = sum(len(json.dumps(m)) for m in messages)
@@ -426,91 +508,16 @@ def call_copilot(
             model, approx_context_chars, (interaction_id or "?")[:8],
         )
 
-    response_data: Dict[str, Any] = {}
-    used_account_idx: int = 0
-
     if _accounts_impl._is_multi_account():
         response_data, used_account_idx = _call_with_rotation(
             payload, initiator=initiator, interaction_id=interaction_id,
         )
     else:
-        # Single account path
-        result = _accounts_impl._get_active_account()
-        if result is None:
-            raise RuntimeError("No Copilot account configured")
-        acc, idx = result
-        used_account_idx = idx
-        last_error: Optional[Exception] = None
+        response_data, used_account_idx = _execute_single_account(
+            payload, initiator=initiator, interaction_id=interaction_id,
+        )
 
-        for attempt in range(MAX_RETRIES + 1):
-            copilot_token = _accounts_impl._ensure_copilot_token(
-                acc, idx, urllib.request.urlopen,
-            )
-            if not copilot_token:
-                raise RuntimeError("No Copilot API token available")
-
-            api_base = acc.get("copilot_api_base", COPILOT_DEFAULT_API_BASE)
-            endpoint = api_base.rstrip("/") + "/chat/completions"
-
-            try:
-                response_data = _do_request(
-                    copilot_token, payload, endpoint=endpoint,
-                    initiator=initiator, interaction_id=interaction_id,
-                )
-                _accounts_impl._record_successful_request(idx)
-                break
-            except urllib.error.HTTPError as e:
-                last_error = e
-                if e.code in (401, 403) and attempt < MAX_RETRIES:
-                    log.warning(
-                        "[copilot_api_error] HTTP %d, forcing token re-exchange (attempt %d)",
-                        e.code, attempt + 1,
-                    )
-                    acc["expires_at"] = 0
-                    continue
-                body_preview = ""
-                try:
-                    body_preview = e.read().decode(errors="replace")[:500]
-                except Exception:
-                    pass
-                log.error("[copilot_api_error] HTTP %d: %s", e.code, body_preview)
-                raise
-            except (urllib.error.URLError, OSError, TimeoutError) as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    log.warning(
-                        "[copilot_api_error] Network error (attempt %d): %s",
-                        attempt + 1, e,
-                    )
-                    time.sleep(2 ** attempt)
-                    continue
-                raise
-        else:
-            raise RuntimeError(
-                f"Copilot request failed after {MAX_RETRIES + 1} attempts: {last_error}"
-            )
-
-    # Extract message from standard Chat Completions response.
-    # Claude Sonnet splits content and each tool_call into separate choices.
-    # Merge them into a single assistant message so callers see all
-    # tool_calls together (parallel calls) plus any textual content.
-    choices = response_data.get("choices", [{}])
-    msg: Dict[str, Any] = {}
-    merged_tool_calls: List[Dict[str, Any]] = []
-    for ch in choices:
-        part = ch.get("message", {})
-        if part.get("tool_calls"):
-            merged_tool_calls.extend(part["tool_calls"])
-            msg.setdefault("role", part.get("role", "assistant"))
-        if part.get("content"):
-            msg.setdefault("role", part.get("role", "assistant"))
-            msg.setdefault("content", part["content"])
-    if merged_tool_calls:
-        msg["tool_calls"] = merged_tool_calls
-    if not msg:
-        msg = (choices[0] if choices else {}).get("message", {})
-    if not msg.get("role"):
-        msg["role"] = "assistant"
+    msg = _merge_choices(response_data)
 
     usage_raw = response_data.get("usage", {})
     prompt_tokens = int(usage_raw.get("prompt_tokens", 0))
@@ -518,7 +525,6 @@ def call_copilot(
     prompt_details = usage_raw.get("prompt_tokens_details", {})
     cached_tokens = int(prompt_details.get("cached_tokens", 0))
 
-    # Shadow cost: estimate API equivalent cost for budget tracking
     from ouroboros.pricing import estimate_cost as _estimate_cost
     _shadow_cost = _estimate_cost(
         model=model,
@@ -537,13 +543,11 @@ def call_copilot(
         "provider": "copilot",
     }
 
-    # Track quota usage
     try:
         _accounts_impl.track_copilot_usage(used_account_idx, model)
     except Exception as e:
         log.warning("copilot_quota_track_error: %s", e)
 
-    # Track session stats
     session_stats = _track_session(interaction_id, usage, initiator)
     if session_stats:
         log.debug(
