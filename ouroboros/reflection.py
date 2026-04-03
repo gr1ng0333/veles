@@ -371,102 +371,19 @@ def append_reflection(drive_root: pathlib.Path, entry: Dict[str, Any]) -> None:
     except Exception:
         log.warning("Failed to save execution reflection", exc_info=True)
 
-    if entry.get("key_markers"):
-        try:
-            _update_patterns(drive_root, entry)
-        except Exception:
-            log.debug("Pattern register update failed (non-critical)", exc_info=True)
-
-
-# ------------------------------------------------------------------
-# Pattern Register
-# ------------------------------------------------------------------
-
-_PATTERNS_PROMPT = """\
-You maintain a Pattern Register for Ouroboros, a self-modifying AI agent.
-Below is the current register and a new error reflection. Update the register.
-
-Rules:
-- If this is a NEW error class: add a row.
-- If this is a RECURRING class: increment count, update root cause/fix if you have better info.
-- Keep the markdown table format.
-- Be concrete: cite file names, tool names, error types.
-- Max 20 rows. If full, merge least-important entries.
-
-## Current register
-
-{current_patterns}
-
-## New reflection
-
-Task: {goal}
-Markers: {markers}
-Reflection: {reflection}
-
-Output ONLY the updated markdown table (with header). No extra text.
-"""
-
-_PATTERNS_HEADER = (
-    "# Pattern Register\n\n"
-    "| Error class | Count | Root cause | Structural fix | Status |\n"
-    "|-------------|-------|------------|----------------|--------|\n"
-)
-
-
-def _update_patterns(drive_root: pathlib.Path, entry: Dict[str, Any]) -> None:
-    """Update patterns.md knowledge base topic via LLM (Pattern Register).
-
-    Uses the same fallback model chain as generate_reflection so that
-    pattern updates survive Codex auth failures too.
-    """
-    from ouroboros.llm import LLMClient
-    from ouroboros.model_modes import get_reflection_model
-
-    patterns_path = drive_root / "memory" / "knowledge" / "patterns.md"
-    patterns_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if patterns_path.exists():
-        current = patterns_path.read_text(encoding="utf-8")
-    else:
-        current = _PATTERNS_HEADER
-
-    prompt = _PATTERNS_PROMPT.format(
-        current_patterns=(
-            _truncate_with_notice(current, 3000)
-            + (
-                "\n\n[IMPORTANT: The current register was compacted for prompt size. "
-                "Preserve existing rows unless you are intentionally merging or updating them.]"
-                if len(current) > 3000
-                else ""
-            )
-        ),
-        goal=_truncate_with_notice(entry.get("goal", "?"), 200),
-        markers=", ".join(entry.get("key_markers", [])),
-        reflection=_truncate_with_notice(entry.get("reflection", ""), 500),
-    )
-
-    primary_model = get_reflection_model()
-    client = LLMClient()
+    # Auto-update patterns.md from all reflections (no LLM required).
+    # Uses deterministic keyword clustering via extract_patterns module.
     try:
-        updated = _llm_chat_with_fallback(
-            llm_client=client,
-            messages=[{"role": "user", "content": prompt}],
-            primary_model=primary_model,
-            max_tokens=1024,
-        )
-    except Exception as exc:
-        log.warning("Pattern register LLM failed (all models): %s", exc)
-        return
-
-    if not updated or "|" not in updated:
-        log.warning("Pattern register LLM returned invalid output, skipping update")
-        return
-
-    if not updated.startswith("#"):
-        updated = "# Pattern Register\n\n" + updated
-
-    patterns_path.write_text(updated + "\n", encoding="utf-8")
-    log.info("Pattern register updated (%d chars)", len(updated))
+        from ouroboros.tools.extract_patterns import update_patterns_from_reflections
+        stats = update_patterns_from_reflections(drive_root)
+        if stats.get("new_classes") or stats.get("updated_classes"):
+            log.info(
+                "Pattern register updated: +%d new, ~%d updated",
+                len(stats.get("new_classes", [])),
+                len(stats.get("updated_classes", [])),
+            )
+    except Exception:
+        log.debug("Pattern register update failed (non-critical)", exc_info=True)
 
 
 # ------------------------------------------------------------------

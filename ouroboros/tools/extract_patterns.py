@@ -310,6 +310,76 @@ def _run(
     return "\n".join(lines)
 
 
+
+def update_patterns_from_reflections(
+    drive_root: pathlib.Path,
+    min_count: int = 2,
+) -> Dict[str, Any]:
+    """Update knowledge/patterns.md from all task_reflections.jsonl entries.
+
+    Called automatically after each reflection is saved (no LLM required).
+    Scans all reflections, clusters by error class, merges into patterns.md.
+    Returns stats dict: {new_classes, updated_classes, total_reflections}.
+    """
+    records = _load_reflections(drive_root)
+    if not records:
+        return {"new_classes": [], "updated_classes": [], "total_reflections": 0}
+
+    class_to_task_ids: Dict[str, List[str]] = defaultdict(list)
+    for r in records:
+        for cls in _classify_reflection(r):
+            class_to_task_ids[cls].append(r["task_id"])
+
+    qualifying = {
+        cls: ids
+        for cls, ids in class_to_task_ids.items()
+        if len(ids) >= min_count and cls != "unclassified"
+    }
+
+    patterns_path = drive_root / _PATTERNS_FILE
+    existing_text = patterns_path.read_text(encoding="utf-8") if patterns_path.exists() else ""
+    existing = _parse_patterns_md(existing_text)
+
+    new_classes: List[str] = []
+    updated_classes: List[str] = []
+    merged = dict(existing)
+
+    for cls, task_ids in qualifying.items():
+        count = len(task_ids)
+        evidence_str = _short_ids(task_ids)
+        root_cause = _extract_root_cause(records, cls)
+        fix = _extract_fix(records, cls)
+
+        if cls not in merged:
+            merged[cls] = {
+                "count": count,
+                "evidence": evidence_str,
+                "root_cause": root_cause,
+                "fix": fix,
+            }
+            new_classes.append(cls)
+        else:
+            old = merged[cls]
+            merged[cls] = {
+                "count": max(count, old["count"]),
+                "evidence": evidence_str if count > old["count"] else old["evidence"],
+                "root_cause": old["root_cause"] if len(old["root_cause"]) > len(root_cause) else root_cause,
+                "fix": old["fix"] if len(old["fix"]) > len(fix) else fix,
+            }
+            if count > old["count"]:
+                updated_classes.append(cls)
+
+    rendered = _render_patterns_md(merged)
+    patterns_path.parent.mkdir(parents=True, exist_ok=True)
+    patterns_path.write_text(rendered, encoding="utf-8")
+
+    return {
+        "new_classes": new_classes,
+        "updated_classes": updated_classes,
+        "total_reflections": len(records),
+    }
+
+
 # ── Tool registration ─────────────────────────────────────────────────────────
 
 def get_tools() -> List[ToolEntry]:
