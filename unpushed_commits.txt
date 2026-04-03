@@ -1,0 +1,2 @@
+74624bb v7.1.19: consciousness audit fixes — context.py threshold 100→500 with valid JSON, browser_recovery safe page diagnostics, __init__.py fallback 0.0.0, dead code cleanup, git_history duplicate SHA removed
+0937c78 fix: __init__.py VERSION fallback returns 'unknown' instead of crashing on utf-16 retry
