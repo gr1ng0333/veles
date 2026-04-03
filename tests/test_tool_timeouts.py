@@ -33,10 +33,22 @@ def test_fast_tools_are_15s():
         assert TOOL_TIMEOUT_OVERRIDES[tool] == 15, f"{tool} should be 15s"
 
 
+def test_commit_push_tools_are_90s():
+    """Commit/push tools need longer timeout to complete git operations including pre-push tests.
+
+    These were intentionally raised from 30s → 90s to prevent TOOL_TIMEOUT
+    on push operations (pre-push test suite takes ~5-10s + git push time).
+    """
+    commit_tools = ["repo_write_commit", "repo_commit_push"]
+    for tool in commit_tools:
+        assert TOOL_TIMEOUT_OVERRIDES[tool] == 90, (
+            f"{tool} should be 90s (raised from 30s to prevent push timeouts)"
+        )
+
+
 def test_medium_tools_are_30s():
-    """Write/search tools should have 30s timeout."""
-    medium = ["repo_write_commit", "repo_commit_push", "run_shell",
-              "web_search", "update_scratchpad"]
+    """Shell/search tools should have 30s timeout."""
+    medium = ["run_shell", "web_search", "update_scratchpad"]
     for tool in medium:
         assert TOOL_TIMEOUT_OVERRIDES[tool] == 30, f"{tool} should be 30s"
 
