@@ -616,6 +616,12 @@ def summarize_session_for_reset(
         "role": "user",
         "content": SUMMARIZE_PROMPT,
     })
+    # Trailing system message ensures last_role="system" → initiator="agent"
+    # so the summarization call doesn't consume a premium request.
+    summary_messages.append({
+        "role": "system",
+        "content": "Provide the handoff summary as instructed. Be specific and factual.",
+    })
 
     try:
         msg, usage = call_copilot(
