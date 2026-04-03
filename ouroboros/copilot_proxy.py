@@ -35,6 +35,10 @@ from ouroboros import copilot_proxy_accounts as _accounts_impl
 _session_lock = threading.Lock()
 _active_sessions: Dict[str, Dict[str, Any]] = {}  # interaction_id → stats
 
+# Diagnostic: track first payload per interaction for billing investigation
+_diag_lock = threading.Lock()
+_diag_seen_interactions: set = set()
+
 
 _SERVER_ERROR_COOLDOWN_SEC = 60
 
@@ -337,6 +341,82 @@ def call_copilot(
         "copilot_request model=%s initiator=%s interaction_id=%s round_tokens=%d",
         model, initiator, interaction_id or "none", sum(len(json.dumps(m)) for m in messages) // 4,
     )
+
+    # === DIAGNOSTIC: dump first request payload per interaction ===
+    if interaction_id and interaction_id not in _diag_seen_interactions:
+        with _diag_lock:
+            _diag_seen_interactions.add(interaction_id)
+        try:
+            import copy
+            diag_payload = copy.deepcopy(payload)
+            diag_messages = diag_payload.get("messages", [])
+            for i, m in enumerate(diag_messages):
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    parts_info = []
+                    for j, part in enumerate(content):
+                        if isinstance(part, dict):
+                            text = part.get("text", "")
+                            has_cache = "cache_control" in part
+                            parts_info.append(f"part[{j}]: len={len(text)}, cache_control={has_cache}")
+                    m["_diag_content"] = f"MULTIPART ({len(content)} parts): {parts_info}"
+                    m["content"] = f"<multipart {len(content)} parts>"
+                elif isinstance(content, str):
+                    m["_diag_content"] = f"STRING len={len(content)}, preview={content[:200]}"
+                    m["content"] = f"<string len={len(content)}>"
+                if m.get("tool_calls"):
+                    m["_diag_tool_calls"] = f"{len(m['tool_calls'])} tool_calls"
+
+            diag_tools = diag_payload.get("tools", [])
+            diag_payload["_diag_tools_count"] = len(diag_tools)
+            diag_payload["_diag_tools_names"] = (
+                [t.get("function", {}).get("name", "?") for t in diag_tools[:5]]
+                if diag_tools else []
+            )
+            diag_payload.pop("tools", None)
+
+            import json as _json
+            _diag_data = {
+                "ts": __import__("datetime").datetime.now(
+                    __import__("datetime").timezone.utc
+                ).isoformat(),
+                "type": "copilot_payload_diag",
+                "interaction_id": interaction_id[:8],
+                "initiator": initiator,
+                "model": model,
+                "message_count": len(diag_messages),
+                "message_roles": [m.get("role", "?") for m in diag_messages],
+                "payload_keys": list(diag_payload.keys()),
+                "stream": diag_payload.get("stream"),
+                "max_tokens": diag_payload.get("max_tokens"),
+                "tool_choice": diag_payload.get("tool_choice"),
+                "reasoning_effort": diag_payload.get("reasoning_effort"),
+                "tools_count": diag_payload.get("_diag_tools_count", 0),
+                "tools_sample": diag_payload.get("_diag_tools_names", []),
+                "messages_detail": [
+                    {
+                        "idx": i,
+                        "role": m.get("role"),
+                        "content_info": m.get("_diag_content", "?"),
+                        "has_tool_calls": bool(m.get("tool_calls")),
+                    }
+                    for i, m in enumerate(diag_messages)
+                ],
+            }
+            _diag_path = __import__("pathlib").Path("/opt/veles-data/logs/copilot_diag.jsonl")
+            _diag_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(_diag_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(_diag_data, ensure_ascii=False) + "\n")
+            log.info(
+                "copilot_payload_diag interaction=%s roles=%s tools=%d initiator=%s",
+                interaction_id[:8],
+                [m.get("role") for m in diag_messages],
+                len(diag_tools),
+                initiator,
+            )
+        except Exception as e:
+            log.warning("copilot_diag_error: %s", e)
+    # === END DIAGNOSTIC ===
 
     # Warn if context is getting large for Copilot
     approx_context_chars = sum(len(json.dumps(m)) for m in messages)
