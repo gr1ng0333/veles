@@ -1,0 +1,2 @@
+4e8c90d feat: add extract_patterns tool — auto-populate patterns.md from reflections
+6221eae feat: self_audit tool — prescriptive ranked findings (oversized modules, import errors, tool timeouts, pattern register)
