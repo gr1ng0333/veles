@@ -1,0 +1,18 @@
+{
+  "ts": "2026-04-03T20:35:48.353790+00:00",
+  "target_branch": "veles",
+  "reason": "task_completed_without_push",
+  "current_branch": "veles",
+  "dirty_count": 0,
+  "unpushed_count": 4,
+  "warnings": [
+    "unpushed_commits"
+  ],
+  "path": "/opt/veles-data/archive/rescue/20260403_203548_b87e4b7c",
+  "untracked": {
+    "copied_files": 0,
+    "skipped_files": 0,
+    "copied_bytes": 0,
+    "truncated": false
+  }
+}

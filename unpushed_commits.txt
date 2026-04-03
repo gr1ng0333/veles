@@ -1,0 +1,4 @@
+d4e7f85 v7.1.21: memory_search tool + copilot_proxy refactor
+b73b103 refactor: decompose call_copilot — extract _dump_diag_payload, _merge_choices, _execute_single_account
+228d9dd test: memory_search — corpus loading, TF-IDF scoring, edge cases
+f12cf08 feat: add memory_search tool — TF-IDF search across chat/knowledge/identity/scratchpad
