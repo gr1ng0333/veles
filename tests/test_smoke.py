@@ -170,6 +170,8 @@ EXPECTED_TOOLS = [
     "extract_patterns",
     # Task digest
     "task_digest",
+    # Version sync
+    "version_sync",
 ]
 
 
