@@ -1,6 +1,7 @@
 """Memory search — TF-IDF search across all Veles memory sources.
 
-Searches: chat.jsonl, knowledge/*.md, identity.md, scratchpad.md.
+Searches: chat.jsonl, knowledge/*.md, identity.md, scratchpad.md,
+          task_reflections.jsonl, dialogue_blocks.json.
 No external dependencies — pure Python TF-IDF + cosine-like scoring.
 
 Usage:
@@ -108,6 +109,84 @@ def _load_chat(drive_root: pathlib.Path, max_messages: int = 3000) -> List[_Chun
     return chunks
 
 
+def _load_task_reflections(drive_root: pathlib.Path,
+                           max_reflections: int = 200) -> List[_Chunk]:
+    """Load task reflections from task_reflections.jsonl.
+
+    Each reflection becomes a searchable chunk combining goal + reflection text.
+    This covers evolution history, error patterns, and past task summaries.
+    """
+    ref_file = drive_root / "logs" / "task_reflections.jsonl"
+    if not ref_file.exists():
+        return []
+    try:
+        with ref_file.open("r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as exc:
+        log.warning("memory_search: cannot read task_reflections.jsonl: %s", exc)
+        return []
+
+    lines = lines[-max_reflections:]
+    chunks: List[_Chunk] = []
+    for raw in lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+            goal = (rec.get("goal") or "").strip()
+            reflection = (rec.get("reflection") or "").strip()
+            if not goal and not reflection:
+                continue
+            # Skip failed reflections (auth errors etc.)
+            if reflection.startswith("(reflection generation failed"):
+                reflection = ""
+            date = (rec.get("ts") or "")[:10]
+            task_id = rec.get("task_id", "")
+            src = f"reflection/{task_id}" if task_id else "reflection"
+            # Combine goal + reflection into one searchable text
+            combined = goal
+            if reflection:
+                combined = f"{goal}\n\n{reflection}"
+            chunks.extend(_split_into_chunks(combined, src, date))
+        except Exception:
+            continue
+    return chunks
+
+
+def _load_dialogue_blocks(drive_root: pathlib.Path) -> List[_Chunk]:
+    """Load consolidated dialogue blocks from dialogue_blocks.json.
+
+    These are auto-summarised historical episodes — condensed memory of
+    past conversations that no longer fit in the live chat context.
+    """
+    blocks_file = drive_root / "memory" / "dialogue_blocks.json"
+    if not blocks_file.exists():
+        return []
+    try:
+        with blocks_file.open("r", encoding="utf-8") as f:
+            blocks = json.load(f)
+    except Exception as exc:
+        log.warning("memory_search: cannot read dialogue_blocks.json: %s", exc)
+        return []
+
+    if not isinstance(blocks, list):
+        return []
+
+    chunks: List[_Chunk] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        content = (block.get("content") or "").strip()
+        if not content:
+            continue
+        date = (block.get("ts") or "")[:10]
+        block_range = block.get("range", "")
+        src = f"dialogue/{block_range}" if block_range else "dialogue"
+        chunks.extend(_split_into_chunks(content, src, date))
+    return chunks
+
+
 def _load_md(path: pathlib.Path, label: str) -> List[_Chunk]:
     """Load a markdown file and split by paragraphs."""
     if not path.exists():
@@ -141,6 +220,12 @@ def _build_corpus(drive_root: pathlib.Path) -> List[_Chunk]:
 
     # Chat history (most recent messages)
     corpus.extend(_load_chat(drive_root))
+
+    # Task reflections (evolution history, error patterns)
+    corpus.extend(_load_task_reflections(drive_root))
+
+    # Consolidated dialogue blocks (historical episodes)
+    corpus.extend(_load_dialogue_blocks(drive_root))
 
     # Knowledge base
     kb_dir = drive_root / "memory" / "knowledge"
@@ -237,6 +322,8 @@ def get_tools() -> List[ToolEntry]:
         "name": "memory_search",
         "description": (
             "TF-IDF search across all Veles memory: recent chat history, "
+            "task reflections (evolution history, error patterns), "
+            "consolidated dialogue blocks (historical episodes), "
             "knowledge base topics, identity.md, and scratchpad. "
             "Use to recall past conversations, find relevant patterns, "
             "or locate prior decisions. Returns top-K fragments with "
