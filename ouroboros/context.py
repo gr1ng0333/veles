@@ -500,6 +500,11 @@ def build_llm_messages(
     if checklists_md.strip():
         static_text += "\n\n" + clip_text(checklists_md, 2500)
 
+    # Skills map — always visible so agent knows what to load on demand
+    skills_map_md = _safe_read(env.repo_path("prompts/skills/_map.md"), fallback="")
+    if skills_map_md.strip():
+        static_text += "\n\n" + clip_text(skills_map_md, 3000)
+
     active_model = str(os.environ.get("OUROBOROS_MODEL") or "")
     if model_transport(active_model) == "copilot":
         static_text += "\n\n" + _build_copilot_round_policy_section()
