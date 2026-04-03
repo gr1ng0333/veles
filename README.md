@@ -80,6 +80,12 @@
 
 ## Changelog
 
+### v7.1.33 (2026-04-04)
+- Remove Copilot Round Policy from SYSTEM.md (evolution now subsidized by Microsoft)
+
+### v7.1.32 (2026-04-04)
+- task_digest tool, fix test_tool_timeouts, fix evolution_report drive_root
+
 ### v7.1.31 (2026-04-04)
 - Reflection→patterns loop: replace LLM-based `_update_patterns` with deterministic `update_patterns_from_reflections()`. patterns.md now auto-updates after every reflection without LLM calls (−100 lines, −1 LLM call per task).
 
