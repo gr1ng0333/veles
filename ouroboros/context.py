@@ -406,6 +406,31 @@ def _compute_cache_hit_rate(env: Any) -> Optional[float]:
     return total_cached / total_prompt
 
 
+
+def _build_active_skills_sections(env: Any) -> list:
+    """Load active skill files from prompts/skills/ based on state active_skills."""
+    sections = []
+    try:
+        import json as _json
+        state_path = env.drive_path('state/state.json')
+        state_data = _json.loads(state_path.read_text(encoding='utf-8'))
+        active_skills = state_data.get('active_skills') or []
+        if not active_skills:
+            return sections
+        skills_dir = pathlib.Path(env.repo_path('prompts/skills'))
+        for skill_name in active_skills:
+            skill_file = skills_dir / f'{skill_name}.md'
+            if skill_file.exists():
+                content = skill_file.read_text(encoding='utf-8').strip()
+                if content:
+                    sections.append(f'## Skill: {skill_name}' + '\n\n' + content)
+            else:
+                log.debug('Skill file not found: %s', skill_file)
+    except Exception:
+        log.debug('Failed to load active skills for context', exc_info=True)
+    return sections
+
+
 def build_llm_messages(
     env: Any,
     memory: Memory,
@@ -487,6 +512,7 @@ def build_llm_messages(
     # These change ~once per task, not per round
     semi_stable_parts = []
     semi_stable_parts.extend(_build_memory_sections(memory))
+    semi_stable_parts.extend(_build_active_skills_sections(env))
 
     kb_index_path = env.drive_path("memory/knowledge/_index.md")
     if kb_index_path.exists():

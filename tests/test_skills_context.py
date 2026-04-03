@@ -142,7 +142,7 @@ def test_skills_appear_in_semi_stable_block(tmp_path):
         mock_cons.return_value.render_for_context.return_value = ""
 
         task = {"id": "test-1", "type": "task", "text": "hello"}
-        messages = build_llm_messages(env, memory, task)
+        messages, _cap = build_llm_messages(env, memory, task)
 
     system_msg = messages[0]
     blocks = system_msg["content"]
