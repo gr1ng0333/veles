@@ -154,9 +154,9 @@ TOOL_TIMEOUT_OVERRIDES: Dict[str, int] = {
     "plan_status": 15, "get_task_result": 15,
     "codebase_digest": 15,
     # Medium write/search tools — 30s
-    "repo_write_commit": 30, "repo_commit_push": 30,
+    "repo_write_commit": 90, "repo_commit_push": 90,
     "drive_write": 30, "knowledge_write": 30,
-    "run_shell": 30, "web_search": 30, "academic_search": 30,
+    "run_shell": 60, "web_search": 30, "academic_search": 30,
     "update_scratchpad": 30, "update_identity": 30,
     "plan_create": 30, "plan_step_done": 30, "plan_update": 30,
     "plan_approve": 30, "plan_reject": 30, "plan_complete": 30,
