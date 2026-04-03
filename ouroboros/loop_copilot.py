@@ -192,24 +192,18 @@ def maybe_apply_session_reset(
                 break
         new_messages.append(
             {
-                "role": "assistant",
-                "content": (
-                    "I've been working on this task. Let me review my progress and continue.\n\n"
-                    + summary
-                ),
-            }
-        )
-        new_messages.append(
-            {
                 "role": "user",
                 "content": (
+                    "Context from previous session:\n\n"
+                    + summary
+                    + "\n\n---\n\n"
                     "Continue working on the task from where you left off. "
-                    "Pick up exactly where the summary indicates."
+                    "Pick up from the REMAINING/IN PROGRESS items in the summary above."
                 ),
             }
         )
-        # Last role="user" → call_copilot sets X-Initiator="user" for this first request.
-        # This is intentional: the new session starts with a fresh user turn.
+        # Structure is [system, user] — identical to a fresh task start.
+        # This prevents Copilot backend from billing this as a premium request.
         messages[:] = new_messages
 
         log.info(
