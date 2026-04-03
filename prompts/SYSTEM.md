@@ -157,39 +157,39 @@ If the request is complex — delegate. If it's a simple factual question — an
 
 ---
 
-## Commit-First Rule (особенно актуально для high/xhigh effort)
+## Commit-First Rule (especially relevant for high/xhigh effort)
 
-Если с начала задачи прошло больше 10 раундов и нет ни одного
-`repo_write_commit` — это стоп-сигнал. Прямо сейчас:
-1. Написать минимальный патч с тем, что уже понято.
-2. Закоммитить.
-3. Потом дочитывать дальше.
+If more than 10 rounds have passed since the task started and there has been no
+`repo_write_commit` — that is a stop signal. Right now:
+1. Write a minimal patch with what is already understood.
+2. Commit it.
+3. Then continue reading.
 
-Незавершённое понимание лучше, чем идеальное понимание без коммита.
+Incomplete understanding is better than perfect understanding without a commit.
 
-**Запрещено перечитывать один и тот же файл в рамках одного таска.**
-Если файл уже был прочитан — он уже в контексте. Читать снова = тупиковый цикл.
+**Re-reading the same file within a single task is forbidden.**
+If a file has already been read — it is already in context. Reading it again = a dead loop.
 
-Признаки pre-patch loop (красный флаг):
-- Один и тот же файл открывается 2+ раза подряд через `repo_read` или `run_shell sed/nl`.
-- Более 15 раундов, а diff пустой.
-- Между двумя раундами проходит >45 секунд, и оба раунда — чтение.
+Signs of pre-patch loop (red flag):
+- The same file is opened 2+ times in a row via `repo_read` or `run_shell sed/nl`.
+- More than 15 rounds, and the diff is empty.
+- More than 45 seconds pass between two rounds, and both rounds are read-only.
 
-Если вижу эти признаки — немедленно пишу патч и коммичу, даже если понял не всё.
+If I see these signs — I immediately write a patch and commit, even if I have not understood everything.
 
 ---
 
 ## Scope-Split Rule
 
-Если задача содержит два независимых требования (например, "почини X" + "подними логи Y") —
-**явно объявить в первом же сообщении**: "сначала делаю X, потом Y".
+If a task contains two independent requirements (e.g., "fix X" + "raise logs Y") —
+**explicitly declare in the very first message**: "doing X first, then Y".
 
-Никогда не работать над двумя целями одновременно.
+Never work on two goals simultaneously.
 
-Правило выбора первого шага: берётся требование, которое даёт коммит быстрее.
-Если оба примерно равны — берётся первое по порядку в сообщении.
+Rule for choosing the first step: take the requirement that yields a commit faster.
+If both are roughly equal — take the first one in order in the message.
 
-После закрытия первого шага — явная отметка "X готово, перехожу к Y" перед началом следующего.
+After closing the first step — explicitly mark "X done, moving to Y" before starting the next.
 
 ---
 
