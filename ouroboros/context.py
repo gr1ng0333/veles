@@ -1,9 +1,4 @@
-"""
-Ouroboros context builder.
-
-Assembles LLM context from prompts, memory, logs, and runtime state.
-Extracted from agent.py to keep the agent thin and focused.
-"""
+"""Ouroboros context builder. Assembles LLM context from prompts, memory, logs, and runtime state."""
 
 from __future__ import annotations
 
@@ -21,7 +16,6 @@ from ouroboros.memory import Memory
 from ouroboros.llm import model_transport
 
 log = logging.getLogger(__name__)
-
 
 def _build_copilot_round_policy_section() -> str:
     return (
@@ -50,8 +44,6 @@ def _build_copilot_round_policy_section() -> str:
         "- дорогой раунд с минимальным сдвигом по задаче;\n"
         "- попытка дожить до 31+ раунда вместо того, чтобы завершить работу раньше.\n"
     )
-
-
 
 def _build_user_content(task: Dict[str, Any]) -> Any:
     """Build user message content. Supports text + optional image."""
@@ -94,7 +86,6 @@ def _build_user_content(task: Dict[str, Any]) -> Any:
     })
     return parts
 
-
 def _build_runtime_section(env: Any, task: Dict[str, Any]) -> str:
     """Build the runtime context section (utc_now, repo_dir, drive_root, git_head, git_branch, task info, budget info)."""
     # --- Git context ---
@@ -130,7 +121,6 @@ def _build_runtime_section(env: Any, task: Dict[str, Any]) -> str:
         runtime_data["budget"] = budget_info
     runtime_ctx = json.dumps(runtime_data, ensure_ascii=False, indent=2)
     return "## Runtime context\n\n" + runtime_ctx
-
 
 def _build_memory_sections(memory: Memory) -> List[str]:
     """Build scratchpad, identity, active plan, dialogue summary sections."""
@@ -174,7 +164,6 @@ def _build_memory_sections(memory: Memory) -> List[str]:
                 sections.append("## Dialogue Summary\n\n" + clip_text(summary_text, 20000))
 
     return sections
-
 
 def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[str]:
     """Build recent chat, recent progress, recent tools, recent events sections."""
@@ -226,13 +215,9 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
 
     return sections
 
-
 def _build_health_invariants(env: Any) -> str:
     """Build health invariants section for LLM-first self-detection.
-
-    Surfaces anomalies as informational text. The LLM (not code) decides
-    what action to take based on what it reads here. (Bible P0+P3)
-    """
+    Surfaces anomalies as informational text. The LLM (not code) decides what action to take. (Bible P0+P3)"""
     checks = []
 
     # 1. Version sync: VERSION file vs pyproject.toml
@@ -370,7 +355,6 @@ def _build_health_invariants(env: Any) -> str:
         return ""
     return "## Health Invariants\n\n" + "\n".join(f"- {c}" for c in checks)
 
-
 def _compute_cache_hit_rate(env: Any) -> Optional[float]:
     """Compute prompt cache hit rate from recent llm_round events."""
     events_path = env.drive_path("logs/events.jsonl")
@@ -405,8 +389,6 @@ def _compute_cache_hit_rate(env: Any) -> Optional[float]:
         return None
     return total_cached / total_prompt
 
-
-
 def _build_active_skills_sections(env: Any) -> list:
     """Load active skill files from prompts/skills/ based on state active_skills."""
     sections = []
@@ -429,7 +411,6 @@ def _build_active_skills_sections(env: Any) -> list:
     except Exception:
         log.debug('Failed to load active skills for context', exc_info=True)
     return sections
-
 
 def build_llm_messages(
     env: Any,
@@ -600,7 +581,6 @@ def build_llm_messages(
 
     return messages, cap_info
 
-
 def apply_message_token_soft_cap(
     messages: List[Dict[str, Any]],
     soft_cap_tokens: int,
@@ -680,7 +660,6 @@ def apply_message_token_soft_cap(
     info["estimated_tokens_after"] = estimated
     return pruned, info
 
-
 # --- Protected compaction tools ---
 
 _COMPACTION_PROTECTED_TOOLS = frozenset({
@@ -694,7 +673,6 @@ _COMPACTION_PROTECTED_TOOLS = frozenset({
     "plan_complete",
 })
 
-
 def _find_tool_name_for_result(tool_msg: dict, messages: list) -> str:
     """Find the tool name that produced a given tool result by matching tool_call_id."""
     tid = tool_msg.get("tool_call_id", "")
@@ -707,7 +685,6 @@ def _find_tool_name_for_result(tool_msg: dict, messages: list) -> str:
             if tc.get("id") == tid:
                 return tc.get("function", {}).get("name", "")
     return ""
-
 
 def _compact_tool_result(msg: dict, content: str) -> dict:
     """
@@ -731,7 +708,6 @@ def _compact_tool_result(msg: dict, content: str) -> dict:
         summary = f"{first_line}... ({char_count} chars)" if char_count > 80 else content[:200]
 
     return {**msg, "content": summary}
-
 
 def _compact_assistant_msg(msg: dict) -> dict:
     """
@@ -774,7 +750,6 @@ def _compact_assistant_msg(msg: dict) -> dict:
         compacted_msg["tool_calls"] = compacted_tool_calls
 
     return compacted_msg
-
 
 def compact_tool_history(messages: list, keep_recent: int = 6) -> list:
     """
@@ -842,7 +817,6 @@ def compact_tool_history(messages: list, keep_recent: int = 6) -> list:
         result.append(msg)
 
     return result
-
 
 def compact_tool_history_llm(messages: list, keep_recent: int = 6) -> list:
     """LLM-driven compaction: summarize old tool results via a light model.
@@ -966,7 +940,6 @@ def compact_tool_history_llm(messages: list, keep_recent: int = 6) -> list:
 
     return result
 
-
 def _compact_tool_call_arguments(tool_name: str, args_json: str) -> Dict[str, Any]:
     """
     Compact tool call arguments for old rounds.
@@ -1012,7 +985,6 @@ def _compact_tool_call_arguments(tool_name: str, args_json: str) -> Dict[str, An
         if len(args_json) > 100:
             return {"name": tool_name, "arguments": args_json[:100] + "... (compacted)"}
         return {"name": tool_name, "arguments": args_json}
-
 
 def _safe_read(path: pathlib.Path, fallback: str = "") -> str:
     """Read a file, returning fallback if it doesn't exist or errors."""
