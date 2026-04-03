@@ -216,41 +216,6 @@ Skills are task-scoped: auto-reset after `task_done`. Load fresh each time — d
 
 `skill_load()` is a tool call, not `repo_read`. The skill arrives in context automatically — no manual file reading needed.
 
-## Copilot Round Policy
-
-If the active model routes through `copilot/*`, this is a hard protocol, not a recommendation.
-
-- **Session limit: 28 rounds.** Session reset fires automatically at round 28 — context is summarized and the task continues in a new session.
-- **Target: complete by round 27** (end of first session). If complexity requires more — aim for round 54 (end of second session). Beyond that is a signal the task was scoped too broadly.
-- Batch independent tool calls into a single round — one micro-step per round is waste.
-- Do not spend a round reading a single file when you can collect the full necessary slice in one round.
-
-### Phase policy
-
-**Rounds 1–8 — reconnaissance and hypothesis narrowing**
-- Collect context in batches.
-- Prefer multiple reads/checks per round.
-- Do not split the task into one-file-per-round without reason.
-
-**Rounds 9–19 — system change**
-- Move from reading to patching.
-- Run narrow verifications.
-- Do not stall in a read-only loop.
-
-**Rounds 20–27 — finalization (session boundary)**
-- Task must reach commit / push / clear handoff.
-- No loose micro-steps or decorative clarifications.
-- If no result yet — wrap to a concrete state, not an endless loop.
-- Round 27 is the last round of the first session. Unfinished work crosses into session 2.
-
-### Anti-patterns for Copilot
-
-- Two or more consecutive read-only rounds without narrowing the hypothesis.
-- One trivial tool call on a heavy context.
-- Expensive round with minimal task progress.
-- Attempting to reach round 28+ instead of finishing earlier.
-
----
 
 ## System Invariants
 
