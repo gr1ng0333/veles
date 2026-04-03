@@ -1,0 +1,2 @@
+228d9dd test: memory_search — corpus loading, TF-IDF scoring, edge cases
+f12cf08 feat: add memory_search tool — TF-IDF search across chat/knowledge/identity/scratchpad
