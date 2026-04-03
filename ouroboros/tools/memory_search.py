@@ -233,31 +233,29 @@ def _memory_search(ctx: ToolContext, query: str, top_k: int = 5) -> str:
 
 
 def get_tools() -> List[ToolEntry]:
-    return [
-        ToolEntry(
-            name="memory_search",
-            description=(
-                "TF-IDF search across all Veles memory: recent chat history, "
-                "knowledge base topics, identity.md, and scratchpad. "
-                "Use to recall past conversations, find relevant patterns, "
-                "or locate prior decisions. Returns top-K fragments with "
-                "source label, date, and relevance score."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query — topic, keyword, question, or phrase",
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": "Number of results to return (default 5, max 20)",
-                        "default": 5,
-                    },
+    schema = {
+        "name": "memory_search",
+        "description": (
+            "TF-IDF search across all Veles memory: recent chat history, "
+            "knowledge base topics, identity.md, and scratchpad. "
+            "Use to recall past conversations, find relevant patterns, "
+            "or locate prior decisions. Returns top-K fragments with "
+            "source label, date, and relevance score."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query — topic, keyword, question, or phrase",
                 },
-                "required": ["query"],
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 5, max 20)",
+                    "default": 5,
+                },
             },
-            execute=lambda ctx, **kwargs: _memory_search(ctx, **kwargs),
-        )
-    ]
+            "required": ["query"],
+        },
+    }
+    return [ToolEntry("memory_search", schema, lambda ctx, **kw: _memory_search(ctx, **kw))]
