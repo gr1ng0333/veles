@@ -329,7 +329,7 @@ def _evolution_report(
     format: str = "text",
 ) -> str:
     """Generate an evolution audit report."""
-    drive = Path(_DRIVE_ROOT)
+    drive = ctx.drive_root if ctx and ctx.drive_root else Path(_DRIVE_ROOT)
     events = _load_jsonl_tail(drive / "logs" / "events.jsonl")
     tools_log = _load_jsonl_tail(drive / "logs" / "tools.jsonl")
 
