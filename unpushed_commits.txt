@@ -1,0 +1,1 @@
+6221eae feat: self_audit tool — prescriptive ranked findings (oversized modules, import errors, tool timeouts, pattern register)
