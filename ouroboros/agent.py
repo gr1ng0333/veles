@@ -576,6 +576,14 @@ class OuroborosAgent:
             if heartbeat_stop is not None:
                 heartbeat_stop.set()
             self._current_task_type = None
+            # Skills are task-scoped: reset active_skills on every task completion
+            try:
+                from supervisor.state import load_state, save_state
+                _st = load_state()
+                _st["active_skills"] = []
+                save_state(_st)
+            except Exception:
+                log.debug("Failed to reset active_skills on task_done", exc_info=True)
 
     # =====================================================================
     # Task result emission
