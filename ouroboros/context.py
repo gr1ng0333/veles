@@ -393,9 +393,8 @@ def _build_active_skills_sections(env: Any) -> list:
     """Load active skill files from prompts/skills/ based on state active_skills."""
     sections = []
     try:
-        import json as _json
         state_path = env.drive_path('state/state.json')
-        state_data = _json.loads(state_path.read_text(encoding='utf-8'))
+        state_data = json.loads(state_path.read_text(encoding='utf-8'))
         active_skills = state_data.get('active_skills') or []
         if not active_skills:
             return sections
@@ -971,19 +970,23 @@ def _compact_tool_call_arguments(tool_name: str, args_json: str) -> Dict[str, An
                 args[large_field] = {"_truncated": True}
                 return {"name": tool_name, "arguments": json.dumps(args, ensure_ascii=False)}
 
-        # For other tools, if args JSON is > 100 chars, truncate
-        if len(args_json) > 100:
-            truncated = args_json[:100] + "... (compacted)"
-            return {"name": tool_name, "arguments": truncated}
+        # For other tools, if args JSON is > 500 chars, compact to valid JSON
+        if len(args_json) > 500:
+            compacted_args = {}
+            for k, v in args.items():
+                if isinstance(v, str) and len(v) > 150:
+                    compacted_args[k] = v[:150] + "..."
+                else:
+                    compacted_args[k] = v
+            return {"name": tool_name, "arguments": json.dumps(compacted_args, ensure_ascii=False)}
 
         # Otherwise return unchanged
         return {"name": tool_name, "arguments": args_json}
 
     except (json.JSONDecodeError, Exception):
-        # If we can't parse JSON, leave it unchanged
-        # But still truncate if too long
-        if len(args_json) > 100:
-            return {"name": tool_name, "arguments": args_json[:100] + "... (compacted)"}
+        # If we can't parse JSON, produce valid JSON fallback
+        if len(args_json) > 500:
+            return {"name": tool_name, "arguments": json.dumps({"_compacted": args_json[:200]})}
         return {"name": tool_name, "arguments": args_json}
 
 def _safe_read(path: pathlib.Path, fallback: str = "") -> str:
