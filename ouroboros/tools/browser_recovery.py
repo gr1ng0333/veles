@@ -16,6 +16,46 @@ _PAGE_STATE_JS = """() => ({
     bodyChildren: document.body?.children?.length || 0,
 })"""
 
+def _safe_page_diagnostics(page, selector="", matched=None):
+    """Safely collect page diagnostics — never raises even if page is dead."""
+    matched = matched or []
+    diag = {
+        "final_url": getattr(page, "url", ""),
+        "title": "", "ready_state": "unknown", "visible_text": "",
+        "dom_size": 0, "selector_waited": selector, "matched_selectors": matched,
+        "body_child_count": 0, "has_app_root": False, "script_count": 0,
+    }
+    try:
+        diag["title"] = page.title()
+    except Exception:
+        pass
+    try:
+        diag["ready_state"] = page.evaluate("() => document.readyState")
+    except Exception:
+        pass
+    try:
+        diag["visible_text"] = page.inner_text("body")
+    except Exception:
+        pass
+    try:
+        diag["dom_size"] = len(page.content())
+    except Exception:
+        pass
+    try:
+        bi = page.evaluate(
+            """() => ({bodyChildCount: document.body ? document.body.children.length : 0, """
+            """hasRoot: !!document.querySelector('#__next, #root, [data-reactroot], [ng-version], [id*=app], [class*=app]'), """
+            """scriptCount: document.scripts ? document.scripts.length : 0})"""
+        ) or {}
+        diag["body_child_count"] = int(bi.get("bodyChildCount") or 0)
+        diag["has_app_root"] = bool(bi.get("hasRoot"))
+        diag["script_count"] = int(bi.get("scriptCount") or 0)
+    except Exception:
+        pass
+    return diag
+
+
+
 
 def recover_browser_operation(
     ctx: Any,
@@ -147,30 +187,12 @@ def recover_browser_operation(
                     raise RuntimeError("Recovery did not reach meaningful content")
             attempt.update(status="recovered", elapsed_ms=int((time.time() - started) * 1000), result_summary=str(result)[:220])
             attempts.append(attempt)
-            try:
-                visible_text = page.inner_text("body")
-            except Exception:
-                visible_text = ""
-            try:
-                body_info = page.evaluate(
-                    """() => ({bodyChildCount: document.body ? document.body.children.length : 0, hasRoot: !!document.querySelector('#__next, #root, [data-reactroot], [ng-version], [id*=app], [class*=app]'), scriptCount: document.scripts ? document.scripts.length : 0})"""
-                ) or {}
-            except Exception:
-                body_info = {}
-            return {"recovered": True, "result": result, "attempts": attempts, "final_diagnostics": classify_browser_failure(message="", final_url=getattr(page, "url", ""), title=page.title(), ready_state=page.evaluate("() => document.readyState"), visible_text=visible_text, dom_size=len(page.content()), selector_waited=selector, matched_selectors=matched, body_child_count=int(body_info.get("bodyChildCount") or 0), has_app_root=bool(body_info.get("hasRoot")), script_count=int(body_info.get("scriptCount") or 0))}
+            diag = _safe_page_diagnostics(page, selector, matched)
+            return {"recovered": True, "result": result, "attempts": attempts, "final_diagnostics": classify_browser_failure(message="", **diag)}
         except Exception as exc:
             attempt.update(status="failed", elapsed_ms=int((time.time() - started) * 1000), error=str(exc))
             attempts.append(attempt)
             last_error = str(exc)
 
-    try:
-        visible_text = page.inner_text("body")
-    except Exception:
-        visible_text = ""
-    try:
-        body_info = page.evaluate(
-            """() => ({bodyChildCount: document.body ? document.body.children.length : 0, hasRoot: !!document.querySelector('#__next, #root, [data-reactroot], [ng-version], [id*=app], [class*=app]'), scriptCount: document.scripts ? document.scripts.length : 0})"""
-        ) or {}
-    except Exception:
-        body_info = {}
-    return {"recovered": False, "attempts": attempts, "final_diagnostics": classify_browser_failure(message=last_error, final_url=getattr(page, "url", ""), title=page.title(), ready_state=page.evaluate("() => document.readyState"), visible_text=visible_text, dom_size=len(page.content()), selector_waited=selector, matched_selectors=matched, body_child_count=int(body_info.get("bodyChildCount") or 0), has_app_root=bool(body_info.get("hasRoot")), script_count=int(body_info.get("scriptCount") or 0)), "error": last_error}
+    diag = _safe_page_diagnostics(page, selector, matched)
+    return {"recovered": False, "attempts": attempts, "final_diagnostics": classify_browser_failure(message=last_error, **diag), "error": last_error}

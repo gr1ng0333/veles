@@ -16,7 +16,6 @@ from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolEntry
 
-log = logging.getLogger(__name__)
 
 
 def _compact_context(ctx, keep_last_n: int = 6, **kwargs) -> str:

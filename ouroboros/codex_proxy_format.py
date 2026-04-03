@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-log = logging.getLogger(__name__)
 
 
 def _message_text_content(msg: Dict[str, Any]) -> str:

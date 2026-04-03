@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 _MAX_LIMIT = 100
-_PRETTY = "===COMMIT===%n%H%n%H%n%cI%n%an%n%s%n%b"
+_PRETTY = "===COMMIT===%n%H%n%cI%n%an%n%s%n%b"
 
 
 def _repo_dir(ctx: ToolContext) -> Path:
@@ -58,13 +58,13 @@ def _parse_log_output(raw: str, include_stats: bool, include_body: bool) -> List
         if not chunk:
             continue
         lines = chunk.splitlines()
-        if len(lines) < 5:
+        if len(lines) < 4:
             continue
         sha = lines[0]
-        date = lines[2] if len(lines) > 2 else ""
-        author = lines[3] if len(lines) > 3 else ""
-        subject = lines[4] if len(lines) > 4 else ""
-        rest = lines[5:]
+        date = lines[1] if len(lines) > 1 else ""
+        author = lines[2] if len(lines) > 2 else ""
+        subject = lines[3] if len(lines) > 3 else ""
+        rest = lines[4:]
         body_lines: List[str] = []
         stats_lines: List[str] = []
         if include_stats:

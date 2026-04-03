@@ -22,7 +22,7 @@ import os
 import pathlib
 from typing import Any, Dict, List, Optional
 
-from ouroboros.utils import estimate_tokens, read_text, clip_text
+from ouroboros.utils import estimate_tokens, clip_text
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 _DRIVE_ROOT = os.environ.get("DRIVE_ROOT", "/opt/veles-data")
