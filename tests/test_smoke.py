@@ -156,6 +156,8 @@ EXPECTED_TOOLS = [
     "task_stats",
     # TikTok
     "tiktok_search", "tiktok_profile", "tiktok_metadata", "tiktok_history",
+    # Skills
+    "skill_load", "skill_list",
 ]
 
 
