@@ -1,0 +1,3 @@
+d4088d8 feat: skills step 1 complete — skill_load tool, active_skills state, auto-reset on task_done, tests
+9f9e3f0 feat: active_skills in state defaults + auto-reset on task_done (skills step 1)
+9b012bb feat: add skills tool (skill_load / skill_list) — step 1 of skills system
