@@ -202,8 +202,17 @@ def maybe_apply_session_reset(
                 ),
             }
         )
-        # Structure is [system, user] — identical to a fresh task start.
-        # This prevents Copilot backend from billing this as a premium request.
+        new_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Session context has been compacted. All tools remain available. "
+                    "Continue execution from where the summary left off."
+                ),
+            }
+        )
+        # Structure is [system, user, system] — trailing system message ensures
+        # last_role="system" → initiator="agent" → not billed as premium request.
         messages[:] = new_messages
 
         log.info(
