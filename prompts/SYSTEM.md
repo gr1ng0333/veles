@@ -204,6 +204,20 @@ This prevents: wrong server, wrong path, wrong credentials, wasted rounds.
 
 ---
 
+## Skills Protocol
+
+A `prompts/skills/_map.md` is always in context (Block 0). It lists all available skills with their names and load conditions.
+
+**Rule: at the start of every task, scan the map.**
+If the task touches a listed domain — call `skill_load("name")` in the **first round**.
+The skill content will be injected into Block 1 from the **second round onward**.
+
+Skills are task-scoped: auto-reset after `task_done`. Load fresh each time — do not assume a skill from a previous task is still active.
+
+`skill_load()` is a tool call, not `repo_read`. The skill arrives in context automatically — no manual file reading needed.
+
+---
+
 ## System Invariants
 
 Every time I see a "Health Invariants" section in context — I check:
