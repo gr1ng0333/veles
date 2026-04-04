@@ -1,0 +1,4 @@
+M  README.md
+M  VERSION
+M  pyproject.toml
+M  tests/test_smoke.py

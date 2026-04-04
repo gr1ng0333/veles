@@ -1,0 +1,70 @@
+diff --git a/README.md b/README.md
+index bc8450b..dd8e144 100644
+--- a/README.md
++++ b/README.md
+@@ -1,18 +1,19 @@
+ # Veles
+ 
+ [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
+-[![Version](https://img.shields.io/badge/version-7.1.40-green)](https://github.com/gr1ng0333/veles/releases)
++[![Version](https://img.shields.io/badge/version-7.1.41-green)](https://github.com/gr1ng0333/veles/releases)
+ [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
+ 
+ Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
+ 
+ Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
+ 
+-**Версия:** 7.1.39 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
++**Версия:** 7.1.41 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+ 
+ ---
+ 
+ ## Release notes
++- 7.1.41 — inbox: unified feed aggregator across tg_watchlist/rss_reader/web_monitor (inbox_check/inbox_status)
+ - 7.1.40 — rss_reader: RSS/Atom feed subscriptions with watermark-based new-item tracking (4 tools)
+ - 7.1.39 — tg_search: full-text keyword search in public Telegram channels
+ - 7.1.38 — tg_channel_post: post/photo/pin to Telegram channels via Bot API
+@@ -87,6 +88,12 @@
+ 
+ ## Changelog
+ 
++### v7.1.41 (2026-04-04)
++- inbox: unified feed aggregator (inbox_check, inbox_status) — one call collects new items from all monitoring sources
++
++### v7.1.40 (2026-04-04)
++- rss_reader: RSS/Atom feed subscriptions with watermark-based new-item tracking (rss_subscribe/rss_check/rss_unsubscribe/rss_status)
++
+ ### v7.1.39 (2026-04-04)
+ - tg_search: full-text search in public Telegram channels via t.me/s/?q=
+ 
+diff --git a/VERSION b/VERSION
+index ed16112..f87acf5 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-7.1.40
++7.1.41
+diff --git a/pyproject.toml b/pyproject.toml
+index 73ecd5b..7da2267 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,6 +1,6 @@
+ [project]
+ name = "ouroboros"
+-version = "7.1.40"
++version = "7.1.41"
+ description = "Self-creating agent"
+ requires-python = ">=3.10"
+ 
+diff --git a/tests/test_smoke.py b/tests/test_smoke.py
+index 41aa801..56e5ae1 100644
+--- a/tests/test_smoke.py
++++ b/tests/test_smoke.py
+@@ -198,6 +198,9 @@ EXPECTED_TOOLS = [
+     "rss_unsubscribe",
+     "rss_status",
+     "rss_check",
++    # Inbox aggregator
++    "inbox_check",
++    "inbox_status",
+ ]
