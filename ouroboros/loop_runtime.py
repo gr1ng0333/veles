@@ -378,8 +378,10 @@ def _get_evolution_round_limit(task_type: str, default_task_max_rounds: int) -> 
             return max(1, int(env_limit))
         except (ValueError, TypeError):
             log.warning("Invalid OUROBOROS_EVOLUTION_MAX_ROUNDS=%r, using transport-aware default", env_limit)
-    # Transport-aware default: use active mode max_rounds capped at 80
+    # Copilot: use full COPILOT_MAX_ROUNDS (280 = 10 sessions x 28), not mode_max=30
     try:
+        if model_transport(os.environ.get("OUROBOROS_MODEL", "")) == "copilot":
+            return COPILOT_MAX_ROUNDS
         mode_max = int(max_rounds_for_active_mode())
         return min(max(1, mode_max), 80)
     except Exception:
@@ -855,7 +857,6 @@ def run_llm_loop_impl(
     accumulated_usage: Dict[str, Any] = {}
     max_rounds, anti, round_idx, no_progress_rounds, recent_progress, stagnation_check_injected, task_round_warn_emitted = _init_antistagnation_state()
     max_rounds = _copilot_max_rounds_cap(max_rounds, active_model)
-
     from ouroboros.tools import tool_discovery as _td
 
     _td.set_registry(tools)
