@@ -53,12 +53,10 @@ from ouroboros.loop import (
     _finalize_with_summary,
 )
 
-
 def _consume_force_user_initiator(state: Dict[str, Any]) -> bool:
     flag = bool(state.get("force_user_initiator"))
     state["force_user_initiator"] = False
     return flag
-
 
 EVOLUTION_COPILOT_REQUEST_DELAY_SEC = float(os.environ.get("EVOLUTION_COPILOT_REQUEST_DELAY_SEC", "4.0"))
 
@@ -630,8 +628,10 @@ def _process_llm_response_or_continue(
             "drop_pct": round((1.0 - round_prompt_tokens / state["prev_prompt_tokens"]) * 100, 1),
         })
         reminder = (
-            f"Контекст был обрезан. Задача пользователя: {state['original_task_text']}. "
-            "Сформируй финальный ответ из собранных данных."
+            f"Tool history compacted. Task: {state['original_task_text']}. "
+            + ("Assess progress and continue — do NOT finalize unless work is done."
+               if task_type == 'evolution' else
+               "Produce a final answer from the data you have gathered.")
         )
         messages.append({"role": "system", "content": f"[CONTEXT_TRUNCATED] {reminder}"})
         emit_progress(f"⚠️ Context truncated at round {round_idx}: {state['prev_prompt_tokens']} → {round_prompt_tokens} tokens")
