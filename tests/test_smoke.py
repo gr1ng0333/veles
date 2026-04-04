@@ -198,6 +198,9 @@ EXPECTED_TOOLS = [
     "rss_unsubscribe",
     "rss_status",
     "rss_check",
+    # Inbox aggregator
+    "inbox_check",
+    "inbox_status",
 ]
 
 
