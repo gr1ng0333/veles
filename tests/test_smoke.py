@@ -246,6 +246,8 @@ EXPECTED_TOOLS = [
     "gh_watch_check",
     # YouTube
     "yt_subscribe", "yt_unsubscribe", "yt_status", "yt_check", "yt_latest",
+    # Veles channel (own voice)
+    "veles_say", "veles_channel_history", "veles_channel_stats",
 ]
 
 
