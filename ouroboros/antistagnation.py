@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import logging
 
@@ -132,3 +132,94 @@ def detect_context_overflow(
         return False
     drop_ratio = 1.0 - (current_prompt_tokens / prev_prompt_tokens)
     return drop_ratio > (cfg.context_drop_pct / 100.0)
+
+
+# ---------------------------------------------------------------------------
+# Evolution Write Anchor
+# ---------------------------------------------------------------------------
+# Tool names (or prefixes) that count as "write actions" — evidence that
+# the agent is producing something, not just reading.
+_WRITE_TOOL_PREFIXES = (
+    "repo_write_commit",
+    "repo_commit_push",
+    "drive_write",
+    "knowledge_write",
+    "update_scratchpad",
+    "update_identity",
+    "run_shell",          # shell can write/commit — conservative: count it
+    "external_repo_script",
+    "plan_step_done",
+    "plan_complete",
+    "send_document",
+    "send_owner_message",
+)
+
+# Rounds without write where we inject warnings (evolution tasks only)
+_WRITE_WARN_ROUND = int(os.environ.get("OUROBOROS_WRITE_WARN_ROUND", "8"))
+_WRITE_CRITICAL_ROUND = int(os.environ.get("OUROBOROS_WRITE_CRITICAL_ROUND", "15"))
+
+
+def is_write_tool_call(tool_name: str) -> bool:
+    """Return True if this tool call counts as a write/progress action."""
+    name = (tool_name or "").lower()
+    return any(name.startswith(prefix) for prefix in _WRITE_TOOL_PREFIXES)
+
+
+def inject_write_anchor_deliverable(messages: List[Dict[str, Any]], task_text: str) -> None:
+    """Inject round-1 deliverable declaration request for evolution tasks."""
+    messages.append({
+        "role": "system",
+        "content": (
+            "[EVOLUTION_DELIVERABLE] Before doing anything else, declare in ONE sentence: "
+            "what exact file/function/test will be different after this task completes? "
+            "Example: 'Deliverable: add X to ouroboros/Y.py and update tests/test_Y.py'. "
+            "Then proceed. Task: " + (task_text[:400] if task_text else "(see above)")
+        ),
+    })
+
+
+def maybe_inject_write_anchor(
+    messages: List[Dict[str, Any]],
+    *,
+    round_idx: int,
+    write_round_count: int,
+    task_type: str,
+    write_warn_injected: bool,
+    write_critical_injected: bool,
+) -> tuple[bool, bool]:
+    """Inject read-only warnings if evolution task hasn't written anything yet.
+
+    Returns updated (write_warn_injected, write_critical_injected).
+    Only active for evolution tasks.
+    """
+    if task_type != "evolution":
+        return write_warn_injected, write_critical_injected
+    if write_round_count > 0:
+        # Already written something — anchors no longer needed
+        return write_warn_injected, write_critical_injected
+
+    if round_idx == _WRITE_WARN_ROUND and not write_warn_injected:
+        messages.append({
+            "role": "system",
+            "content": (
+                f"[READ_ONLY_WARN] Round {round_idx}: no write/commit tool called yet. "
+                "Reading without writing is not evolution. "
+                "If you now understand what needs to change — make the change. "
+                "If you still need more information — state exactly what is missing and why."
+            ),
+        })
+        return True, write_critical_injected
+
+    if round_idx == _WRITE_CRITICAL_ROUND and not write_critical_injected:
+        messages.append({
+            "role": "system",
+            "content": (
+                f"[COMMIT_REQUIRED] Round {round_idx}: still no write/commit. "
+                "You MUST make a concrete change now — write a file, commit, or explicitly declare "
+                "'nothing worth changing' with a one-sentence reason. "
+                "Continuing to read without writing is forbidden past this point."
+            ),
+        })
+        return write_warn_injected, True
+
+    return write_warn_injected, write_critical_injected
