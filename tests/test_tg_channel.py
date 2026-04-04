@@ -11,10 +11,11 @@ def make_ctx():
 class TestTgTools(unittest.TestCase):
     def test_get_tools_count(self):
         tools = get_tools()
-        self.assertEqual(len(tools), 2)
+        self.assertEqual(len(tools), 3)
         names = {t.name for t in tools}
         self.assertIn('tg_channel_read', names)
         self.assertIn('tg_digest', names)
+        self.assertIn('tg_search', names)
 
     def test_schema_structure(self):
         for t in get_tools():
