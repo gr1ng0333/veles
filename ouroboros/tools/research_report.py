@@ -17,7 +17,7 @@ from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "anthropic/claude-haiku-4.5"
+_DEFAULT_MODEL = "codex/gpt-4.1-mini"  # was anthropic/claude-haiku-4.5 (OpenRouter); now Codex OAuth
 _MAX_SOURCES = 5
 
 
@@ -617,7 +617,8 @@ def _research_report(
         }
         return json.dumps(result, ensure_ascii=False)
 
-    chosen_model = model or os.environ.get("OUROBOROS_MODEL_LIGHT", _DEFAULT_MODEL) or _DEFAULT_MODEL
+    from ouroboros.model_modes import get_aux_light_model
+    chosen_model = model or get_aux_light_model()
     payload = _generate_payload(
         ctx,
         topic=topic,

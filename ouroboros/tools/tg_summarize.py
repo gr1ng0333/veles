@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 _DRIVE_ROOT = os.environ.get("DRIVE_ROOT", "/opt/veles-data")
 _SUMMARY_MODEL_DEFAULT = "codex/gpt-4.1-mini"
-_SUMMARY_MODEL_FALLBACK = "anthropic/claude-haiku-4.5"
+_SUMMARY_MODEL_FALLBACK = "copilot/claude-haiku-4.5"
 
 _SUMMARY_PROMPT_TEMPLATE = """\
 You are summarizing Telegram posts from the channel @{channel}.
@@ -72,6 +72,18 @@ Write in the same language as the posts (auto-detect).
 
 Output ONLY valid JSON. No markdown fences, no extra text.
 """
+
+
+
+def _transport_for_model(model: str) -> str:
+    """Return transport name for budget tracking (openrouter / codex / copilot)."""
+    m = str(model or "").lower()
+    if m.startswith("codex/"):
+        return "codex"
+    if m.startswith("copilot/"):
+        return "copilot"
+    return "openrouter"
+
 
 
 def _format_posts_for_prompt(posts: List[Dict[str, Any]], max_chars: int = 12000) -> str:
@@ -156,7 +168,7 @@ def _emit_usage(ctx: ToolContext, usage: Dict[str, Any], model: str) -> None:
         try:
             ctx.event_queue.put({
                 "type": "llm_usage",
-                "provider": "openrouter",
+                "provider": _transport_for_model(model),
                 "usage": usage,
                 "source": "tg_summarize",
                 "model": model,

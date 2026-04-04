@@ -262,6 +262,33 @@ def _collect_github(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
     except Exception as exc:
         log.warning("inbox: github collect failed: %s", exc)
         return []
+
+# ---------------------------------------------------------------------------
+# Source collector: YouTube
+# ---------------------------------------------------------------------------
+
+def _collect_youtube(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
+    """Collect new videos from yt_watchlist."""
+    try:
+        from ouroboros.tools.yt_reader import _yt_check_for_inbox  # noqa: PLC0415
+        videos = _yt_check_for_inbox(ctx, limit=limit)
+        items = []
+        for v in videos:
+            items.append({
+                "source_type": "youtube",
+                "source_name": v.get("channel_label", v.get("channel_id", "")),
+                "id": v.get("video_id", ""),
+                "date": v.get("published", ""),
+                "title": v.get("title", ""),
+                "text": v.get("summary", "") or v.get("title", ""),
+                "url": v.get("url", f"https://www.youtube.com/watch?v={v.get('video_id', '')}"),
+                "views": v.get("views", 0),
+                "duration": v.get("duration", ""),
+            })
+        return items
+    except Exception as exc:
+        log.warning("inbox: youtube collect failed: %s", exc)
+        return []
 # ---------------------------------------------------------------------------
 # Tool: inbox_check
 # ---------------------------------------------------------------------------
@@ -279,7 +306,7 @@ def _inbox_check(
                  (default: all enabled sources)
     """
     limit_per_source = max(1, min(limit_per_source, 100))
-    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit", "arxiv", "github"}
+    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit", "arxiv", "github", "youtube"}
 
     all_items: List[Dict[str, Any]] = []
     source_summary: Dict[str, Any] = {}
@@ -317,6 +344,11 @@ def _inbox_check(
         github_items = _collect_github(ctx, limit_per_source)
         all_items.extend(github_items)
         source_summary["github"] = {"new_items": len(github_items)}
+
+    if "youtube" in enabled:
+        yt_items = _collect_youtube(ctx, limit_per_source)
+        all_items.extend(yt_items)
+        source_summary["youtube"] = {"new_items": len(yt_items)}
 
 
     all_items.sort(key=_sort_key)
@@ -421,6 +453,18 @@ def _inbox_status(ctx: ToolContext) -> str:
     except Exception as exc:
         summary["github"] = {"error": str(exc)}
 
+
+    # YouTube watchlist
+    try:
+        from ouroboros.tools.yt_reader import _load_watchlist as _yt_load_watchlist  # noqa: PLC0415
+        wl = _yt_load_watchlist()
+        summary["youtube"] = {
+            "subscriptions": len(wl),
+            "channels": [entry.get("label", cid) for cid, entry in wl.items()],
+        }
+    except Exception as exc:
+        summary["youtube"] = {"error": str(exc)}
+
     total = sum(
         v.get("subscriptions", 0) for v in summary.values()
         if isinstance(v, dict) and "error" not in v
@@ -441,7 +485,7 @@ _CHECK_SCHEMA = {
     "description": (
         "Fetch all new items from all monitoring sources since last check: "
         "Telegram channels, RSS/Atom feeds, monitored web URLs, HN keywords, "
-        "Reddit subreddits, and arXiv paper watchlist. "
+        "Reddit subreddits, arXiv paper watchlist, and YouTube channels. "
         "Returns a unified sorted feed.\n\n"
         "Each item has: source_type ('telegram'|'rss'|'web'|'hn'|'reddit'|'arxiv'), source_name, "
         "date, title, text, url, links.\n\n"
@@ -459,8 +503,8 @@ _CHECK_SCHEMA = {
             },
             "sources": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit", "arxiv", "github"]},
-                "description": "Source types to check (default: all). E.g. ['telegram', 'rss', 'hn']",
+                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit", "arxiv", "github", "youtube"]},
+                "description": "Source types to check (default: all). E.g. ['telegram', 'rss', 'hn', 'youtube']",
             },
         },
         "required": [],

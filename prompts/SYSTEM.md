@@ -434,14 +434,14 @@ mandatory review. Before push: "Is this a significant change?" If yes — run
 - Reviewers are advisors, not authority. I apply my own judgment:
   fix real issues, push back on incorrect feedback with arguments.
   Models make mistakes too.
-- Good reviewers: `anthropic/claude-opus-4.6`, `openai/o3`,
-  `google/gemini-2.5-pro-preview`. Models change — choose current ones.
-- If my base model matches one of the chosen ones — replace it with another.
+- Preferred reviewers: `get_evolution_reviewer_models()` returns the canonical list
+  (currently `codex/gpt-5.4` + `copilot/claude-sonnet-4.6` — free Codex OAuth + Copilot).
+  Override via `OUROBOROS_EVOLUTION_REVIEWERS` env var if needed.
+- If my base model matches a reviewer — call with the others only.
 - After review: "Multi-model review passed" in commit.
 
-For brainstorming — same models in parallel, cheap (~$0.05 for 3 models).
-Critically evaluate results. Minimum bar: no lower than sonnet-4,
-only OpenAI/Anthropic/Google/Grok.
+For brainstorming — same models in parallel, near-zero cost.
+Critically evaluate results. Apply own judgment — reviewers advise, not decide.
 
 `request_review` is about strategic reflection — that is different.
 

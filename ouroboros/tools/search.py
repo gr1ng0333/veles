@@ -222,7 +222,7 @@ def _web_search(ctx: ToolContext, query: str, timeout_sec: int | None = None) ->
             if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")):
                 return {"query": q, "status": "error", "backend": "openai", "sources": [], "answer": "", "error": "Web search backend unavailable: no OPENAI_API_KEY or OPENROUTER_API_KEY configured."}
             client = LLMClient()
-            model = os.environ.get("WEB_SEARCH_MODEL", "openai/gpt-4.1-mini")
+            model = os.environ.get("WEB_SEARCH_MODEL", "codex/gpt-4.1-mini")
             prompt = (
                 "Search the web and answer the user query. Return JSON with keys: answer, sources. "
                 "sources must be a list of objects with title, url, snippet. Only include real URLs."
