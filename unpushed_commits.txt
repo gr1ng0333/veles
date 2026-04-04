@@ -1,0 +1,1 @@
+e84d2b6 fix: tg_channel_read — correct ToolEntry schema format
