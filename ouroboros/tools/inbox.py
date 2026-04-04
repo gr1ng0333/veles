@@ -203,6 +203,66 @@ def _collect_reddit(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Source collector: arXiv
+# ---------------------------------------------------------------------------
+
+def _collect_arxiv(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
+    """Collect new papers from arxiv_watchlist."""
+    try:
+        from ouroboros.tools.arxiv_reader import _arxiv_watchlist_check  # noqa: PLC0415
+        raw = _arxiv_watchlist_check(ctx, limit=limit)
+        data = json.loads(raw)
+        papers = data.get("new_papers", [])
+        items = []
+        for p in papers:
+            items.append({
+                "source_type": "arxiv",
+                "source_name": p.get("matched_label", p.get("categories", ["arxiv"])[0] if p.get("categories") else "arxiv"),
+                "id": p.get("id", ""),
+                "date": p.get("published", ""),
+                "title": p.get("title", ""),
+                "text": (p.get("summary", "") or "")[:400],
+                "url": p.get("pdf_url") or p.get("abs_url") or p.get("url", ""),
+                "authors": p.get("authors", []),
+                "categories": p.get("categories", []),
+                "links": [p.get("abs_url", ""), p.get("pdf_url", "")] if p.get("abs_url") else [],
+            })
+        return items
+    except Exception as exc:
+        log.warning("inbox: arxiv collect failed: %s", exc)
+        return []
+
+def _collect_github(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
+    """Collect new releases/commits from gh_watch watchlist."""
+    try:
+        from ouroboros.tools.github_watch import _gh_watch_check  # noqa: PLC0415
+        raw = _gh_watch_check(ctx)
+        data = json.loads(raw)
+        events = data.get("items", [])
+        items = []
+        for e in events[:limit]:
+            event_type = e.get("event_type", "release")
+            if event_type == "release":
+                title = f"{e.get('repo', '')} {e.get('tag', '')} released"
+                text = e.get("body_snippet", "") or e.get("name", "")
+            else:  # commit
+                title = f"{e.get('repo', '')} commit: {e.get('message', '')}"
+                text = f"{e.get('sha', '')} by {e.get('author', '')}"
+            items.append({
+                "source_type": "github",
+                "source_name": e.get("repo", ""),
+                "id": e.get("id") or e.get("sha", ""),
+                "date": e.get("date", ""),
+                "title": title,
+                "text": text[:400],
+                "url": e.get("url", ""),
+                "event_type": event_type,
+            })
+        return items
+    except Exception as exc:
+        log.warning("inbox: github collect failed: %s", exc)
+        return []
+# ---------------------------------------------------------------------------
 # Tool: inbox_check
 # ---------------------------------------------------------------------------
 
@@ -219,7 +279,7 @@ def _inbox_check(
                  (default: all enabled sources)
     """
     limit_per_source = max(1, min(limit_per_source, 100))
-    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit"}
+    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit", "arxiv", "github"}
 
     all_items: List[Dict[str, Any]] = []
     source_summary: Dict[str, Any] = {}
@@ -248,6 +308,16 @@ def _inbox_check(
         reddit_items = _collect_reddit(ctx, limit_per_source)
         all_items.extend(reddit_items)
         source_summary["reddit"] = {"new_items": len(reddit_items)}
+
+    if "arxiv" in enabled:
+        arxiv_items = _collect_arxiv(ctx, limit_per_source)
+        all_items.extend(arxiv_items)
+        source_summary["arxiv"] = {"new_items": len(arxiv_items)}
+    if "github" in enabled:
+        github_items = _collect_github(ctx, limit_per_source)
+        all_items.extend(github_items)
+        source_summary["github"] = {"new_items": len(github_items)}
+
 
     all_items.sort(key=_sort_key)
 
@@ -326,6 +396,31 @@ def _inbox_status(ctx: ToolContext) -> str:
     except Exception as exc:
         summary["reddit"] = {"error": str(exc)}
 
+
+    # arXiv watchlist
+    try:
+        from ouroboros.tools.arxiv_reader import _arxiv_watchlist_status  # noqa: PLC0415
+        raw = _arxiv_watchlist_status(ctx)
+        data = json.loads(raw)
+        summary["arxiv"] = {
+            "subscriptions": data.get("count", 0),
+            "entries": [e.get("label", e.get("category", "")) for e in data.get("entries", [])],
+        }
+    except Exception as exc:
+        summary["arxiv"] = {"error": str(exc)}
+
+    # GitHub watch
+    try:
+        from ouroboros.tools.github_watch import _gh_watch_status  # noqa: PLC0415
+        raw = _gh_watch_status(ctx)
+        data = json.loads(raw)
+        summary["github"] = {
+            "subscriptions": data.get("count", 0),
+            "repos": [r["repo"] for r in data.get("repos", [])],
+        }
+    except Exception as exc:
+        summary["github"] = {"error": str(exc)}
+
     total = sum(
         v.get("subscriptions", 0) for v in summary.values()
         if isinstance(v, dict) and "error" not in v
@@ -345,14 +440,14 @@ _CHECK_SCHEMA = {
     "name": "inbox_check",
     "description": (
         "Fetch all new items from all monitoring sources since last check: "
-        "Telegram channels (tg_watchlist), RSS/Atom feeds (rss_reader), "
-        "monitored web URLs (web_monitor), and Hacker News keywords (hn_watchlist). "
+        "Telegram channels, RSS/Atom feeds, monitored web URLs, HN keywords, "
+        "Reddit subreddits, and arXiv paper watchlist. "
         "Returns a unified sorted feed.\n\n"
-        "Each item has: source_type ('telegram'|'rss'|'web'|'hn'), source_name, "
+        "Each item has: source_type ('telegram'|'rss'|'web'|'hn'|'reddit'|'arxiv'), source_name, "
         "date, title, text, url, links.\n\n"
         "Parameters:\n"
         "- limit_per_source: max new items per individual source (1–100, default 20)\n"
-        "- sources: optional list of source types to check: 'telegram', 'rss', 'web'"
+        "- sources: optional list of source types: 'telegram', 'rss', 'web', 'hn', 'reddit', 'arxiv'"
     ),
     "parameters": {
         "type": "object",
@@ -364,7 +459,7 @@ _CHECK_SCHEMA = {
             },
             "sources": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit"]},
+                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit", "arxiv", "github"]},
                 "description": "Source types to check (default: all). E.g. ['telegram', 'rss', 'hn']",
             },
         },

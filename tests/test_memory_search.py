@@ -569,3 +569,119 @@ def test_get_tools_schema_valid():
 def test_get_tools_handler_callable():
     tools = get_tools()
     assert callable(tools[0].handler)
+
+# ── Notes loader tests ────────────────────────────────────────────────────────
+
+from ouroboros.tools.memory_search import _load_notes
+
+
+def test_load_notes_basic(tmp_path):
+    """_load_notes returns chunks from a valid notes.jsonl."""
+    notes_dir = tmp_path / "memory"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    note_data = [
+        {"id": "20260404_abc1", "timestamp": "2026-04-04T01:00:00Z",
+         "text": "Reward model breaks when colon prefix is used in prompt",
+         "tags": ["ml", "research"], "source": "https://t.me/abstractDL/402",
+         "deleted": False},
+        {"id": "20260404_abc2", "timestamp": "2026-04-04T02:00:00Z",
+         "text": "3x-ui webBasePath must include trailing slash",
+         "tags": ["infra"], "source": "",
+         "deleted": False},
+    ]
+    notes_file = notes_dir / "notes.jsonl"
+    notes_file.write_text(
+        "\n".join(json.dumps(n) for n in note_data) + "\n",
+        encoding="utf-8"
+    )
+    chunks = _load_notes(tmp_path)
+    assert len(chunks) >= 2
+    # Source labels must start with 'note/'
+    assert all(c.source.startswith("note/") for c in chunks)
+
+
+def test_load_notes_deleted_skipped(tmp_path):
+    """Deleted notes must not appear in chunks."""
+    notes_dir = tmp_path / "memory"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    note_data = [
+        {"id": "n1", "timestamp": "2026-04-04T01:00:00Z",
+         "text": "This note is alive and should be indexed",
+         "tags": [], "source": "", "deleted": False},
+        {"id": "n2", "timestamp": "2026-04-04T01:00:00Z",
+         "text": "This note was deleted and must not appear",
+         "tags": [], "source": "", "deleted": True},
+    ]
+    notes_file = notes_dir / "notes.jsonl"
+    notes_file.write_text(
+        "\n".join(json.dumps(n) for n in note_data) + "\n",
+        encoding="utf-8"
+    )
+    chunks = _load_notes(tmp_path)
+    assert len(chunks) == 1
+    assert "alive" in chunks[0].text
+    assert "deleted" not in chunks[0].text
+
+
+def test_load_notes_empty_file(tmp_path):
+    """Empty notes.jsonl returns empty list without error."""
+    notes_dir = tmp_path / "memory"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    (notes_dir / "notes.jsonl").write_text("", encoding="utf-8")
+    chunks = _load_notes(tmp_path)
+    assert chunks == []
+
+
+def test_load_notes_missing_file(tmp_path):
+    """Missing notes.jsonl returns empty list without error."""
+    chunks = _load_notes(tmp_path)
+    assert chunks == []
+
+
+def test_load_notes_tags_indexed(tmp_path):
+    """Tags are included in the searchable text so they participate in scoring."""
+    notes_dir = tmp_path / "memory"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    note = {"id": "n1", "timestamp": "2026-04-04T01:00:00Z",
+            "text": "XYZ discovery", "tags": ["uniquetag42"], "source": "",
+            "deleted": False}
+    (notes_dir / "notes.jsonl").write_text(json.dumps(note) + "\n", encoding="utf-8")
+    chunks = _load_notes(tmp_path)
+    assert len(chunks) == 1
+    # The tag must appear in the combined text
+    assert "uniquetag42" in chunks[0].text
+
+
+def test_notes_appear_in_corpus(tmp_path):
+    """_build_corpus includes notes chunks when notes.jsonl is present."""
+    (tmp_path / "memory").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    note = {"id": "n1", "timestamp": "2026-04-04T01:00:00Z",
+            "text": "ssh deploy key generation must verify fingerprint",
+            "tags": ["infra"], "source": "", "deleted": False}
+    (tmp_path / "memory" / "notes.jsonl").write_text(json.dumps(note) + "\n", encoding="utf-8")
+    from ouroboros.tools.memory_search import _build_corpus
+    corpus = _build_corpus(tmp_path)
+    note_chunks = [c for c in corpus if c.source.startswith("note/")]
+    assert len(note_chunks) >= 1
+
+
+def test_memory_search_finds_note(tmp_path):
+    """memory_search returns a note chunk when the query matches."""
+    (tmp_path / "memory").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    note = {"id": "n42", "timestamp": "2026-04-04T01:00:00Z",
+            "text": "reward model adversarial colon prefix vulnerability paper",
+            "tags": ["ml"], "source": "https://arxiv.org/abs/2501.00001",
+            "deleted": False}
+    (tmp_path / "memory" / "notes.jsonl").write_text(json.dumps(note) + "\n", encoding="utf-8")
+    ctx = _make_ctx(tmp_path)
+    result = _memory_search(ctx, query="reward model colon", top_k=5)
+    assert "note/" in result
+
+
+def test_schema_description_mentions_notes():
+    """Tool description must mention notes so the LLM knows to use it for saved notes."""
+    tools = get_tools()
+    desc = tools[0].schema["description"]
+    assert "note" in desc.lower()

@@ -246,87 +246,90 @@ def _note_delete(ctx: ToolContext, note_id: str) -> str:
 
 # ── Tool registry ──────────────────────────────────────────────────────────────
 
-def get_tools() -> List[ToolEntry]:
+
+
+# -- Tool registry -------------------------------------------------------------
+
+def get_tools():
+    _note_add_schema = {
+        "name": "note_add",
+        "description": (
+            "Save a personal note with optional tags and source URL. "
+            "Use while reading HN/Reddit/arXiv/TG to bookmark interesting items. "
+            "Notes are searchable via note_search and memory_search."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Note content (max 10,000 chars)"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of tags, e.g. [ml, research, todo]",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Optional source URL or reference",
+                },
+            },
+            "required": ["text"],
+        },
+    }
+    _note_search_schema = {
+        "name": "note_search",
+        "description": (
+            "Full-text search over saved notes. "
+            "Returns notes ranked by relevance to the query."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tag filter",
+                },
+                "limit": {"type": "integer", "description": "Max results to return (default 20)"},
+            },
+            "required": ["query"],
+        },
+    }
+    _note_list_schema = {
+        "name": "note_list",
+        "description": "List recent saved notes. Optionally filter by tag(s) or time window.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tag filter",
+                },
+                "limit": {"type": "integer", "description": "Max results (default 20)"},
+                "since_days": {
+                    "type": "number",
+                    "description": "Only show notes from the last N days",
+                },
+            },
+            "required": [],
+        },
+    }
+    _note_delete_schema = {
+        "name": "note_delete",
+        "description": "Soft-delete a note by its id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "note_id": {"type": "string", "description": "Note id, e.g. 20260404_abc123"},
+            },
+            "required": ["note_id"],
+        },
+    }
+    from ouroboros.tools.registry import ToolEntry
     return [
-        ToolEntry(
-            name="note_add",
-            description=(
-                "Save a personal note with optional tags and source URL. "
-                "Use while reading HN/Reddit/arXiv/TG to bookmark interesting items. "
-                "Notes are searchable via note_search and memory_search."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Note content (max 10,000 chars)"},
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional list of tags, e.g. ['ml', 'research', 'todo']",
-                    },
-                    "source": {
-                        "type": "string",
-                        "description": "Optional source URL or reference, e.g. 'https://t.me/abstractDL/402'",
-                    },
-                },
-                "required": ["text"],
-            },
-            execute=lambda ctx, **kw: _note_add(ctx, **kw),
-        ),
-        ToolEntry(
-            name="note_search",
-            description=(
-                "Full-text search over saved notes. "
-                "Returns notes ranked by relevance to the query."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional tag filter — return only notes with ALL these tags",
-                    },
-                    "limit": {"type": "integer", "description": "Max results to return (default 20)"},
-                },
-                "required": ["query"],
-            },
-            execute=lambda ctx, **kw: _note_search(ctx, **kw),
-        ),
-        ToolEntry(
-            name="note_list",
-            description=(
-                "List recent saved notes. Optionally filter by tag(s) or time window."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional tag filter",
-                    },
-                    "limit": {"type": "integer", "description": "Max results (default 20)"},
-                    "since_days": {
-                        "type": "number",
-                        "description": "Only show notes from the last N days",
-                    },
-                },
-                "required": [],
-            },
-            execute=lambda ctx, **kw: _note_list(ctx, **kw),
-        ),
-        ToolEntry(
-            name="note_delete",
-            description="Soft-delete a note by its id.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "note_id": {"type": "string", "description": "Note id, e.g. '20260404_abc123'"},
-                },
-                "required": ["note_id"],
-            },
-            execute=lambda ctx, **kw: _note_delete(ctx, **kw),
-        ),
+        ToolEntry("note_add", _note_add_schema, lambda ctx, **kw: _note_add(ctx, **kw)),
+        ToolEntry("note_search", _note_search_schema, lambda ctx, **kw: _note_search(ctx, **kw)),
+        ToolEntry("note_list", _note_list_schema, lambda ctx, **kw: _note_list(ctx, **kw)),
+        ToolEntry("note_delete", _note_delete_schema, lambda ctx, **kw: _note_delete(ctx, **kw)),
     ]
