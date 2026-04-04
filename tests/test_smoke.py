@@ -191,6 +191,8 @@ EXPECTED_TOOLS = [
     "web_monitor_check",
     "web_monitor_remove",
     "web_monitor_status",
+    # Search
+    "tg_search",
 ]
 
 

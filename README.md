@@ -1,18 +1,19 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.1.38-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.1.39-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.1.38 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.1.39 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Release notes
+- 7.1.39 — tg_search: full-text keyword search in public Telegram channels
 - 7.1.38 — tg_channel_post: post/photo/pin to Telegram channels via Bot API
 - 7.1.37 — web_monitor: URL change monitoring with LLM diff summaries
 - 7.1.36 — tg_summarize: LLM-powered Telegram channel summarizer — fetch posts + generate structured summary (topics, ideas, links); tg_summarize_watchlist for batch digest of all subscribed channels
@@ -84,6 +85,9 @@
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
 ## Changelog
+
+### v7.1.39 (2026-04-04)
+- tg_search: full-text search in public Telegram channels via t.me/s/?q=
 
 ### v7.1.37 (2026-04-04)
 - web_monitor: URL change monitoring with LLM diff summaries (web_monitor_add/check/status/remove)
