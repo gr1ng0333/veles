@@ -1,0 +1,3 @@
+2d533c2 feat: inbox_digest — cross-source intelligence briefing (telegram+rss+web in one LLM call)
+7f97544 feat: add inbox tool — unified feed aggregator across tg_watchlist, rss_reader, web_monitor
+1222b93 v7.1.40: rss_reader — RSS/Atom feed subscriptions with watermark-based new-item tracking

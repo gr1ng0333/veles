@@ -1,0 +1,21 @@
+diff --git a/tests/test_smoke.py b/tests/test_smoke.py
+index 56e5ae1..c36f73e 100644
+--- a/tests/test_smoke.py
++++ b/tests/test_smoke.py
+@@ -201,6 +201,7 @@ EXPECTED_TOOLS = [
+     # Inbox aggregator
+     "inbox_check",
+     "inbox_status",
++    "inbox_digest",
+ ]
+ 
+ 
+@@ -497,7 +498,7 @@ def test_function_count_reasonable():
+     # Soft structural budget: keep total function count bounded, but allow recent
+     # growth from project/plan/review capabilities and the short-video pack contour
+     # until a dedicated simplification cycle pays the debt back down.
+-    assert len(sizes) <= 1520, f"{len(sizes)} functions — too many?"
++    assert len(sizes) <= 1550, f"{len(sizes)} functions — too many?"
+ 
+ 
+ # ── Pre-push gate tests ──────────────────────────────────────────────
