@@ -1,0 +1,2 @@
+553823d feat: add github_watch — GitHub repo release/commit watcher with watermark tracking
+3623743 feat: add article_reader — lightweight full-text article extractor (zero deps)
