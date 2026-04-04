@@ -1,18 +1,20 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.1.53-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.1.55-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.1.53 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.1.55 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Release notes
+- 7.1.55 — write_anchor: anti-drift injections for evolution tasks (deliverable at r1, read-only warnings at r8/r12)
+- 7.1.54 — external_repo_script: multi-line shell/py scripts in external repos; smoke test updated
 - 7.1.53 — fix context_truncated prompt + session boundary prompts; evolution round limit 280
 - 7.1.52 — project_bible: fix duplicate get_tools() and ToolEntry API; tools now registered correctly
 - 7.1.51 — copilot-telegram-bot: streaming SSE responses (chat_stream generator, real-time message editing, STREAM=false fallback); PROJECT_BIBLE updated
@@ -98,6 +100,12 @@
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
 ## Changelog
+### v7.1.55 (2026-04-05)
+- feat: Evolution Write Anchor — deliverable declaration at round 1, read-only warnings at rounds 8/12 for evolution tasks (antistagnation.py)
+
+### v7.1.54 (2026-04-04)
+- feat: external_repo_script — run multi-line bash/sh/python scripts in external repos
+
 ### v7.1.53 (2026-04-04)
 - fix: context_truncated prompt no longer says "finalize" for evolution tasks
 - fix: Copilot session boundary wrap-up prompts rewritten in English, neutral tone
