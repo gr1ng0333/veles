@@ -1,13 +1,16 @@
 """inbox — unified feed aggregator across all monitoring sources.
 
-Collects new items from all three monitoring contours in one call:
+Collects new items from all four monitoring contours in one call:
   - Telegram channels (tg_watchlist)
   - RSS/Atom feeds (rss_reader)
   - Monitored web URLs (web_monitor)
+  - Hacker News keywords (hn_reader)
 
 Tools:
     inbox_check(limit_per_source=20)   — fetch all new items from all sources
     inbox_status()                     — show subscription counts for all sources
+
+Each item in the result is tagged with `source_type` ('telegram', 'rss', 'web', 'hn')
 
 Each item in the result is tagged with `source_type` ('telegram', 'rss', 'web')
 and `source_name` so the caller can distinguish channels.
@@ -133,6 +136,39 @@ def _collect_web(ctx: ToolContext) -> List[Dict[str, Any]]:
         return []
 
 
+
+# ---------------------------------------------------------------------------
+# Source collector: Hacker News
+# ---------------------------------------------------------------------------
+
+def _collect_hn(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
+    """Collect new stories from hn_watchlist."""
+    try:
+        from ouroboros.tools.hn_reader import _hn_watchlist_check  # noqa: PLC0415
+        raw = _hn_watchlist_check(ctx, limit_per_keyword=limit)
+        data = json.loads(raw)
+        stories = data.get("stories", [])
+        items = []
+        for s in stories:
+            items.append({
+                "source_type": "hn",
+                "source_name": s.get("matched_keyword", "hacker_news"),
+                "id": s.get("id"),
+                "date": s.get("date", ""),
+                "title": s.get("title", ""),
+                "text": "",
+                "url": s.get("url", s.get("hn_url", "")),
+                "views": s.get("points", 0),
+                "links": [s.get("url", ""), s.get("hn_url", "")] if s.get("url") else [],
+                "author": s.get("author", ""),
+                "comments": s.get("comments", 0),
+            })
+        return items
+    except Exception as exc:
+        log.warning("inbox: hn collect failed: %s", exc)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Tool: inbox_check
 # ---------------------------------------------------------------------------
@@ -146,11 +182,11 @@ def _inbox_check(
 
     Args:
         limit_per_source: max new items per individual source (1–100, default 20)
-        sources: optional list of source types to check: 'telegram', 'rss', 'web'
+        sources: optional list of source types to check: 'telegram', 'rss', 'web', 'hn'
                  (default: all enabled sources)
     """
     limit_per_source = max(1, min(limit_per_source, 100))
-    enabled = set(sources) if sources else {"telegram", "rss", "web"}
+    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn"}
 
     all_items: List[Dict[str, Any]] = []
     source_summary: Dict[str, Any] = {}
@@ -169,6 +205,11 @@ def _inbox_check(
         web_items = _collect_web(ctx)
         all_items.extend(web_items)
         source_summary["web"] = {"new_items": len(web_items)}
+
+    if "hn" in enabled:
+        hn_items = _collect_hn(ctx, limit_per_source)
+        all_items.extend(hn_items)
+        source_summary["hn"] = {"new_items": len(hn_items)}
 
     all_items.sort(key=_sort_key)
 
@@ -223,6 +264,18 @@ def _inbox_status(ctx: ToolContext) -> str:
     except Exception as exc:
         summary["web"] = {"error": str(exc)}
 
+    # Hacker News watchlist
+    try:
+        from ouroboros.tools.hn_reader import _hn_watchlist_status  # noqa: PLC0415
+        raw = _hn_watchlist_status(ctx)
+        data = json.loads(raw)
+        summary["hn"] = {
+            "subscriptions": data.get("count", 0),
+            "keywords": [kw["keyword"] for kw in data.get("keywords", [])],
+        }
+    except Exception as exc:
+        summary["hn"] = {"error": str(exc)}
+
     total = sum(
         v.get("subscriptions", 0) for v in summary.values()
         if isinstance(v, dict) and "error" not in v
@@ -242,9 +295,10 @@ _CHECK_SCHEMA = {
     "name": "inbox_check",
     "description": (
         "Fetch all new items from all monitoring sources since last check: "
-        "Telegram channels (tg_watchlist), RSS/Atom feeds (rss_reader), and "
-        "monitored web URLs (web_monitor). Returns a unified sorted feed.\n\n"
-        "Each item has: source_type ('telegram'|'rss'|'web'), source_name, "
+        "Telegram channels (tg_watchlist), RSS/Atom feeds (rss_reader), "
+        "monitored web URLs (web_monitor), and Hacker News keywords (hn_watchlist). "
+        "Returns a unified sorted feed.\n\n"
+        "Each item has: source_type ('telegram'|'rss'|'web'|'hn'), source_name, "
         "date, title, text, url, links.\n\n"
         "Parameters:\n"
         "- limit_per_source: max new items per individual source (1–100, default 20)\n"
@@ -260,8 +314,8 @@ _CHECK_SCHEMA = {
             },
             "sources": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["telegram", "rss", "web"]},
-                "description": "Source types to check (default: all). E.g. ['telegram', 'rss']",
+                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn"]},
+                "description": "Source types to check (default: all). E.g. ['telegram', 'rss', 'hn']",
             },
         },
         "required": [],
