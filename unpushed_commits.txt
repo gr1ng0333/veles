@@ -1,0 +1,1 @@
+1222b93 v7.1.40: rss_reader — RSS/Atom feed subscriptions with watermark-based new-item tracking
