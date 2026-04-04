@@ -232,7 +232,7 @@ def _inbox_digest(
 ) -> str:
     """Fetch all new items from all monitoring sources and generate a unified digest."""
     limit_per_source = max(1, min(limit_per_source, 100))
-    enabled = set(sources) if sources else {"telegram", "rss", "web"}
+    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit"}
 
     # --- Collect items from inbox ---
     all_items: List[Dict[str, Any]] = []
@@ -267,6 +267,26 @@ def _inbox_digest(
         except Exception as exc:
             log.warning("inbox_digest: web collect failed: %s", exc)
             source_summary["web"] = 0
+
+    if "hn" in enabled:
+        try:
+            from ouroboros.tools.inbox import _collect_hn
+            items = _collect_hn(ctx, limit_per_source)
+            all_items.extend(items)
+            source_summary["hn"] = len(items)
+        except Exception as exc:
+            log.warning("inbox_digest: hn collect failed: %s", exc)
+            source_summary["hn"] = 0
+
+    if "reddit" in enabled:
+        try:
+            from ouroboros.tools.inbox import _collect_reddit
+            items = _collect_reddit(ctx, limit_per_source)
+            all_items.extend(items)
+            source_summary["reddit"] = len(items)
+        except Exception as exc:
+            log.warning("inbox_digest: reddit collect failed: %s", exc)
+            source_summary["reddit"] = 0
 
     # Apply time filter
     if since_hours > 0:
@@ -393,12 +413,13 @@ _SCHEMA = {
     "name": "inbox_digest",
     "description": (
         "Fetch all new items from all monitoring sources (Telegram watchlist, RSS feeds, "
-        "web monitors) and generate a single unified LLM intelligence briefing.\n\n"
+        "web monitors, Hacker News keywords, Reddit subreddits) and generate a single unified "
+        "LLM intelligence briefing.\n\n"
         "Unlike tg_summarize_watchlist (per-channel summaries), inbox_digest groups "
         "content THEMATICALLY across all sources — one coherent brief instead of N separate summaries.\n\n"
         "Parameters:\n"
         "- limit_per_source: max items per source (1–100, default 20)\n"
-        "- sources: which sources to include ('telegram', 'rss', 'web') — default all\n"
+        "- sources: which sources to include ('telegram', 'rss', 'web', 'hn', 'reddit') — default all\n"
         "- notify_owner: if True, also sends the digest to owner via Telegram message\n"
         "- since_hours: only include items from last N hours (0 = no filter)\n"
         "- model: LLM model for summarization (default: codex/gpt-4.1-mini)"
@@ -413,8 +434,8 @@ _SCHEMA = {
             },
             "sources": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["telegram", "rss", "web"]},
-                "description": "Source types to include (default: all). E.g. ['telegram', 'rss']",
+                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit"]},
+                "description": "Source types to include (default: all). E.g. ['telegram', 'hn', 'reddit']",
             },
             "notify_owner": {
                 "type": "boolean",

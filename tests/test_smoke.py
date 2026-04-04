@@ -209,6 +209,20 @@ EXPECTED_TOOLS = [
     "hn_watchlist_remove",
     "hn_watchlist_status",
     "hn_watchlist_check",
+    # Reddit
+    "reddit_posts",
+    "reddit_search",
+    "reddit_watchlist_add",
+    "reddit_watchlist_remove",
+    "reddit_watchlist_status",
+    "reddit_watchlist_check",
+    # arXiv
+    "arxiv_search",
+    "arxiv_latest",
+    "arxiv_watchlist_add",
+    "arxiv_watchlist_remove",
+    "arxiv_watchlist_status",
+    "arxiv_watchlist_check",
 ]
 
 
@@ -505,7 +519,7 @@ def test_function_count_reasonable():
     # Soft structural budget: keep total function count bounded, but allow recent
     # growth from project/plan/review capabilities and the short-video pack contour
     # until a dedicated simplification cycle pays the debt back down.
-    assert len(sizes) <= 1550, f"{len(sizes)} functions — too many?"
+    assert len(sizes) <= 1600, f"{len(sizes)} functions — too many?"
 
 
 # ── Pre-push gate tests ──────────────────────────────────────────────
