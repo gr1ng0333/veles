@@ -172,6 +172,14 @@ EXPECTED_TOOLS = [
     "task_digest",
     # Version sync
     "version_sync",
+    # Telegram
+    "tg_channel_read",
+    "tg_digest",
+    # Watchlist
+    "tg_watchlist_add",
+    "tg_watchlist_remove",
+    "tg_watchlist_status",
+    "tg_watchlist_check",
 ]
 
 
