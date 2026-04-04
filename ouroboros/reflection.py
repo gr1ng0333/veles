@@ -36,7 +36,7 @@ REFLECTIONS_FILENAME = "task_reflections.jsonl"
 # Fallback: free OpenRouter model that doesn't require Codex auth.
 _REFLECTION_MODEL_FALLBACK_CHAIN = [
     "codex/gpt-5.4-mini",
-    "qwen/qwen3-coder:free",
+    "copilot/claude-haiku-4.5",
 ]
 
 _REFLECTION_PROMPT = """\
