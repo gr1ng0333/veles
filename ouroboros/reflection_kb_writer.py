@@ -53,7 +53,7 @@ _ROUTING: List[Tuple[List[str], str]] = [
 # Ordered list of regex patterns to extract actionable sentences.
 # Each pattern tries to capture a concrete "next time / should / fix" statement.
 _INSIGHT_RE: List[re.Pattern] = [
-    re.compile(r"[Nn]ext time[,:]?\s*([A-Z][^.!?]{15,250})[.!?]"),
+    re.compile(r"[Nn]ext time[,:]?\s*([A-Za-z][^.!?]{15,250})[.!?]"),
     re.compile(r"[Ss]hould\s+([a-z][^.!?]{15,250})[.!?]"),
     re.compile(r"[Ff]ix\b[:\s]+([A-Za-z][^.!?]{15,250})[.!?]"),
     re.compile(r"[Aa]void\s+([a-z][^.!?]{15,250})[.!?]"),
