@@ -1,9 +1,10 @@
-"""tg_channel_read / tg_digest — read public Telegram channel posts via t.me/s/.
+"""tg_channel_read / tg_digest / tg_search — read public Telegram channel posts via t.me/s/.
 
 No API key needed. Works for any public channel.
 
 tg_channel_read — single channel, full control over pagination.
 tg_digest       — multiple channels merged into one sorted digest.
+tg_search       — full-text search inside a public channel via t.me/s/?q=.
 
 Usage:
     tg_channel_read(channel="abstractDL")                  # last ~20 posts
@@ -13,6 +14,9 @@ Usage:
 
     tg_digest(channels=["abstractDL", "openai"], limit_per_channel=10)
     tg_digest(channels=["abstractDL"], since_hours=48)     # last 48 hours
+
+    tg_search(channel="abstractDL", query="budget")        # search in channel
+    tg_search(channel="abstractDL", query="reward model", limit=30)
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import logging
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -221,6 +226,87 @@ def _fetch_channel_posts(
     return {"channel": channel, "posts": collected, "posts_count": len(collected)}
 
 
+def _fetch_search_posts(
+    channel: str,
+    query: str,
+    limit: int = 20,
+) -> Dict[str, Any]:
+    """Search posts in a public channel via t.me/s/?q=query.
+
+    Telegram's web preview supports full-text search via the ?q= parameter.
+    Pagination uses ?q=query&before=<post_id>.
+    """
+    channel = channel.lstrip("@").strip()
+    if not channel:
+        return {"channel": channel, "query": query, "error": "channel must not be empty", "posts": []}
+    if not query or not query.strip():
+        return {"channel": channel, "query": query, "error": "query must not be empty", "posts": []}
+
+    limit = max(1, min(limit, _MAX_POSTS_PER_REQUEST))
+    q_encoded = urllib.parse.quote(query.strip())
+    collected: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+    params = f"?q={q_encoded}"
+
+    try:
+        for _ in range(10):  # max 10 pages of search results
+            if len(collected) >= limit:
+                break
+
+            try:
+                body = _fetch_page(channel, params)
+            except urllib.error.HTTPError as e:
+                if not collected:
+                    return {
+                        "channel": channel,
+                        "query": query,
+                        "error": f"HTTP {e.code}: {e.reason}",
+                        "posts": [],
+                    }
+                break
+            except urllib.error.URLError as e:
+                if not collected:
+                    return {
+                        "channel": channel,
+                        "query": query,
+                        "error": f"Network error: {e.reason}",
+                        "posts": [],
+                    }
+                break
+
+            page_posts = _parse_posts(body)
+            if not page_posts:
+                break
+
+            new_posts = [p for p in page_posts if p["id"] not in seen_ids]
+            for p in new_posts:
+                seen_ids.add(p["id"])
+
+            collected.extend(new_posts)
+
+            if len(page_posts) < 3:
+                # Telegram returns fewer posts when results are exhausted
+                break
+
+            oldest_id = min(p["id"] for p in page_posts)
+            params = f"?q={q_encoded}&before={oldest_id}"
+            time.sleep(0.3)
+
+    except Exception as exc:
+        log.exception("tg_search error for %s query=%r", channel, query)
+        return {"channel": channel, "query": query, "error": str(exc), "posts": []}
+
+    # Search results come newest-first from Telegram; sort by id ascending for consistency
+    collected.sort(key=lambda p: p["id"])
+    collected = collected[:limit]
+    return {
+        "channel": channel,
+        "query": query,
+        "posts": collected,
+        "posts_count": len(collected),
+    }
+
+
 # ── Tool: tg_channel_read ─────────────────────────────────────────────────────
 
 def _tg_channel_read(
@@ -291,6 +377,19 @@ def _tg_digest(
         "per_channel": per_channel,
         "posts": all_posts,
     }, ensure_ascii=False, default=str)
+
+
+# ── Tool: tg_search ───────────────────────────────────────────────────────────
+
+def _tg_search(
+    ctx: ToolContext,
+    channel: str,
+    query: str,
+    limit: int = 20,
+) -> str:
+    """Search posts in a public Telegram channel by keyword."""
+    result = _fetch_search_posts(channel=channel, query=query, limit=limit)
+    return json.dumps(result, ensure_ascii=False)
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
@@ -374,6 +473,39 @@ _DIGEST_SCHEMA = {
     },
 }
 
+_SEARCH_SCHEMA = {
+    "name": "tg_search",
+    "description": (
+        "Full-text search inside a public Telegram channel. Uses the t.me/s/?q= endpoint "
+        "— same search Telegram shows in the web preview. No API key required.\n\n"
+        "Use when you need to find specific posts by topic/keyword rather than reading "
+        "all posts chronologically. Works for any public channel.\n\n"
+        "Parameters:\n"
+        "- channel: username without @, e.g. 'abstractDL'\n"
+        "- query: search keywords, e.g. 'reward model' or 'budget'\n"
+        "- limit: max matching posts to return (1–200, default 20)"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": "Channel username (without @), e.g. 'abstractDL'",
+            },
+            "query": {
+                "type": "string",
+                "description": "Search query — keywords or phrase, e.g. 'reward model'",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max matching posts to return (1–200, default 20)",
+                "default": 20,
+            },
+        },
+        "required": ["channel", "query"],
+    },
+}
+
 
 def get_tools() -> List[ToolEntry]:
     return [
@@ -386,5 +518,10 @@ def get_tools() -> List[ToolEntry]:
             name="tg_digest",
             schema=_DIGEST_SCHEMA,
             handler=lambda ctx, **kw: _tg_digest(ctx, **kw),
+        ),
+        ToolEntry(
+            name="tg_search",
+            schema=_SEARCH_SCHEMA,
+            handler=lambda ctx, **kw: _tg_search(ctx, **kw),
         ),
     ]
