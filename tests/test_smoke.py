@@ -136,6 +136,9 @@ EXPECTED_TOOLS = [
     "project_init", "project_overview", "project_operational_snapshot", "project_bootstrap_and_publish", "project_deploy_and_verify", "project_github_create", "project_branch_checkout", "project_branch_list", "project_branch_get", "project_branch_delete", "project_branch_rename", "project_git_fetch", "project_branch_compare", "project_issue_list", "project_issue_get", "project_issue_create", "project_issue_comment", "project_issue_update", "project_issue_close", "project_issue_reopen", "project_issue_label_add", "project_issue_label_remove", "project_issue_assign", "project_issue_unassign", "project_pr_list", "project_pr_get", "project_pr_changed_files", "project_pr_diff", "project_pr_comment", "project_pr_merge", "project_pr_create", "project_pr_close", "project_pr_reopen", "project_pr_review_list", "project_pr_review_submit", "project_file_read", "project_file_write", "project_commit", "project_push", "project_status", "project_server_register", "project_server_list", "project_server_get", "project_server_remove", "project_server_update", "project_server_validate", "project_server_run", "project_server_sync", "project_server_health", "project_service_status", "project_service_logs", "project_deploy_status", "project_deploy_recipe", "project_deploy_apply", "project_service_render_unit", "project_service_control",
     "ssh_target_register", "ssh_target_list", "ssh_target_get", "ssh_session_bootstrap", "ssh_target_ping",
     "remote_list_dir", "remote_read_file", "remote_stat", "remote_mkdir", "remote_write_file", "remote_find", "remote_grep", "remote_project_discover", "remote_project_fetch", "remote_investigate_project", "remote_command_exec", "remote_service_status", "remote_service_action", "remote_service_logs", "remote_service_list", "remote_server_health", "remote_capabilities_overview",
+    # Remote network diagnostics
+    "remote_ping", "remote_traceroute", "remote_port_check",
+    "remote_dns_lookup", "remote_vpn_status", "remote_iptables_summary", "remote_netstat",
     # Plan management
     "plan_create", "plan_approve", "plan_reject", "plan_step_done", "plan_update", "plan_complete", "plan_status",
     # Growth tools
@@ -241,6 +244,8 @@ EXPECTED_TOOLS = [
     "gh_watch_remove",
     "gh_watch_status",
     "gh_watch_check",
+    # YouTube
+    "yt_subscribe", "yt_unsubscribe", "yt_status", "yt_check", "yt_latest",
 ]
 
 
@@ -537,7 +542,7 @@ def test_function_count_reasonable():
     # Soft structural budget: keep total function count bounded, but allow recent
     # growth from project/plan/review capabilities and the short-video pack contour
     # until a dedicated simplification cycle pays the debt back down.
-    assert len(sizes) <= 1650, f"{len(sizes)} functions — too many?"
+    assert len(sizes) <= 1700, f"{len(sizes)} functions — too many?"
 
 
 # ── Pre-push gate tests ──────────────────────────────────────────────

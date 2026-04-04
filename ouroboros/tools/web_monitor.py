@@ -50,7 +50,7 @@ _USER_AGENT = (
     "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 )
 _SUMMARY_MODEL_DEFAULT = "codex/gpt-4.1-mini"
-_SUMMARY_MODEL_FALLBACK = "anthropic/claude-haiku-4.5"
+_SUMMARY_MODEL_FALLBACK = "copilot/claude-haiku-4.5"  # was anthropic/ (OpenRouter)
 
 # Max bytes to store in snapshot (enough to detect meaningful changes)
 _MAX_SNAPSHOT_CHARS = 60_000

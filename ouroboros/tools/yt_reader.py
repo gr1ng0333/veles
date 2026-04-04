@@ -390,92 +390,128 @@ def _yt_check_for_inbox(ctx: ToolContext, limit: int = 10) -> List[Dict[str, Any
 # ── Tool registry ──────────────────────────────────────────────────────────────
 
 
+
+# ── Schemas ────────────────────────────────────────────────────────────────────
+
+_SUBSCRIBE_SCHEMA: Dict[str, Any] = {
+    "name": "yt_subscribe",
+    "description": (
+        "Subscribe to a YouTube channel for new video tracking. "
+        "Accepts: channel_id (UCxxx), @handle, or channel URL. "
+        "Seeds existing videos as seen — future yt_check calls return only NEW videos."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": "Channel ID (UCxxx), @handle, or full YouTube channel URL.",
+            },
+            "label": {
+                "type": "string",
+                "description": "Optional human-readable label (defaults to channel title).",
+            },
+        },
+        "required": ["channel"],
+    },
+}
+
+_UNSUBSCRIBE_SCHEMA: Dict[str, Any] = {
+    "name": "yt_unsubscribe",
+    "description": "Unsubscribe from a YouTube channel.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "channel_or_label": {
+                "type": "string",
+                "description": "Channel ID or label to unsubscribe.",
+            },
+        },
+        "required": ["channel_or_label"],
+    },
+}
+
+_STATUS_SCHEMA: Dict[str, Any] = {
+    "name": "yt_status",
+    "description": "List subscribed YouTube channels with last-check timestamps and video counts.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+_CHECK_SCHEMA: Dict[str, Any] = {
+    "name": "yt_check",
+    "description": (
+        "Fetch new videos from all subscribed YouTube channels since last check. "
+        "Updates watermarks so each video is returned only once. "
+        "Returns JSON list of new videos with title, URL, published date."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max new videos per channel to return (default 5).",
+            },
+        },
+    },
+}
+
+_LATEST_SCHEMA: Dict[str, Any] = {
+    "name": "yt_latest",
+    "description": (
+        "Get the latest N videos from a YouTube channel WITHOUT subscribing. "
+        "Good for one-off checks. Accepts channel_id, @handle, or URL."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": "Channel ID (UCxxx), @handle, or full YouTube channel URL.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Number of latest videos to return (default 10, max 15).",
+            },
+        },
+        "required": ["channel"],
+    },
+}
+
+
+# ── Tool registry ──────────────────────────────────────────────────────────────
+
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
             name="yt_subscribe",
-            description=(
-                "Subscribe to a YouTube channel for new video tracking. "
-                "Accepts: channel_id (UCxxx), @handle, channel URL. "
-                "Seeds existing videos as seen — future yt_check calls return only NEW videos."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "channel": {
-                        "type": "string",
-                        "description": "Channel ID (UCxxx), @handle, or full YouTube channel URL.",
-                    },
-                    "label": {
-                        "type": "string",
-                        "description": "Optional human-readable label (defaults to channel title).",
-                    },
-                },
-                "required": ["channel"],
-            },
-            execute=lambda ctx, **kw: _yt_subscribe(ctx, **kw),
+            schema=_SUBSCRIBE_SCHEMA,
+            handler=lambda ctx, **kw: _yt_subscribe(ctx, **kw),
+            timeout_sec=30,
         ),
         ToolEntry(
             name="yt_unsubscribe",
-            description="Unsubscribe from a YouTube channel.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "channel_or_label": {
-                        "type": "string",
-                        "description": "Channel ID or label to unsubscribe.",
-                    },
-                },
-                "required": ["channel_or_label"],
-            },
-            execute=lambda ctx, **kw: _yt_unsubscribe(ctx, **kw),
+            schema=_UNSUBSCRIBE_SCHEMA,
+            handler=lambda ctx, **kw: _yt_unsubscribe(ctx, **kw),
+            timeout_sec=10,
         ),
         ToolEntry(
             name="yt_status",
-            description="List subscribed YouTube channels with last-check timestamps and video counts.",
-            parameters={"type": "object", "properties": {}},
-            execute=lambda ctx, **kw: _yt_status(ctx, **kw),
+            schema=_STATUS_SCHEMA,
+            handler=lambda ctx, **kw: _yt_status(ctx, **kw),
+            timeout_sec=10,
         ),
         ToolEntry(
             name="yt_check",
-            description=(
-                "Fetch new videos from all subscribed YouTube channels since last check. "
-                "Updates watermarks so each video is returned only once. "
-                "Returns list of new videos with title, URL, published date."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max new videos per channel to return (default 5).",
-                    },
-                },
-            },
-            execute=lambda ctx, **kw: json.dumps(
+            schema=_CHECK_SCHEMA,
+            handler=lambda ctx, **kw: json.dumps(
                 _yt_watchlist_check(ctx, **kw), ensure_ascii=False, indent=2
             ),
+            timeout_sec=60,
         ),
         ToolEntry(
             name="yt_latest",
-            description=(
-                "Get the latest N videos from a YouTube channel WITHOUT subscribing. "
-                "Good for one-off checks. Accepts channel_id, @handle, or URL."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "channel": {
-                        "type": "string",
-                        "description": "Channel ID (UCxxx), @handle, or full YouTube channel URL.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Number of latest videos to return (default 10, max 15).",
-                    },
-                },
-                "required": ["channel"],
-            },
-            execute=lambda ctx, **kw: _yt_latest(ctx, **kw),
+            schema=_LATEST_SCHEMA,
+            handler=lambda ctx, **kw: _yt_latest(ctx, **kw),
+            timeout_sec=30,
         ),
     ]

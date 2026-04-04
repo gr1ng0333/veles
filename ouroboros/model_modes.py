@@ -13,6 +13,14 @@ DEFAULT_CONSCIOUSNESS_CODEX_MODEL = "gpt-5.4-codex-mini"
 # Reflection always uses the Codex OAuth contour (independent from aux_light env var)
 DEFAULT_REFLECTION_MODEL = "codex/gpt-5.4-mini"
 
+# Evolution reviewer models — used by multi_model_review during evolution cycles.
+# Primary: Codex OAuth (GPT-5.4 full). Secondary: Copilot Sonnet (free).
+DEFAULT_EVOLUTION_REVIEWER_MODELS = [
+    "codex/gpt-5.4",
+    "copilot/claude-sonnet-4.6",
+]
+
+
 # Valid reasoning effort levels (Codex API)
 VALID_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
 DEFAULT_REASONING_EFFORT = "medium"
@@ -171,6 +179,20 @@ def get_reflection_model() -> str:
     OUROBOROS_MODEL_REFLECTION for testing purposes.
     """
     return os.environ.get("OUROBOROS_MODEL_REFLECTION", "").strip() or DEFAULT_REFLECTION_MODEL
+
+def get_evolution_reviewer_models() -> list:
+    """Return ordered list of models to use in multi_model_review during evolution cycles.
+
+    Primary: Codex OAuth (GPT-5.4) — free, powerful, long context.
+    Secondary: Copilot Sonnet — free via GitHub Copilot subscription, diverse perspective.
+
+    Overridable via env var OUROBOROS_EVOLUTION_REVIEWERS (comma-separated model ids).
+    """
+    env_override = os.environ.get("OUROBOROS_EVOLUTION_REVIEWERS", "").strip()
+    if env_override:
+        return [m.strip() for m in env_override.split(",") if m.strip()]
+    return list(DEFAULT_EVOLUTION_REVIEWER_MODELS)
+
 
 
 def get_background_model() -> str:

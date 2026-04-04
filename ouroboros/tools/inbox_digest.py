@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 _DRIVE_ROOT = os.environ.get("DRIVE_ROOT", "/opt/veles-data")
 _DIGEST_MODEL_DEFAULT = "codex/gpt-4.1-mini"
-_DIGEST_MODEL_FALLBACK = "anthropic/claude-haiku-4.5"
+_DIGEST_MODEL_FALLBACK = "copilot/claude-haiku-4.5"
 
 _DIGEST_PROMPT = """\
 You are creating an intelligence briefing from monitoring feeds.
@@ -80,6 +80,18 @@ Write in Russian if most content is in Russian, otherwise English.
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _transport_for_model(model: str) -> str:
+    """Return transport name for budget tracking (openrouter / codex / copilot)."""
+    m = str(model or "").lower()
+    if m.startswith("codex/"):
+        return "codex"
+    if m.startswith("copilot/"):
+        return "copilot"
+    return "openrouter"
+
+
 
 def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
     if not dt_str:
@@ -174,7 +186,7 @@ def _emit_usage(ctx: ToolContext, usage: Dict[str, Any], model: str) -> None:
         try:
             ctx.event_queue.put({
                 "type": "llm_usage",
-                "provider": "openrouter",
+                "provider": _transport_for_model(model),
                 "usage": usage,
                 "source": "inbox_digest",
                 "model": model,
