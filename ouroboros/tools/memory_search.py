@@ -1,12 +1,13 @@
 """Memory search — TF-IDF search across all Veles memory sources.
 
 Searches: chat.jsonl, knowledge/*.md, identity.md, scratchpad.md,
-          task_reflections.jsonl, dialogue_blocks.json.
+          task_reflections.jsonl, dialogue_blocks.json, notes.jsonl.
 No external dependencies — pure Python TF-IDF + cosine-like scoring.
 
 Usage:
     memory_search(query="3x-ui webBasePath")
     memory_search(query="ssh key deploy", top_k=10)
+    memory_search(query="reward model colon")   # finds notes tagged [ml]
 """
 
 from __future__ import annotations
@@ -187,6 +188,56 @@ def _load_dialogue_blocks(drive_root: pathlib.Path) -> List[_Chunk]:
     return chunks
 
 
+def _load_notes(drive_root: pathlib.Path) -> List[_Chunk]:
+    """Load saved notes from notes.jsonl.
+
+    Each note becomes a searchable chunk. Tags and source URL are prepended
+    to the text so they participate in token scoring.
+    Deleted notes are skipped.
+    """
+    notes_file = drive_root / "memory" / "notes.jsonl"
+    if not notes_file.exists():
+        return []
+    try:
+        with notes_file.open("r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as exc:
+        log.warning("memory_search: cannot read notes.jsonl: %s", exc)
+        return []
+
+    chunks: List[_Chunk] = []
+    for raw in lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            note = json.loads(raw)
+            if note.get("deleted", False):
+                continue
+            text = (note.get("text") or "").strip()
+            if not text:
+                continue
+            tags = note.get("tags") or []
+            source_url = (note.get("source") or "").strip()
+            note_id = note.get("id", "")
+            date = (note.get("timestamp") or "")[:10]
+
+            # Build searchable text: prepend tags + source so they are tokenized
+            parts = []
+            if tags:
+                parts.append("tags: " + " ".join(tags))
+            if source_url:
+                parts.append(f"source: {source_url}")
+            parts.append(text)
+            combined = "\n".join(parts)
+
+            src = f"note/{note_id}" if note_id else "note"
+            chunks.extend(_split_into_chunks(combined, src, date))
+        except Exception:
+            continue
+    return chunks
+
+
 def _load_md(path: pathlib.Path, label: str) -> List[_Chunk]:
     """Load a markdown file and split by paragraphs."""
     if not path.exists():
@@ -226,6 +277,9 @@ def _build_corpus(drive_root: pathlib.Path) -> List[_Chunk]:
 
     # Consolidated dialogue blocks (historical episodes)
     corpus.extend(_load_dialogue_blocks(drive_root))
+
+    # Personal notes (saved via note_add)
+    corpus.extend(_load_notes(drive_root))
 
     # Knowledge base
     kb_dir = drive_root / "memory" / "knowledge"
@@ -324,10 +378,11 @@ def get_tools() -> List[ToolEntry]:
             "TF-IDF search across all Veles memory: recent chat history, "
             "task reflections (evolution history, error patterns), "
             "consolidated dialogue blocks (historical episodes), "
+            "personal notes (saved via note_add — includes tags and source URLs), "
             "knowledge base topics, identity.md, and scratchpad. "
             "Use to recall past conversations, find relevant patterns, "
-            "or locate prior decisions. Returns top-K fragments with "
-            "source label, date, and relevance score."
+            "locate prior decisions, or retrieve saved research notes. "
+            "Returns top-K fragments with source label, date, and relevance score."
         ),
         "parameters": {
             "type": "object",
