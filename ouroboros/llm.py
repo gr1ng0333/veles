@@ -219,13 +219,20 @@ class LLMClient:
 
         # Copilot proxy: explicit Claude-only transport
         if transport == "copilot":
-
             from ouroboros.copilot_proxy import call_copilot
 
+            # Billing protection: ensure last message is role="system"
+            # so X-Initiator="agent" → free request.
+            # DO NOT REMOVE — without this, Copilot requests cost premium quota.
+            if messages and messages[-1].get("role") != "system":
+                messages = list(messages)  # copy to avoid mutating caller's list
+                messages.append({
+                    "role": "system",
+                    "content": "Respond to the request above.",
+                })
+
             return call_copilot(messages, tools=tools, model=actual_model,
-
                                 max_tokens=max_tokens, tool_choice=tool_choice,
-
                                 interaction_id=interaction_id, reasoning_effort="high",
                                 force_user_initiator=force_user_initiator)
 
