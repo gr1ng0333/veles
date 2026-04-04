@@ -170,6 +170,39 @@ def _collect_hn(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Source collector: Reddit
+# ---------------------------------------------------------------------------
+
+def _collect_reddit(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
+    """Collect new posts from reddit_watchlist."""
+    try:
+        from ouroboros.tools.reddit_reader import _reddit_watchlist_check  # noqa: PLC0415
+        raw = _reddit_watchlist_check(ctx, limit_per_sub=limit)
+        data = json.loads(raw)
+        posts = data.get("posts", [])
+        items = []
+        for p in posts:
+            items.append({
+                "source_type": "reddit",
+                "source_name": p.get("matched_subreddit", p.get("subreddit", "reddit")),
+                "id": p.get("id"),
+                "date": p.get("date", ""),
+                "title": p.get("title", ""),
+                "text": p.get("text", ""),
+                "url": p.get("url", p.get("reddit_url", "")),
+                "views": p.get("score", 0),
+                "links": [p.get("url", ""), p.get("reddit_url", "")] if p.get("url") else [],
+                "author": p.get("author", ""),
+                "comments": p.get("comments", 0),
+                "flair": p.get("flair", ""),
+            })
+        return items
+    except Exception as exc:
+        log.warning("inbox: reddit collect failed: %s", exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Tool: inbox_check
 # ---------------------------------------------------------------------------
 
@@ -186,7 +219,7 @@ def _inbox_check(
                  (default: all enabled sources)
     """
     limit_per_source = max(1, min(limit_per_source, 100))
-    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn"}
+    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit"}
 
     all_items: List[Dict[str, Any]] = []
     source_summary: Dict[str, Any] = {}
@@ -210,6 +243,11 @@ def _inbox_check(
         hn_items = _collect_hn(ctx, limit_per_source)
         all_items.extend(hn_items)
         source_summary["hn"] = {"new_items": len(hn_items)}
+
+    if "reddit" in enabled:
+        reddit_items = _collect_reddit(ctx, limit_per_source)
+        all_items.extend(reddit_items)
+        source_summary["reddit"] = {"new_items": len(reddit_items)}
 
     all_items.sort(key=_sort_key)
 
@@ -276,6 +314,18 @@ def _inbox_status(ctx: ToolContext) -> str:
     except Exception as exc:
         summary["hn"] = {"error": str(exc)}
 
+    # Reddit watchlist
+    try:
+        from ouroboros.tools.reddit_reader import _reddit_watchlist_status  # noqa: PLC0415
+        raw = _reddit_watchlist_status(ctx)
+        data = json.loads(raw)
+        summary["reddit"] = {
+            "subscriptions": data.get("count", 0),
+            "subreddits": [s["subreddit"] for s in data.get("subreddits", [])],
+        }
+    except Exception as exc:
+        summary["reddit"] = {"error": str(exc)}
+
     total = sum(
         v.get("subscriptions", 0) for v in summary.values()
         if isinstance(v, dict) and "error" not in v
@@ -314,7 +364,7 @@ _CHECK_SCHEMA = {
             },
             "sources": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn"]},
+                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit"]},
                 "description": "Source types to check (default: all). E.g. ['telegram', 'rss', 'hn']",
             },
         },
