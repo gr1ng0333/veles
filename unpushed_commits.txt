@@ -1,0 +1,1 @@
+3623743 feat: add article_reader — lightweight full-text article extractor (zero deps)

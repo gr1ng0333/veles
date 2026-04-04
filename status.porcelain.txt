@@ -1,0 +1,10 @@
+M README.md
+ M VERSION
+ M colab_launcher.py
+ M ouroboros/tools/inbox.py
+ M ouroboros/tools/inbox_digest.py
+ M ouroboros/tools/notes.py
+ M pyproject.toml
+ M tests/test_smoke.py
+?? ouroboros/digest_scheduler.py
+?? ouroboros/tools/digest_schedule.py

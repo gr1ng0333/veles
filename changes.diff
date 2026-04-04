@@ -1,0 +1,455 @@
+diff --git a/README.md b/README.md
+index 92201da..d7e0c51 100644
+--- a/README.md
++++ b/README.md
+@@ -1,18 +1,19 @@
+ # Veles
+ 
+ [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
+-[![Version](https://img.shields.io/badge/version-7.1.45-green)](https://github.com/gr1ng0333/veles/releases)
++[![Version](https://img.shields.io/badge/version-7.1.46-green)](https://github.com/gr1ng0333/veles/releases)
+ [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
+ 
+ Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
+ 
+ Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
+ 
+-**Версия:** 7.1.45 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
++**Версия:** 7.1.46 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+ 
+ ---
+ 
+ ## Release notes
++- 7.1.46 — article_reader: lightweight zero-deps article fetcher (article_fetch + article_summary); extracts main body via semantic HTML heuristics
+ - 7.1.44 — fix arxiv_reader tool schemas (broken OpenAI function schema format → correct name/description/parameters); add arxiv tools to smoke test
+ - 7.1.43 — reddit_reader: Reddit subreddit monitor + watchlist; inbox: Reddit as 5th source
+ - 7.1.42 — hn_reader: Hacker News reader + watchlist via Algolia API; inbox: HN integrated as 4th source
+@@ -90,6 +91,9 @@
+ - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
+ 
+ ## Changelog
++### v7.1.46 (2026-04-04)
++- article_reader: lightweight zero-deps article fetcher (article_fetch + article_summary); extracts main body via semantic HTML heuristics
++
+ ### v7.1.45 (2026-04-04)
+ - test_arxiv_reader: 28 tests for arxiv_reader (parse/search/watchlist/dedup)
+ 
+diff --git a/VERSION b/VERSION
+index f47983c..97fa447 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-7.1.45
+\ No newline at end of file
++7.1.46
+diff --git a/colab_launcher.py b/colab_launcher.py
+index a7b9611..92dbafe 100644
+--- a/colab_launcher.py
++++ b/colab_launcher.py
+@@ -378,7 +378,18 @@ _consciousness = BackgroundConsciousness(
+     event_queue=get_event_q(),
+     owner_chat_id_fn=_get_owner_chat_id,
+ )
+-def _apply_background_runtime_policy() -> None:
++def _apply_background_runtime_policy()
++# 6.4) Digest scheduler daemon
++from ouroboros.digest_scheduler import DigestScheduler
++_digest_scheduler = DigestScheduler(
++    repo_dir=REPO_DIR,
++    drive_root=DRIVE_ROOT,
++    owner_chat_id_fn=_get_owner_chat_id,
++    send_fn=send_with_budget,
++)
++_digest_scheduler.start()
++log.info("DigestScheduler daemon started")
++ -> None:
+     st = load_state()
+     if st.get("bg_consciousness_enabled"):
+         _consciousness.start()
+diff --git a/ouroboros/tools/inbox.py b/ouroboros/tools/inbox.py
+index d016e13..32a4a0d 100644
+--- a/ouroboros/tools/inbox.py
++++ b/ouroboros/tools/inbox.py
+@@ -202,6 +202,35 @@ def _collect_reddit(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
+         return []
+ 
+ 
++# ---------------------------------------------------------------------------
++# Source collector: arXiv
++# ---------------------------------------------------------------------------
++
++def _collect_arxiv(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
++    """Collect new papers from arxiv_watchlist."""
++    try:
++        from ouroboros.tools.arxiv_reader import _arxiv_watchlist_check  # noqa: PLC0415
++        raw = _arxiv_watchlist_check(ctx, limit=limit)
++        data = json.loads(raw)
++        papers = data.get("new_papers", [])
++        items = []
++        for p in papers:
++            items.append({
++                "source_type": "arxiv",
++                "source_name": p.get("matched_label", p.get("categories", ["arxiv"])[0] if p.get("categories") else "arxiv"),
++                "id": p.get("id", ""),
++                "date": p.get("published", ""),
++                "title": p.get("title", ""),
++                "text": (p.get("summary", "") or "")[:400],
++                "url": p.get("pdf_url") or p.get("abs_url") or p.get("url", ""),
++                "authors": p.get("authors", []),
++                "categories": p.get("categories", []),
++                "links": [p.get("abs_url", ""), p.get("pdf_url", "")] if p.get("abs_url") else [],
++            })
++        return items
++    except Exception as exc:
++        log.warning("inbox: arxiv collect failed: %s", exc)
++        return []
+ # ---------------------------------------------------------------------------
+ # Tool: inbox_check
+ # ---------------------------------------------------------------------------
+@@ -219,7 +248,7 @@ def _inbox_check(
+                  (default: all enabled sources)
+     """
+     limit_per_source = max(1, min(limit_per_source, 100))
+-    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit"}
++    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit", "arxiv"}
+ 
+     all_items: List[Dict[str, Any]] = []
+     source_summary: Dict[str, Any] = {}
+@@ -249,6 +278,11 @@ def _inbox_check(
+         all_items.extend(reddit_items)
+         source_summary["reddit"] = {"new_items": len(reddit_items)}
+ 
++    if "arxiv" in enabled:
++        arxiv_items = _collect_arxiv(ctx, limit_per_source)
++        all_items.extend(arxiv_items)
++        source_summary["arxiv"] = {"new_items": len(arxiv_items)}
++
+     all_items.sort(key=_sort_key)
+ 
+     return json.dumps({
+@@ -326,6 +360,19 @@ def _inbox_status(ctx: ToolContext) -> str:
+     except Exception as exc:
+         summary["reddit"] = {"error": str(exc)}
+ 
++
++    # arXiv watchlist
++    try:
++        from ouroboros.tools.arxiv_reader import _arxiv_watchlist_status  # noqa: PLC0415
++        raw = _arxiv_watchlist_status(ctx)
++        data = json.loads(raw)
++        summary["arxiv"] = {
++            "subscriptions": data.get("count", 0),
++            "entries": [e.get("label", e.get("category", "")) for e in data.get("entries", [])],
++        }
++    except Exception as exc:
++        summary["arxiv"] = {"error": str(exc)}
++
+     total = sum(
+         v.get("subscriptions", 0) for v in summary.values()
+         if isinstance(v, dict) and "error" not in v
+@@ -345,14 +392,14 @@ _CHECK_SCHEMA = {
+     "name": "inbox_check",
+     "description": (
+         "Fetch all new items from all monitoring sources since last check: "
+-        "Telegram channels (tg_watchlist), RSS/Atom feeds (rss_reader), "
+-        "monitored web URLs (web_monitor), and Hacker News keywords (hn_watchlist). "
++        "Telegram channels, RSS/Atom feeds, monitored web URLs, HN keywords, "
++        "Reddit subreddits, and arXiv paper watchlist. "
+         "Returns a unified sorted feed.\n\n"
+-        "Each item has: source_type ('telegram'|'rss'|'web'|'hn'), source_name, "
++        "Each item has: source_type ('telegram'|'rss'|'web'|'hn'|'reddit'|'arxiv'), source_name, "
+         "date, title, text, url, links.\n\n"
+         "Parameters:\n"
+         "- limit_per_source: max new items per individual source (1–100, default 20)\n"
+-        "- sources: optional list of source types to check: 'telegram', 'rss', 'web'"
++        "- sources: optional list of source types: 'telegram', 'rss', 'web', 'hn', 'reddit', 'arxiv'"
+     ),
+     "parameters": {
+         "type": "object",
+@@ -364,7 +411,7 @@ _CHECK_SCHEMA = {
+             },
+             "sources": {
+                 "type": "array",
+-                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit"]},
++                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit", "arxiv"]},
+                 "description": "Source types to check (default: all). E.g. ['telegram', 'rss', 'hn']",
+             },
+         },
+diff --git a/ouroboros/tools/inbox_digest.py b/ouroboros/tools/inbox_digest.py
+index ac435ca..16b8bbc 100644
+--- a/ouroboros/tools/inbox_digest.py
++++ b/ouroboros/tools/inbox_digest.py
+@@ -232,7 +232,7 @@ def _inbox_digest(
+ ) -> str:
+     """Fetch all new items from all monitoring sources and generate a unified digest."""
+     limit_per_source = max(1, min(limit_per_source, 100))
+-    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit"}
++    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit", "arxiv"}
+ 
+     # --- Collect items from inbox ---
+     all_items: List[Dict[str, Any]] = []
+@@ -288,6 +288,31 @@ def _inbox_digest(
+             log.warning("inbox_digest: reddit collect failed: %s", exc)
+             source_summary["reddit"] = 0
+ 
++    if "arxiv" in enabled:
++        try:
++            from ouroboros.tools.arxiv_reader import _arxiv_watchlist_check
++            raw = _arxiv_watchlist_check(ctx, limit=limit_per_source)
++            data = json.loads(raw)
++            papers = data.get("new_papers", [])
++            items = []
++            for p in papers:
++                items.append({
++                    "source_type": "arxiv",
++                    "source_name": p.get("matched_label", (p.get("categories") or ["arxiv"])[0]),
++                    "id": p.get("id", ""),
++                    "date": p.get("published", ""),
++                    "title": p.get("title", ""),
++                    "text": (p.get("summary", "") or "")[:300],
++                    "url": p.get("pdf_url") or p.get("abs_url") or "",
++                    "authors": p.get("authors", []),
++                    "links": [p.get("abs_url", ""), p.get("pdf_url", "")] if p.get("abs_url") else [],
++                })
++            all_items.extend(items)
++            source_summary["arxiv"] = len(items)
++        except Exception as exc:
++            log.warning("inbox_digest: arxiv collect failed: %s", exc)
++            source_summary["arxiv"] = 0
++
+     # Apply time filter
+     if since_hours > 0:
+         before = len(all_items)
+@@ -419,7 +444,7 @@ _SCHEMA = {
+         "content THEMATICALLY across all sources — one coherent brief instead of N separate summaries.\n\n"
+         "Parameters:\n"
+         "- limit_per_source: max items per source (1–100, default 20)\n"
+-        "- sources: which sources to include ('telegram', 'rss', 'web', 'hn', 'reddit') — default all\n"
++        "- sources: which sources to include ('telegram', 'rss', 'web', 'hn', 'reddit', 'arxiv') — default all\n"
+         "- notify_owner: if True, also sends the digest to owner via Telegram message\n"
+         "- since_hours: only include items from last N hours (0 = no filter)\n"
+         "- model: LLM model for summarization (default: codex/gpt-4.1-mini)"
+@@ -434,7 +459,7 @@ _SCHEMA = {
+             },
+             "sources": {
+                 "type": "array",
+-                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit"]},
++                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit", "arxiv"]},
+                 "description": "Source types to include (default: all). E.g. ['telegram', 'hn', 'reddit']",
+             },
+             "notify_owner": {
+@@ -458,6 +483,10 @@ _SCHEMA = {
+ }
+ 
+ 
++
++# Public alias for digest_run_now and DigestScheduler
++_inbox_digest_impl = _inbox_digest
++
+ def get_tools() -> List[ToolEntry]:
+     return [
+         ToolEntry(
+diff --git a/ouroboros/tools/notes.py b/ouroboros/tools/notes.py
+index 361b5e5..86d30c3 100644
+--- a/ouroboros/tools/notes.py
++++ b/ouroboros/tools/notes.py
+@@ -246,87 +246,90 @@ def _note_delete(ctx: ToolContext, note_id: str) -> str:
+ 
+ # ── Tool registry ──────────────────────────────────────────────────────────────
+ 
+-def get_tools() -> List[ToolEntry]:
+-    return [
+-        ToolEntry(
+-            name="note_add",
+-            description=(
+-                "Save a personal note with optional tags and source URL. "
+-                "Use while reading HN/Reddit/arXiv/TG to bookmark interesting items. "
+-                "Notes are searchable via note_search and memory_search."
+-            ),
+-            parameters={
+-                "type": "object",
+-                "properties": {
+-                    "text": {"type": "string", "description": "Note content (max 10,000 chars)"},
+-                    "tags": {
+-                        "type": "array",
+-                        "items": {"type": "string"},
+-                        "description": "Optional list of tags, e.g. ['ml', 'research', 'todo']",
+-                    },
+-                    "source": {
+-                        "type": "string",
+-                        "description": "Optional source URL or reference, e.g. 'https://t.me/abstractDL/402'",
+-                    },
+-                },
+-                "required": ["text"],
+-            },
+-            execute=lambda ctx, **kw: _note_add(ctx, **kw),
++
++
++# -- Tool registry -------------------------------------------------------------
++
++def get_tools():
++    _note_add_schema = {
++        "name": "note_add",
++        "description": (
++            "Save a personal note with optional tags and source URL. "
++            "Use while reading HN/Reddit/arXiv/TG to bookmark interesting items. "
++            "Notes are searchable via note_search and memory_search."
+         ),
+-        ToolEntry(
+-            name="note_search",
+-            description=(
+-                "Full-text search over saved notes. "
+-                "Returns notes ranked by relevance to the query."
+-            ),
+-            parameters={
+-                "type": "object",
+-                "properties": {
+-                    "query": {"type": "string", "description": "Search query"},
+-                    "tags": {
+-                        "type": "array",
+-                        "items": {"type": "string"},
+-                        "description": "Optional tag filter — return only notes with ALL these tags",
+-                    },
+-                    "limit": {"type": "integer", "description": "Max results to return (default 20)"},
++        "parameters": {
++            "type": "object",
++            "properties": {
++                "text": {"type": "string", "description": "Note content (max 10,000 chars)"},
++                "tags": {
++                    "type": "array",
++                    "items": {"type": "string"},
++                    "description": "Optional list of tags, e.g. [ml, research, todo]",
++                },
++                "source": {
++                    "type": "string",
++                    "description": "Optional source URL or reference",
+                 },
+-                "required": ["query"],
+             },
+-            execute=lambda ctx, **kw: _note_search(ctx, **kw),
++            "required": ["text"],
++        },
++    }
++    _note_search_schema = {
++        "name": "note_search",
++        "description": (
++            "Full-text search over saved notes. "
++            "Returns notes ranked by relevance to the query."
+         ),
+-        ToolEntry(
+-            name="note_list",
+-            description=(
+-                "List recent saved notes. Optionally filter by tag(s) or time window."
+-            ),
+-            parameters={
+-                "type": "object",
+-                "properties": {
+-                    "tags": {
+-                        "type": "array",
+-                        "items": {"type": "string"},
+-                        "description": "Optional tag filter",
+-                    },
+-                    "limit": {"type": "integer", "description": "Max results (default 20)"},
+-                    "since_days": {
+-                        "type": "number",
+-                        "description": "Only show notes from the last N days",
+-                    },
++        "parameters": {
++            "type": "object",
++            "properties": {
++                "query": {"type": "string", "description": "Search query"},
++                "tags": {
++                    "type": "array",
++                    "items": {"type": "string"},
++                    "description": "Optional tag filter",
+                 },
+-                "required": [],
++                "limit": {"type": "integer", "description": "Max results to return (default 20)"},
+             },
+-            execute=lambda ctx, **kw: _note_list(ctx, **kw),
+-        ),
+-        ToolEntry(
+-            name="note_delete",
+-            description="Soft-delete a note by its id.",
+-            parameters={
+-                "type": "object",
+-                "properties": {
+-                    "note_id": {"type": "string", "description": "Note id, e.g. '20260404_abc123'"},
++            "required": ["query"],
++        },
++    }
++    _note_list_schema = {
++        "name": "note_list",
++        "description": "List recent saved notes. Optionally filter by tag(s) or time window.",
++        "parameters": {
++            "type": "object",
++            "properties": {
++                "tags": {
++                    "type": "array",
++                    "items": {"type": "string"},
++                    "description": "Optional tag filter",
++                },
++                "limit": {"type": "integer", "description": "Max results (default 20)"},
++                "since_days": {
++                    "type": "number",
++                    "description": "Only show notes from the last N days",
+                 },
+-                "required": ["note_id"],
+             },
+-            execute=lambda ctx, **kw: _note_delete(ctx, **kw),
+-        ),
++            "required": [],
++        },
++    }
++    _note_delete_schema = {
++        "name": "note_delete",
++        "description": "Soft-delete a note by its id.",
++        "parameters": {
++            "type": "object",
++            "properties": {
++                "note_id": {"type": "string", "description": "Note id, e.g. 20260404_abc123"},
++            },
++            "required": ["note_id"],
++        },
++    }
++    from ouroboros.tools.registry import ToolEntry
++    return [
++        ToolEntry("note_add", _note_add_schema, lambda ctx, **kw: _note_add(ctx, **kw)),
++        ToolEntry("note_search", _note_search_schema, lambda ctx, **kw: _note_search(ctx, **kw)),
++        ToolEntry("note_list", _note_list_schema, lambda ctx, **kw: _note_list(ctx, **kw)),
++        ToolEntry("note_delete", _note_delete_schema, lambda ctx, **kw: _note_delete(ctx, **kw)),
+     ]
+diff --git a/pyproject.toml b/pyproject.toml
+index f1f1172..d5c9e6a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,6 +1,6 @@
+ [project]
+ name = "ouroboros"
+-version = "7.1.45"
++version = "7.1.46"
+ description = "Self-creating agent"
+ requires-python = ">=3.10"
+ 
+diff --git a/tests/test_smoke.py b/tests/test_smoke.py
+index 0ec11bd..1678792 100644
+--- a/tests/test_smoke.py
++++ b/tests/test_smoke.py
+@@ -223,6 +223,19 @@ EXPECTED_TOOLS = [
+     "arxiv_watchlist_remove",
+     "arxiv_watchlist_status",
+     "arxiv_watchlist_check",
++    # Digest scheduler
++    "digest_schedule_set",
++    "digest_schedule_status",
++    "digest_schedule_disable",
++    "digest_run_now",
++    # Article reader
++    "article_fetch",
++    "article_summary",
++    # Notes
++    "note_add",
++    "note_search",
++    "note_list",
++    "note_delete",
+ ]
