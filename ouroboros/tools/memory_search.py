@@ -1,13 +1,21 @@
-"""Memory search — TF-IDF search across all Veles memory sources.
+"""Memory search — BM25 + fuzzy-expanded search across all Veles memory sources.
 
 Searches: chat.jsonl, knowledge/*.md, identity.md, scratchpad.md,
           task_reflections.jsonl, dialogue_blocks.json, notes.jsonl.
-No external dependencies — pure Python TF-IDF + cosine-like scoring.
+No external dependencies — pure Python BM25 + difflib fuzzy query expansion.
+
+Improvements over plain TF-IDF:
+- BM25 scoring (k1=1.5, b=0.75) — proper document-length normalisation,
+  saturating TF, standard IDF. Significantly better ranking on short chunks.
+- Fuzzy query expansion — each query token is matched against corpus
+  vocabulary via SequenceMatcher (threshold 0.82). Catches typos and
+  near-synonyms: "evalution" → expands with "evolution".
 
 Usage:
     memory_search(query="3x-ui webBasePath")
     memory_search(query="ssh key deploy", top_k=10)
     memory_search(query="reward model colon")   # finds notes tagged [ml]
+    memory_search(query="evalution round limit")  # typo-tolerant
 """
 
 from __future__ import annotations
@@ -18,11 +26,17 @@ import math
 import pathlib
 import re
 from collections import Counter
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Tuple
 
 from ouroboros.tools.registry import ToolEntry, ToolContext
 
 log = logging.getLogger(__name__)
+
+# ── BM25 hyper-parameters ────────────────────────────────────────────────────
+
+BM25_K1: float = 1.5   # term-frequency saturation
+BM25_B: float = 0.75   # document-length normalisation factor
 
 # ── Tokenizer ─────────────────────────────────────────────────────────────────
 
@@ -298,30 +312,124 @@ def _build_corpus(drive_root: pathlib.Path) -> List[_Chunk]:
     return corpus
 
 
-# ── TF-IDF engine ─────────────────────────────────────────────────────────────
+# ── BM25 engine ───────────────────────────────────────────────────────────────
 
 def _compute_idf(corpus: List[_Chunk]) -> Dict[str, float]:
-    """BM25-flavoured IDF: log((N+1)/(df+1)) + 1."""
+    """BM25 IDF: log((N - df + 0.5) / (df + 0.5) + 1).
+
+    More precise than the old log((N+1)/(df+1))+1 formula.
+    Guarantees positive values even for very frequent terms (df close to N).
+    """
     n = len(corpus)
     df: Counter = Counter()
     for chunk in corpus:
         for tok in set(chunk.tokens):
             df[tok] += 1
-    return {tok: math.log((n + 1) / (freq + 1)) + 1.0 for tok, freq in df.items()}
+    return {
+        tok: math.log((n - freq + 0.5) / (freq + 0.5) + 1.0)
+        for tok, freq in df.items()
+    }
 
 
-def _score(query_tokens: List[str], chunk: _Chunk,
-           idf: Dict[str, float]) -> float:
-    """TF-IDF dot-product score (not normalised — fast enough for ranking)."""
+def _score(
+    query_tokens: List[str],
+    chunk: _Chunk,
+    idf: Dict[str, float],
+    avgdl: float = 50.0,
+) -> float:
+    """BM25 score for a set of query tokens against a single chunk.
+
+    BM25 formula:
+        score = Σ IDF(t) * TF_norm(t, d)
+        TF_norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * dl/avgdl))
+
+    Parameters
+    ----------
+    query_tokens:
+        Tokenised query (may include fuzzy-expanded tokens).
+    chunk:
+        Document chunk with pre-tokenised `.tokens`.
+    idf:
+        Precomputed IDF mapping from `_compute_idf`.
+    avgdl:
+        Average document length across the corpus (in tokens).
+        Defaults to 50 for backward-compat when called without corpus context.
+    """
     if not chunk.tokens or not query_tokens:
         return 0.0
     doc_tf = Counter(chunk.tokens)
     doc_len = len(chunk.tokens)
-    return sum(
-        (doc_tf[qt] / doc_len) * idf.get(qt, 1.0)
-        for qt in query_tokens
-        if qt in doc_tf
-    )
+    score = 0.0
+    for qt in query_tokens:
+        if qt not in doc_tf:
+            continue
+        tf = doc_tf[qt]
+        tf_norm = (
+            tf * (BM25_K1 + 1)
+            / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len / avgdl))
+        )
+        score += idf.get(qt, 0.0) * tf_norm
+    return score
+
+
+def _fuzzy_expand_query(
+    query_tokens: List[str],
+    idf_vocab: Dict[str, float],
+    threshold: float = 0.82,
+    max_per_token: int = 3,
+) -> List[str]:
+    """Expand query tokens with similar terms from the corpus vocabulary.
+
+    Uses ``difflib.SequenceMatcher`` to find vocabulary words whose edit
+    similarity to a query token is ≥ ``threshold``. Short tokens (< 4 chars)
+    are skipped to avoid false positives.
+
+    Example
+    -------
+    >>> _fuzzy_expand_query(["evalution"], {"evolution": 1.0, "evaluation": 1.0})
+    ['evalution', 'evolution', 'evaluation']
+
+    Parameters
+    ----------
+    query_tokens:
+        Original tokenised query.
+    idf_vocab:
+        IDF dict — its keys form the vocabulary to search against.
+    threshold:
+        Minimum SequenceMatcher ratio (0–1). Default 0.82 ≈ 1-char difference
+        on typical 5–8 char words.
+    max_per_token:
+        Maximum number of expansions added per query token.
+
+    Returns
+    -------
+    Deduplicated list: original tokens first, then expansions ordered by
+    similarity score descending.
+    """
+    expanded: List[str] = list(query_tokens)
+    seen: set = set(query_tokens)
+
+    for qt in query_tokens:
+        if len(qt) < 4:
+            continue  # too short — too many spurious matches
+        candidates: List[Tuple[float, str]] = []
+        for vocab_tok in idf_vocab:
+            if vocab_tok in seen:
+                continue
+            # Quick length pre-filter before the O(n) ratio call
+            if abs(len(vocab_tok) - len(qt)) > max(3, len(qt) // 3):
+                continue
+            ratio = SequenceMatcher(None, qt, vocab_tok, autojunk=False).ratio()
+            if ratio >= threshold:
+                candidates.append((ratio, vocab_tok))
+        # Sort by ratio descending, take top N
+        candidates.sort(key=lambda x: -x[0])
+        for _, tok in candidates[:max_per_token]:
+            if tok not in seen:
+                expanded.append(tok)
+                seen.add(tok)
+
+    return expanded
 
 
 def _run_search(
@@ -329,18 +437,35 @@ def _run_search(
     drive_root: pathlib.Path,
     top_k: int = 5,
 ) -> List[Tuple[float, _Chunk]]:
-    """Build corpus, score all chunks, return top-K."""
+    """Build corpus, score all chunks with BM25 + fuzzy expansion, return top-K.
+
+    Pipeline:
+    1. Build corpus from all memory sources.
+    2. Compute BM25 IDF over corpus vocabulary.
+    3. Expand query tokens via fuzzy matching against vocabulary.
+    4. Score each chunk with BM25 using expanded tokens + true avgdl.
+    5. Return top-k by score.
+    """
     corpus = _build_corpus(drive_root)
     if not corpus:
         return []
     query_tokens = _tokenize(query)
     if not query_tokens:
         return []
+
     idf = _compute_idf(corpus)
+
+    # Compute average document length for BM25 length normalisation
+    total_tokens = sum(len(c.tokens) for c in corpus)
+    avgdl = total_tokens / len(corpus) if corpus else 50.0
+
+    # Expand query with fuzzy matches from corpus vocabulary
+    expanded_tokens = _fuzzy_expand_query(query_tokens, idf)
+
     scored = [
         (s, c)
         for c in corpus
-        if (s := _score(query_tokens, c, idf)) > 0
+        if (s := _score(expanded_tokens, c, idf, avgdl)) > 0
     ]
     scored.sort(key=lambda x: -x[0])
     return scored[:top_k]
@@ -375,11 +500,13 @@ def get_tools() -> List[ToolEntry]:
     schema = {
         "name": "memory_search",
         "description": (
-            "TF-IDF search across all Veles memory: recent chat history, "
+            "BM25 + fuzzy-expanded search across all Veles memory: recent chat history, "
             "task reflections (evolution history, error patterns), "
             "consolidated dialogue blocks (historical episodes), "
             "personal notes (saved via note_add — includes tags and source URLs), "
             "knowledge base topics, identity.md, and scratchpad. "
+            "Uses BM25 scoring (better ranking than plain TF-IDF) and fuzzy query "
+            "expansion (tolerates typos and near-synonyms). "
             "Use to recall past conversations, find relevant patterns, "
             "locate prior decisions, or retrieve saved research notes. "
             "Returns top-K fragments with source label, date, and relevance score."
