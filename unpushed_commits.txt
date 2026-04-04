@@ -1,0 +1,1 @@
+59387b8 feat: add reddit_reader — Reddit subreddit monitor with watchlist via public JSON API
