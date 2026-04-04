@@ -16,7 +16,7 @@ Loaded into static context and injected into multi_model_review prompt.
 | # | item | what to check | severity |
 |---|------|---------------|----------|
 | 1 | bible_compliance | Does the diff violate any BIBLE.md principle (P0–P1)? | critical |
-| 2 | safety_files_intact | Safety-critical files (BIBLE.md, safety.py, registry.py, SYSTEM.md, CONSCIOUSNESS.md) modified without explicit approval? | critical |
+| 2 | safety_files_intact | Safety-critical files (BIBLE.md, safety.py, llm.py, registry.py, SYSTEM.md, CONSCIOUSNESS.md) modified without explicit approval? | critical |
 | 3 | no_secrets | API keys, tokens, passwords, .env values in diff? | critical |
 | 4 | code_quality | Syntax errors, import errors, logic bugs in changed files? `python -c "import ouroboros.MODULE"` passes? | critical |
 | 5 | tests_pass | `pytest tests/` green? New module has tests? | critical |

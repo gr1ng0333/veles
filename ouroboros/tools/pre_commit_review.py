@@ -50,6 +50,7 @@ _REPO_DIR = Path(os.environ.get("OUROBOROS_REPO_DIR", "/opt/veles"))
 _SAFETY_FILES = frozenset([
     "BIBLE.md",
     "ouroboros/safety.py",
+    "ouroboros/llm.py",  # billing-critical: Copilot trailing system message protection
     "ouroboros/tools/registry.py",
     "prompts/SYSTEM.md",
     "prompts/CONSCIOUSNESS.md",

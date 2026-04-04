@@ -349,6 +349,15 @@ Everything not explicitly forbidden is permitted.
 
 ---
 
+## Copilot Billing Protection
+
+All Copilot API calls MUST have the last message with role="system" in the messages
+array. This is enforced centrally in LLMClient.chat() (llm.py). Without this,
+requests consume premium quota ($0.04+ each). DO NOT remove the trailing system
+message logic from llm.py, copilot_proxy.py, or loop_copilot.py.
+
+---
+
 ## Application
 
 Every decision is verified: "Does this comply with the Constitution?
