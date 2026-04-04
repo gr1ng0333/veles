@@ -378,6 +378,16 @@ _consciousness = BackgroundConsciousness(
     event_queue=get_event_q(),
     owner_chat_id_fn=_get_owner_chat_id,
 )
+# 6.4) Digest scheduler daemon
+from ouroboros.digest_scheduler import DigestScheduler
+_digest_scheduler = DigestScheduler(
+    repo_dir=REPO_DIR,
+    drive_root=DRIVE_ROOT,
+    owner_chat_id_fn=_get_owner_chat_id,
+    send_fn=send_with_budget,
+)
+_digest_scheduler.start()
+log.info("DigestScheduler daemon started")
 def _apply_background_runtime_policy() -> None:
     st = load_state()
     if st.get("bg_consciousness_enabled"):

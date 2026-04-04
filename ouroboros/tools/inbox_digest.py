@@ -232,7 +232,7 @@ def _inbox_digest(
 ) -> str:
     """Fetch all new items from all monitoring sources and generate a unified digest."""
     limit_per_source = max(1, min(limit_per_source, 100))
-    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit"}
+    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit", "arxiv"}
 
     # --- Collect items from inbox ---
     all_items: List[Dict[str, Any]] = []
@@ -287,6 +287,31 @@ def _inbox_digest(
         except Exception as exc:
             log.warning("inbox_digest: reddit collect failed: %s", exc)
             source_summary["reddit"] = 0
+
+    if "arxiv" in enabled:
+        try:
+            from ouroboros.tools.arxiv_reader import _arxiv_watchlist_check
+            raw = _arxiv_watchlist_check(ctx, limit=limit_per_source)
+            data = json.loads(raw)
+            papers = data.get("new_papers", [])
+            items = []
+            for p in papers:
+                items.append({
+                    "source_type": "arxiv",
+                    "source_name": p.get("matched_label", (p.get("categories") or ["arxiv"])[0]),
+                    "id": p.get("id", ""),
+                    "date": p.get("published", ""),
+                    "title": p.get("title", ""),
+                    "text": (p.get("summary", "") or "")[:300],
+                    "url": p.get("pdf_url") or p.get("abs_url") or "",
+                    "authors": p.get("authors", []),
+                    "links": [p.get("abs_url", ""), p.get("pdf_url", "")] if p.get("abs_url") else [],
+                })
+            all_items.extend(items)
+            source_summary["arxiv"] = len(items)
+        except Exception as exc:
+            log.warning("inbox_digest: arxiv collect failed: %s", exc)
+            source_summary["arxiv"] = 0
 
     # Apply time filter
     if since_hours > 0:
@@ -419,7 +444,7 @@ _SCHEMA = {
         "content THEMATICALLY across all sources — one coherent brief instead of N separate summaries.\n\n"
         "Parameters:\n"
         "- limit_per_source: max items per source (1–100, default 20)\n"
-        "- sources: which sources to include ('telegram', 'rss', 'web', 'hn', 'reddit') — default all\n"
+        "- sources: which sources to include ('telegram', 'rss', 'web', 'hn', 'reddit', 'arxiv') — default all\n"
         "- notify_owner: if True, also sends the digest to owner via Telegram message\n"
         "- since_hours: only include items from last N hours (0 = no filter)\n"
         "- model: LLM model for summarization (default: codex/gpt-4.1-mini)"
@@ -434,7 +459,7 @@ _SCHEMA = {
             },
             "sources": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit"]},
+                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit", "arxiv"]},
                 "description": "Source types to include (default: all). E.g. ['telegram', 'hn', 'reddit']",
             },
             "notify_owner": {
@@ -457,6 +482,10 @@ _SCHEMA = {
     },
 }
 
+
+
+# Public alias for digest_run_now and DigestScheduler
+_inbox_digest_impl = _inbox_digest
 
 def get_tools() -> List[ToolEntry]:
     return [
