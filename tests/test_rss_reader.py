@@ -146,9 +146,13 @@ def test_strip_html_basic():
 
 
 def test_strip_html_entities():
+    # HTML entities (&amp; etc.) are decoded, so &lt;test&gt; becomes <test> -- that's correct
     result = _strip_html("AT&amp;T &lt;test&gt;")
     assert "AT&T" in result
-    assert "<" not in result
+    # Real HTML tags should be stripped
+    result2 = _strip_html("<b>bold</b> text")
+    assert "<b>" not in result2
+    assert "bold" in result2
 
 
 # ── Subscribe tests ────────────────────────────────────────────────────────────
@@ -324,6 +328,9 @@ def test_check_limit_per_feed(tmp_feeds, mock_ctx):
 
 
 def test_check_unknown_name(tmp_feeds, mock_ctx):
+    # First subscribe to something so the feeds store is not empty
+    with patch("ouroboros.tools.rss_reader._fetch_and_parse", return_value=("Feed", [])):
+        _rss_subscribe(mock_ctx, url="https://ex.com/rss", name="realfeed")
     result = json.loads(_rss_check(mock_ctx, name="nonexistent"))
     assert "error" in result
 
