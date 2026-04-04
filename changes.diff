@@ -1,0 +1,82 @@
+diff --git a/README.md b/README.md
+index dc8ea8e..db3c08f 100644
+--- a/README.md
++++ b/README.md
+@@ -1,18 +1,20 @@
+ # Veles
+ 
+ [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
+-[![Version](https://img.shields.io/badge/version-7.1.49-green)](https://github.com/gr1ng0333/veles/releases)
++[![Version](https://img.shields.io/badge/version-7.1.51-green)](https://github.com/gr1ng0333/veles/releases)
+ [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
+ 
+ Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
+ 
+ Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
+ 
+-**Версия:** 7.1.49 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
++**Версия:** 7.1.51 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+ 
+ ---
+ 
+ ## Release notes
++- 7.1.51 — copilot-telegram-bot: streaming SSE responses (chat_stream generator, real-time message editing, STREAM=false fallback); PROJECT_BIBLE updated
++- 7.1.50 — evolution_review: one-call multi-model code review for evolution cycles (uses get_evolution_reviewer_models automatically); reflection fallback: qwen→copilot/haiku
+ - 7.1.49 — veles_channel: own voice tools (veles_say/veles_channel_history/veles_channel_stats) for @veles_agi
+ - 7.1.48 — migrate aux tools to Codex/Copilot: research_report, web_monitor, search, SYSTEM.md reviewer guidance
+ - 7.1.47 — remote_network_diag: 7 network diagnostic tools (ping/traceroute/port_check/dns/vpn/iptables/netstat); model_modes: get_evolution_reviewer_models(); inbox: YouTube as 8th source
+@@ -94,6 +96,10 @@
+ - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
+ 
+ ## Changelog
++### v7.1.51 (2026-04-04)
++- copilot-telegram-bot: streaming SSE responses (chat_stream generator, real-time message editing, STREAM=false fallback); PROJECT_BIBLE updated
++### v7.1.50 (2026-04-04)
++- evolution_review: one-call multi-model code review for evolution cycles (uses get_evolution_reviewer_models automatically); reflection fallback: qwen→copilot/haiku
+ ### v7.1.49 (2026-04-04)
+ - veles_channel: 3 first-person tools (veles_say/veles_channel_history/veles_channel_stats) for @veles_agi; post deduplication via SHA; local post log at memory/channel_posts.jsonl
+ ### v7.1.48 (2026-04-04)
+diff --git a/VERSION b/VERSION
+index 36c444d..e47e77e 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-7.1.49
++7.1.51
+diff --git a/ouroboros/reflection.py b/ouroboros/reflection.py
+index b7e5854..dddf0e4 100644
+--- a/ouroboros/reflection.py
++++ b/ouroboros/reflection.py
+@@ -36,7 +36,7 @@ REFLECTIONS_FILENAME = "task_reflections.jsonl"
+ # Fallback: free OpenRouter model that doesn't require Codex auth.
+ _REFLECTION_MODEL_FALLBACK_CHAIN = [
+     "codex/gpt-5.4-mini",
+-    "qwen/qwen3-coder:free",
++    "copilot/claude-haiku-4.5",
+ ]
+ 
+ _REFLECTION_PROMPT = """\
+diff --git a/pyproject.toml b/pyproject.toml
+index fad7755..60b1f57 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,6 +1,6 @@
+ [project]
+ name = "ouroboros"
+-version = "7.1.49"
++version = "7.1.51"
+ description = "Self-creating agent"
+ requires-python = ">=3.10"
+ 
+diff --git a/tests/test_smoke.py b/tests/test_smoke.py
+index 1cd9a9d..2d35638 100644
+--- a/tests/test_smoke.py
++++ b/tests/test_smoke.py
+@@ -173,6 +173,7 @@ EXPECTED_TOOLS = [
+     "extract_patterns",
+     # Task digest
+     "task_digest",
++    "evolution_review",
+     # Version sync
+     "version_sync",
+     # Telegram
