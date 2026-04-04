@@ -101,10 +101,9 @@ def maybe_inject_copilot_wrap_up(
             return False
         remaining = max_rounds - round_idx
         warn = (
-            f"⚠️ [WRAP-UP] Осталось {remaining} раундов до принудительного завершения "
-            f"(лимит {max_rounds}). "
-            "Прямо сейчас: сохрани scratchpad (update_scratchpad), допиши что важно, "
-            "сформируй финальный ответ. Следующий раунд может быть последним."
+            f"⚠️ [WRAP-UP] {remaining} round(s) left until hard limit ({max_rounds}). "
+            "Finish up NOW: call update_scratchpad, commit any pending changes, "
+            "and produce a final response. The next round may be the last."
         )
         messages.append({"role": "system", "content": warn})
         llm_trace["assistant_notes"].append(f"wrap_up_at_round_{round_idx}")
@@ -119,12 +118,12 @@ def maybe_inject_copilot_wrap_up(
         return False
 
     warn = (
-        f"⚠️ [COPILOT SESSION BOUNDARY] Через {rounds_until_boundary} раунда(ов) произойдёт "
-        f"session reset (шаг {session_round}/{COPILOT_SESSION_ROUND_LIMIT}). "
-        "Контекст будет суммаризован и задача продолжится в новой сессии. "
-        "Доведи текущий шаг до стабильной точки: сохрани scratchpad, "
-        "зафиксируй промежуточные результаты. "
-        "Незавершённые tool calls или несохранённые данные будут потеряны."
+        f"⚠️ [COPILOT SESSION BOUNDARY] Session reset in {rounds_until_boundary} round(s) "
+        f"(step {session_round}/{COPILOT_SESSION_ROUND_LIMIT}). "
+        "Context will be summarized and the task will CONTINUE in a new session — "
+        "do NOT treat this as task completion. "
+        "Before the boundary: call update_scratchpad with current progress, "
+        "commit any pending changes so they survive the session reset."
     )
     messages.append({"role": "system", "content": warn})
     llm_trace["assistant_notes"].append(f"copilot_session_boundary_at_round_{round_idx}")
