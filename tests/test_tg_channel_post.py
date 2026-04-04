@@ -40,7 +40,7 @@ from ouroboros.tools.registry import ToolContext
 
 
 def _ctx() -> ToolContext:
-    return ToolContext(repo_dir="/opt/veles", drive_root="/opt/veles-data", budget_remaining=100.0)
+    return ToolContext(repo_dir="/opt/veles", drive_root="/opt/veles-data")
 
 
 # ── _normalize_chat_id ────────────────────────────────────────────────────────

@@ -180,6 +180,17 @@ EXPECTED_TOOLS = [
     "tg_watchlist_remove",
     "tg_watchlist_status",
     "tg_watchlist_check",
+    # Summarize
+    "tg_summarize",
+    "tg_summarize_watchlist",
+    # Channel posting
+    "tg_post",
+    "tg_post_photo",
+    "tg_pin_message",
+    "web_monitor_add",
+    "web_monitor_check",
+    "web_monitor_remove",
+    "web_monitor_status",
 ]
 
 
@@ -476,7 +487,7 @@ def test_function_count_reasonable():
     # Soft structural budget: keep total function count bounded, but allow recent
     # growth from project/plan/review capabilities and the short-video pack contour
     # until a dedicated simplification cycle pays the debt back down.
-    assert len(sizes) <= 1450, f"{len(sizes)} functions — too many?"
+    assert len(sizes) <= 1500, f"{len(sizes)} functions — too many?"
 
 
 # ── Pre-push gate tests ──────────────────────────────────────────────

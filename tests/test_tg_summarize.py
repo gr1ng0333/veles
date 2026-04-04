@@ -158,7 +158,7 @@ class TestTgSummarizeWatchlist(unittest.TestCase):
         self.tools = {t.name: t for t in get_tools()}
 
     def test_empty_watchlist(self):
-        with patch("ouroboros.tools.tg_summarize._load_watchlist", return_value={}):
+        with patch("ouroboros.tools.tg_watchlist._load_watchlist", return_value={}):
             ctx = make_ctx()
             result = json.loads(self.tools["tg_summarize_watchlist"].handler(ctx))
         self.assertEqual(result["channels_processed"], 0)
@@ -166,7 +166,7 @@ class TestTgSummarizeWatchlist(unittest.TestCase):
 
     def test_watchlist_no_new_posts(self):
         watchlist = {"testchan": {"last_id": 200, "added_at": "2026-01-01", "last_checked": None}}
-        with patch("ouroboros.tools.tg_summarize._load_watchlist", return_value=watchlist), \
+        with patch("ouroboros.tools.tg_watchlist._load_watchlist", return_value=watchlist), \
              patch("ouroboros.tools.tg_channel_read._fetch_channel_posts",
                    return_value={"channel": "testchan", "posts": [], "posts_count": 0}):
             ctx = make_ctx()
@@ -178,7 +178,7 @@ class TestTgSummarizeWatchlist(unittest.TestCase):
         watchlist = {"testchan": {"last_id": 0, "added_at": "2026-01-01", "last_checked": None}}
         mock_usage = {"cost": 0.001, "prompt_tokens": 100, "completion_tokens": 50}
 
-        with patch("ouroboros.tools.tg_summarize._load_watchlist", return_value=watchlist), \
+        with patch("ouroboros.tools.tg_watchlist._load_watchlist", return_value=watchlist), \
              patch("ouroboros.tools.tg_channel_read._fetch_channel_posts",
                    return_value={"channel": "testchan", "posts": FAKE_POSTS, "posts_count": 3}), \
              patch("ouroboros.tools.tg_summarize._call_llm_with_fallback",
@@ -196,7 +196,7 @@ class TestTgSummarizeWatchlist(unittest.TestCase):
         watchlist = {
             "chan1": {"last_id": 0, "added_at": "2026-01-01", "last_checked": None},
         }
-        with patch("ouroboros.tools.tg_summarize._load_watchlist", return_value=watchlist), \
+        with patch("ouroboros.tools.tg_watchlist._load_watchlist", return_value=watchlist), \
              patch("ouroboros.tools.tg_channel_read._fetch_channel_posts",
                    return_value={"channel": "chan1", "posts": FAKE_POSTS, "posts_count": 3}), \
              patch("ouroboros.tools.tg_summarize._call_llm_with_fallback",
@@ -209,7 +209,7 @@ class TestTgSummarizeWatchlist(unittest.TestCase):
 
     def test_watchlist_fetch_error(self):
         watchlist = {"chan1": {"last_id": 0, "added_at": "2026-01-01", "last_checked": None}}
-        with patch("ouroboros.tools.tg_summarize._load_watchlist", return_value=watchlist), \
+        with patch("ouroboros.tools.tg_watchlist._load_watchlist", return_value=watchlist), \
              patch("ouroboros.tools.tg_channel_read._fetch_channel_posts",
                    return_value={"channel": "chan1", "error": "channel not found", "posts": []}):
             ctx = make_ctx()

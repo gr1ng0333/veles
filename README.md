@@ -1,18 +1,21 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.1.35-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.1.38-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.1.35 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.1.38 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Release notes
+- 7.1.38 — tg_channel_post: post/photo/pin to Telegram channels via Bot API
+- 7.1.37 — web_monitor: URL change monitoring with LLM diff summaries
+- 7.1.36 — tg_summarize: LLM-powered Telegram channel summarizer — fetch posts + generate structured summary (topics, ideas, links); tg_summarize_watchlist for batch digest of all subscribed channels
 - 7.1.35 — tg_watchlist: persistent channel subscription tracker with watermarks
 - 7.1.34 — tg_channel_read + tg_digest: Telegram channel reader and multi-channel digest
 - 7.1.33 — Remove Copilot Round Policy from SYSTEM.md
@@ -81,6 +84,12 @@
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
 ## Changelog
+
+### v7.1.37 (2026-04-04)
+- web_monitor: URL change monitoring with LLM diff summaries (web_monitor_add/check/status/remove)
+
+### v7.1.36 (2026-04-04)
+- tg_summarize: LLM-powered Telegram channel summarizer (tg_summarize/tg_summarize_watchlist)
 
 ### v7.1.35 (2026-04-04)
 - tg_watchlist: persistent channel subscription tracker with watermarks (tg_watchlist_add/remove/status/check)
@@ -166,9 +175,6 @@
 ### Полевые заметки
 На живом прогоне этот контур уже хорошо справляется с **docs / pricing / official-source lookup**.
 Слабее всего пока ведут себя **fresh timeline** и **comparison**, если SERP переполнен вторичными обзорами и не отдаёт первичку наверх.
-
-## Changelog
-
 
 ### v6.84.7
 - Added isolated `ouroboros/fitness_consciousness.py`: separate fitness daemon with its own schedule (9:00 / 13:00 / 20:00 UTC+3), quiet-check retries, isolated fitness logs, scoped drive I/O, and question-aware `fitness_awaiting_reply` flagging.
@@ -1035,9 +1041,6 @@ python colab_launcher.py
 | `main` | Стабильный снимок. |
 
 ---
-
-## Changelog
-
 
 ### 6.83.1
 - Fix: restore missing return statement in get_reflection_model() — function was returning None, breaking all execution reflections and pattern register updates

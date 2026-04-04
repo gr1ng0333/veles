@@ -385,6 +385,21 @@ def append_reflection(drive_root: pathlib.Path, entry: Dict[str, Any]) -> None:
     except Exception:
         log.debug("Pattern register update failed (non-critical)", exc_info=True)
 
+    # Auto-write actionable insight to KB topic (closes reflection → KB feedback loop).
+    try:
+        from ouroboros.reflection_kb_writer import maybe_write_kb_insight
+        written_topic = maybe_write_kb_insight(
+            drive_root=drive_root,
+            task_id=entry.get("task_id", ""),
+            key_markers=entry.get("key_markers", []),
+            reflection_text=entry.get("reflection", ""),
+            goal=entry.get("goal", ""),
+        )
+        if written_topic:
+            log.info("KB insight auto-written to topic '%s'", written_topic)
+    except Exception:
+        log.debug("KB insight write failed (non-critical)", exc_info=True)
+
 
 # ------------------------------------------------------------------
 # Public API — single entry point for agent pipeline
