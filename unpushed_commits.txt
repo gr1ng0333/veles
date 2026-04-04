@@ -1,0 +1,1 @@
+3e6ae53 feat: add web_monitor — URL change monitoring with LLM diff summaries

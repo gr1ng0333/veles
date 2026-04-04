@@ -1,0 +1,8 @@
+M README.md
+ M VERSION
+ M ouroboros/reflection.py
+ M ouroboros/reflection_kb_writer.py
+ M pyproject.toml
+ M tests/test_smoke.py
+ M tests/test_tg_summarize.py
+?? tests/test_tg_channel.py
