@@ -1,0 +1,300 @@
+diff --git a/ouroboros/tools/inbox.py b/ouroboros/tools/inbox.py
+index 6df6564..025550e 100644
+--- a/ouroboros/tools/inbox.py
++++ b/ouroboros/tools/inbox.py
+@@ -262,6 +262,33 @@ def _collect_github(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
+     except Exception as exc:
+         log.warning("inbox: github collect failed: %s", exc)
+         return []
++
++# ---------------------------------------------------------------------------
++# Source collector: YouTube
++# ---------------------------------------------------------------------------
++
++def _collect_youtube(ctx: ToolContext, limit: int) -> List[Dict[str, Any]]:
++    """Collect new videos from yt_watchlist."""
++    try:
++        from ouroboros.tools.yt_reader import _yt_check_for_inbox  # noqa: PLC0415
++        videos = _yt_check_for_inbox(ctx, limit=limit)
++        items = []
++        for v in videos:
++            items.append({
++                "source_type": "youtube",
++                "source_name": v.get("channel_label", v.get("channel_id", "")),
++                "id": v.get("video_id", ""),
++                "date": v.get("published", ""),
++                "title": v.get("title", ""),
++                "text": v.get("summary", "") or v.get("title", ""),
++                "url": v.get("url", f"https://www.youtube.com/watch?v={v.get('video_id', '')}"),
++                "views": v.get("views", 0),
++                "duration": v.get("duration", ""),
++            })
++        return items
++    except Exception as exc:
++        log.warning("inbox: youtube collect failed: %s", exc)
++        return []
+ # ---------------------------------------------------------------------------
+ # Tool: inbox_check
+ # ---------------------------------------------------------------------------
+@@ -279,7 +306,7 @@ def _inbox_check(
+                  (default: all enabled sources)
+     """
+     limit_per_source = max(1, min(limit_per_source, 100))
+-    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit", "arxiv", "github"}
++    enabled = set(sources) if sources else {"telegram", "rss", "web", "hn", "reddit", "arxiv", "github", "youtube"}
+ 
+     all_items: List[Dict[str, Any]] = []
+     source_summary: Dict[str, Any] = {}
+@@ -318,6 +345,11 @@ def _inbox_check(
+         all_items.extend(github_items)
+         source_summary["github"] = {"new_items": len(github_items)}
+ 
++    if "youtube" in enabled:
++        yt_items = _collect_youtube(ctx, limit_per_source)
++        all_items.extend(yt_items)
++        source_summary["youtube"] = {"new_items": len(yt_items)}
++
+ 
+     all_items.sort(key=_sort_key)
+ 
+@@ -421,6 +453,18 @@ def _inbox_status(ctx: ToolContext) -> str:
+     except Exception as exc:
+         summary["github"] = {"error": str(exc)}
+ 
++
++    # YouTube watchlist
++    try:
++        from ouroboros.tools.yt_reader import _load_watchlist as _yt_load_watchlist  # noqa: PLC0415
++        wl = _yt_load_watchlist()
++        summary["youtube"] = {
++            "subscriptions": len(wl),
++            "channels": [entry.get("label", cid) for cid, entry in wl.items()],
++        }
++    except Exception as exc:
++        summary["youtube"] = {"error": str(exc)}
++
+     total = sum(
+         v.get("subscriptions", 0) for v in summary.values()
+         if isinstance(v, dict) and "error" not in v
+@@ -441,7 +485,7 @@ _CHECK_SCHEMA = {
+     "description": (
+         "Fetch all new items from all monitoring sources since last check: "
+         "Telegram channels, RSS/Atom feeds, monitored web URLs, HN keywords, "
+-        "Reddit subreddits, and arXiv paper watchlist. "
++        "Reddit subreddits, arXiv paper watchlist, and YouTube channels. "
+         "Returns a unified sorted feed.\n\n"
+         "Each item has: source_type ('telegram'|'rss'|'web'|'hn'|'reddit'|'arxiv'), source_name, "
+         "date, title, text, url, links.\n\n"
+@@ -459,8 +503,8 @@ _CHECK_SCHEMA = {
+             },
+             "sources": {
+                 "type": "array",
+-                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit", "arxiv", "github"]},
+-                "description": "Source types to check (default: all). E.g. ['telegram', 'rss', 'hn']",
++                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit", "arxiv", "github", "youtube"]},
++                "description": "Source types to check (default: all). E.g. ['telegram', 'rss', 'hn', 'youtube']",
+             },
+         },
+         "required": [],
+diff --git a/ouroboros/tools/yt_reader.py b/ouroboros/tools/yt_reader.py
+index d92c708..ff3beba 100644
+--- a/ouroboros/tools/yt_reader.py
++++ b/ouroboros/tools/yt_reader.py
+@@ -390,92 +390,128 @@ def _yt_check_for_inbox(ctx: ToolContext, limit: int = 10) -> List[Dict[str, Any
+ # ── Tool registry ──────────────────────────────────────────────────────────────
+ 
+ 
++
++# ── Schemas ────────────────────────────────────────────────────────────────────
++
++_SUBSCRIBE_SCHEMA: Dict[str, Any] = {
++    "name": "yt_subscribe",
++    "description": (
++        "Subscribe to a YouTube channel for new video tracking. "
++        "Accepts: channel_id (UCxxx), @handle, or channel URL. "
++        "Seeds existing videos as seen — future yt_check calls return only NEW videos."
++    ),
++    "parameters": {
++        "type": "object",
++        "properties": {
++            "channel": {
++                "type": "string",
++                "description": "Channel ID (UCxxx), @handle, or full YouTube channel URL.",
++            },
++            "label": {
++                "type": "string",
++                "description": "Optional human-readable label (defaults to channel title).",
++            },
++        },
++        "required": ["channel"],
++    },
++}
++
++_UNSUBSCRIBE_SCHEMA: Dict[str, Any] = {
++    "name": "yt_unsubscribe",
++    "description": "Unsubscribe from a YouTube channel.",
++    "parameters": {
++        "type": "object",
++        "properties": {
++            "channel_or_label": {
++                "type": "string",
++                "description": "Channel ID or label to unsubscribe.",
++            },
++        },
++        "required": ["channel_or_label"],
++    },
++}
++
++_STATUS_SCHEMA: Dict[str, Any] = {
++    "name": "yt_status",
++    "description": "List subscribed YouTube channels with last-check timestamps and video counts.",
++    "parameters": {"type": "object", "properties": {}},
++}
++
++_CHECK_SCHEMA: Dict[str, Any] = {
++    "name": "yt_check",
++    "description": (
++        "Fetch new videos from all subscribed YouTube channels since last check. "
++        "Updates watermarks so each video is returned only once. "
++        "Returns JSON list of new videos with title, URL, published date."
++    ),
++    "parameters": {
++        "type": "object",
++        "properties": {
++            "limit": {
++                "type": "integer",
++                "description": "Max new videos per channel to return (default 5).",
++            },
++        },
++    },
++}
++
++_LATEST_SCHEMA: Dict[str, Any] = {
++    "name": "yt_latest",
++    "description": (
++        "Get the latest N videos from a YouTube channel WITHOUT subscribing. "
++        "Good for one-off checks. Accepts channel_id, @handle, or URL."
++    ),
++    "parameters": {
++        "type": "object",
++        "properties": {
++            "channel": {
++                "type": "string",
++                "description": "Channel ID (UCxxx), @handle, or full YouTube channel URL.",
++            },
++            "limit": {
++                "type": "integer",
++                "description": "Number of latest videos to return (default 10, max 15).",
++            },
++        },
++        "required": ["channel"],
++    },
++}
++
++
++# ── Tool registry ──────────────────────────────────────────────────────────────
++
+ def get_tools() -> List[ToolEntry]:
+     return [
+         ToolEntry(
+             name="yt_subscribe",
+-            description=(
+-                "Subscribe to a YouTube channel for new video tracking. "
+-                "Accepts: channel_id (UCxxx), @handle, channel URL. "
+-                "Seeds existing videos as seen — future yt_check calls return only NEW videos."
+-            ),
+-            parameters={
+-                "type": "object",
+-                "properties": {
+-                    "channel": {
+-                        "type": "string",
+-                        "description": "Channel ID (UCxxx), @handle, or full YouTube channel URL.",
+-                    },
+-                    "label": {
+-                        "type": "string",
+-                        "description": "Optional human-readable label (defaults to channel title).",
+-                    },
+-                },
+-                "required": ["channel"],
+-            },
+-            execute=lambda ctx, **kw: _yt_subscribe(ctx, **kw),
++            schema=_SUBSCRIBE_SCHEMA,
++            handler=lambda ctx, **kw: _yt_subscribe(ctx, **kw),
++            timeout_sec=30,
+         ),
+         ToolEntry(
+             name="yt_unsubscribe",
+-            description="Unsubscribe from a YouTube channel.",
+-            parameters={
+-                "type": "object",
+-                "properties": {
+-                    "channel_or_label": {
+-                        "type": "string",
+-                        "description": "Channel ID or label to unsubscribe.",
+-                    },
+-                },
+-                "required": ["channel_or_label"],
+-            },
+-            execute=lambda ctx, **kw: _yt_unsubscribe(ctx, **kw),
++            schema=_UNSUBSCRIBE_SCHEMA,
++            handler=lambda ctx, **kw: _yt_unsubscribe(ctx, **kw),
++            timeout_sec=10,
+         ),
+         ToolEntry(
+             name="yt_status",
+-            description="List subscribed YouTube channels with last-check timestamps and video counts.",
+-            parameters={"type": "object", "properties": {}},
+-            execute=lambda ctx, **kw: _yt_status(ctx, **kw),
++            schema=_STATUS_SCHEMA,
++            handler=lambda ctx, **kw: _yt_status(ctx, **kw),
++            timeout_sec=10,
+         ),
+         ToolEntry(
+             name="yt_check",
+-            description=(
+-                "Fetch new videos from all subscribed YouTube channels since last check. "
+-                "Updates watermarks so each video is returned only once. "
+-                "Returns list of new videos with title, URL, published date."
+-            ),
+-            parameters={
+-                "type": "object",
+-                "properties": {
+-                    "limit": {
+-                        "type": "integer",
+-                        "description": "Max new videos per channel to return (default 5).",
+-                    },
+-                },
+-            },
+-            execute=lambda ctx, **kw: json.dumps(
++            schema=_CHECK_SCHEMA,
++            handler=lambda ctx, **kw: json.dumps(
+                 _yt_watchlist_check(ctx, **kw), ensure_ascii=False, indent=2
+             ),
++            timeout_sec=60,
+         ),
+         ToolEntry(
+             name="yt_latest",
+-            description=(
+-                "Get the latest N videos from a YouTube channel WITHOUT subscribing. "
+-                "Good for one-off checks. Accepts channel_id, @handle, or URL."
+-            ),
+-            parameters={
+-                "type": "object",
+-                "properties": {
+-                    "channel": {
+-                        "type": "string",
+-                        "description": "Channel ID (UCxxx), @handle, or full YouTube channel URL.",
+-                    },
+-                    "limit": {
+-                        "type": "integer",
+-                        "description": "Number of latest videos to return (default 10, max 15).",
+-                    },
+-                },
+-                "required": ["channel"],
+-            },
+-            execute=lambda ctx, **kw: _yt_latest(ctx, **kw),
++            schema=_LATEST_SCHEMA,
++            handler=lambda ctx, **kw: _yt_latest(ctx, **kw),
++            timeout_sec=30,
+         ),
+     ]
