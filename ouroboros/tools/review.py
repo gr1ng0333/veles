@@ -86,11 +86,16 @@ def _handle_multi_model_review(ctx: ToolContext, content: str = "", prompt: str 
 def _query_model(llm_client, model: str, messages: list) -> dict:
     """Query a single model via LLMClient.chat(). Returns structured review_result dict."""
     try:
+        # Use higher reasoning effort for Codex (pays off for review quality)
+        # Copilot ignores reasoning_effort=medium and uses "high" internally
+        from ouroboros.llm import model_transport as _mt
+        _effort = "high" if _mt(model) in ("codex", "codex-consciousness") else "medium"
         msg, usage = llm_client.chat(
             messages=messages,
             model=model,
-            tools=None,
-            reasoning_effort="medium",
+            tools=None,  # review never uses tools
+            tool_choice=None,  # explicit: avoid Copilot 400 on tool_choice without tools
+            reasoning_effort=_effort,
             max_tokens=4096,
         )
         text = msg.get("content") or ""
