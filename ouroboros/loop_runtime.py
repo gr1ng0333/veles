@@ -1,9 +1,4 @@
-"""Runtime implementation for run_llm_loop.
-
-Extracted from ouroboros.loop to keep that module compact and maintainable.
-Copilot session/wrap-up logic lives in loop_copilot.py.
-Fallback/error-detection logic lives in loop_fallback.py.
-"""
+"""Runtime implementation for run_llm_loop (helpers in loop_copilot.py, loop_fallback.py)."""
 
 from __future__ import annotations
 
@@ -32,6 +27,9 @@ from ouroboros.model_modes import execution_style_for_active_mode, get_runtime_d
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.antistagnation import (
+    inject_write_anchor_deliverable,
+    is_write_tool_call,
+    maybe_inject_write_anchor,
     build_forced_finalize_reason,
     detect_context_overflow,
     inject_stagnation_self_check,
@@ -60,16 +58,13 @@ def _consume_force_user_initiator(state: Dict[str, Any]) -> bool:
 
 EVOLUTION_COPILOT_REQUEST_DELAY_SEC = float(os.environ.get("EVOLUTION_COPILOT_REQUEST_DELAY_SEC", "4.0"))
 
-
 def _extract_last_assistant_content(messages: List[Dict[str, Any]]) -> Optional[str]:
-    """Find the last non-empty assistant message content from message history."""
     for msg in reversed(messages):
         if msg.get("role") == "assistant":
             content = msg.get("content", "")
             if content and content.strip():
                 return content.strip()
     return None
-
 
 def _maybe_handle_hard_round_limit(
     *,
@@ -126,7 +121,6 @@ def _maybe_handle_hard_round_limit(
         log.warning("Failed to get final response after round limit", exc_info=True)
         return finish_reason, accumulated_usage, llm_trace
 
-
 def _maybe_emit_round_warning(
     *,
     round_idx: int,
@@ -146,7 +140,6 @@ def _maybe_emit_round_warning(
     return True
 
 COPILOT_WRAP_UP_ROUNDS_BEFORE = 2  # inject wrap-up N rounds before session boundary
-
 
 def _maybe_force_finalize_by_round_cap(
     *,
@@ -194,7 +187,6 @@ def _maybe_force_finalize_by_round_cap(
     llm_trace["assistant_notes"].append(reason[:320])
     return final_text, accumulated_usage, llm_trace
 
-
 def _apply_context_overrides_and_compaction(
     *,
     tools: ToolRegistry,
@@ -234,7 +226,6 @@ def _apply_context_overrides_and_compaction(
 
     return messages, active_model, active_effort
 
-
 def _update_progress_windows(
     *, recent_progress: List[bool], no_progress_rounds: int, tool_progress: bool
 ) -> Tuple[List[bool], int]:
@@ -244,7 +235,6 @@ def _update_progress_windows(
     if tool_progress:
         return recent_progress, 0
     return recent_progress, no_progress_rounds + 1
-
 
 def _maybe_force_finalize_by_stagnation(
     *,
@@ -302,12 +292,8 @@ def _maybe_force_finalize_by_stagnation(
     llm_trace["assistant_notes"].append(reason[:320])
     return (final_text, accumulated_usage, llm_trace), stagnation_check_injected
 
-
-
-
 def _should_finalize_by_round_cap(round_idx: int, recent_progress: List[bool], anti) -> bool:
     return should_force_round_finalize(round_idx, recent_progress, anti)
-
 
 def _handle_no_tool_call_finalize(content: Optional[str], llm_trace: Dict[str, Any], accumulated_usage: Dict[str, Any], recent_progress: List[bool]) -> Tuple[str, Dict[str, Any], Dict[str, Any], List[bool], int]:
     recent_progress.append(True)
@@ -315,7 +301,6 @@ def _handle_no_tool_call_finalize(content: Optional[str], llm_trace: Dict[str, A
         recent_progress = recent_progress[-64:]
     final = _handle_text_response(content, llm_trace, accumulated_usage)
     return final[0], final[1], final[2], recent_progress, 0
-
 
 def _run_one_shot_mode(
     *,
@@ -366,7 +351,6 @@ def _run_one_shot_mode(
     )
     return final_text, final_usage, final_trace
 
-
 def _get_evolution_round_limit(task_type: str, default_task_max_rounds: int) -> int:
     if task_type != "evolution":
         return default_task_max_rounds
@@ -385,13 +369,10 @@ def _get_evolution_round_limit(task_type: str, default_task_max_rounds: int) -> 
     except Exception:
         return 40
 
-
 def _get_prompt_token_guard_threshold(task_type: str) -> int:
-    """Return prompt token guard threshold: 120k for evolution/review, 40k otherwise."""
     if task_type in ("evolution", "review"):
         return 120_000
     return PROMPT_TOKEN_GUARD_THRESHOLD
-
 
 def _update_large_prompt_streak(
     task_type: str,
@@ -406,20 +387,17 @@ def _update_large_prompt_streak(
         return current_streak + 1
     return 0
 
-
 def _should_finalize_evolution_for_prompt_tokens(
     task_type: str,
     large_prompt_streak: int,
 ) -> bool:
     return task_type in ("evolution", "review") and large_prompt_streak >= 2
 
-
 def _append_assistant_with_tool_calls(messages: List[Dict[str, Any]], content: Optional[str], tool_calls: List[Dict[str, Any]], emit_progress: Callable[[str], None], llm_trace: Dict[str, Any]) -> None:
     messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
     if content and content.strip():
         emit_progress(content.strip())
         llm_trace["assistant_notes"].append(content.strip()[:320])
-
 
 def _init_antistagnation_state() -> Tuple[int, Any, int, int, List[bool], bool, bool]:
     try:
@@ -429,7 +407,6 @@ def _init_antistagnation_state() -> Tuple[int, Any, int, int, List[bool], bool, 
         log.warning("Failed to resolve active mode max_rounds, defaulting to 200", exc_info=True)
     anti = load_antistagnation_config()
     return max_rounds, anti, 0, 0, [], False, False
-
 
 def _extract_original_task(messages: List[Dict[str, Any]]) -> str:
     """Extract the original user task from the message history."""
@@ -443,8 +420,6 @@ def _extract_original_task(messages: List[Dict[str, Any]]) -> str:
                     if isinstance(block, dict) and block.get("text", "").strip():
                         return block["text"].strip()[:500]
     return "(unknown task)"
-
-
 
 def _finalize_due_to_reason(
     *,
@@ -482,9 +457,6 @@ def _finalize_due_to_reason(
     )
     llm_trace["assistant_notes"].append(reason[:320])
     return final_text, accumulated_usage, llm_trace
-
-
-
 
 def _prepare_round_or_finalize(
     *,
@@ -563,6 +535,18 @@ def _prepare_round_or_finalize(
         wrap_up_injected=state["copilot_wrap_up_injected"],
     )
 
+    if task_type == "evolution" and round_idx == 1:
+        inject_write_anchor_deliverable(messages, state.get("original_task_text", ""))
+
+    state["write_warn_injected"], state["write_critical_injected"] = maybe_inject_write_anchor(
+        messages,
+        round_idx=round_idx,
+        write_round_count=state.get("write_round_count", 0),
+        task_type=task_type,
+        write_warn_injected=state.get("write_warn_injected", False),
+        write_critical_injected=state.get("write_critical_injected", False),
+    )
+
     if _should_finalize_by_round_cap(round_idx, state["recent_progress"], state["anti"]):
         round_cap_finalize = _maybe_force_finalize_by_round_cap(
             round_idx=round_idx,
@@ -595,7 +579,6 @@ def _prepare_round_or_finalize(
         active_effort=state["active_effort"],
     )
     return None
-
 
 def _process_llm_response_or_continue(
     *,
@@ -708,6 +691,11 @@ def _process_llm_response_or_continue(
         emit_progress,
         transport=model_transport(state["active_model"]),
     )
+    for _tc in tool_calls:
+        _fn = _tc.get("function", {}).get("name", "")
+        if is_write_tool_call(_fn):
+            state["write_round_count"] = state.get("write_round_count", 0) + 1
+
     state["recent_progress"], state["no_progress_rounds"] = _update_progress_windows(
         recent_progress=state["recent_progress"],
         no_progress_rounds=state["no_progress_rounds"],
@@ -753,7 +741,6 @@ def _process_llm_response_or_continue(
         state["llm_trace"],
         task_type,
     )
-
 
 def _run_single_round(
     *,
@@ -849,7 +836,6 @@ def run_llm_loop_impl(
     drive_root: Optional[pathlib.Path] = None,
     persistent_executor: Optional[_StatefulToolExecutor] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Core LLM-with-tools loop runtime implementation."""
     active_model = llm.default_model()
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
@@ -894,6 +880,9 @@ def run_llm_loop_impl(
         "interaction_id": str(uuid.uuid4()),
         "force_user_initiator": False,
         "copilot_wrap_up_injected": False,
+        "write_round_count": 0,
+        "write_warn_injected": False,
+        "write_critical_injected": False,
         "session_resets_count": 0,
         "tool_schemas": tool_schemas,
     }
