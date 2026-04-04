@@ -1,0 +1,32 @@
+diff --git a/ouroboros/tools/inbox.py b/ouroboros/tools/inbox.py
+index d016e13..46033b3 100644
+--- a/ouroboros/tools/inbox.py
++++ b/ouroboros/tools/inbox.py
+@@ -345,14 +345,14 @@ _CHECK_SCHEMA = {
+     "name": "inbox_check",
+     "description": (
+         "Fetch all new items from all monitoring sources since last check: "
+-        "Telegram channels (tg_watchlist), RSS/Atom feeds (rss_reader), "
+-        "monitored web URLs (web_monitor), and Hacker News keywords (hn_watchlist). "
++        "Telegram channels, RSS/Atom feeds, monitored web URLs, HN keywords, "
++        "Reddit subreddits, and arXiv paper watchlist. "
+         "Returns a unified sorted feed.\n\n"
+-        "Each item has: source_type ('telegram'|'rss'|'web'|'hn'), source_name, "
++        "Each item has: source_type ('telegram'|'rss'|'web'|'hn'|'reddit'|'arxiv'), source_name, "
+         "date, title, text, url, links.\n\n"
+         "Parameters:\n"
+         "- limit_per_source: max new items per individual source (1–100, default 20)\n"
+-        "- sources: optional list of source types to check: 'telegram', 'rss', 'web'"
++        "- sources: optional list of source types: 'telegram', 'rss', 'web', 'hn', 'reddit', 'arxiv'"
+     ),
+     "parameters": {
+         "type": "object",
+@@ -364,7 +364,7 @@ _CHECK_SCHEMA = {
+             },
+             "sources": {
+                 "type": "array",
+-                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit"]},
++                "items": {"type": "string", "enum": ["telegram", "rss", "web", "hn", "reddit", "arxiv"]},
+                 "description": "Source types to check (default: all). E.g. ['telegram', 'rss', 'hn']",
+             },
+         },
