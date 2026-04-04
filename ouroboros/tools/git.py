@@ -91,7 +91,7 @@ def _acquire_copilot_write_lock(ctx: ToolContext, timeout_sec: int = 15) -> Opti
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / 'copilot-write.lock'
     deadline = time.time() + max(1, int(timeout_sec))
-    stale_sec = 6 * 3600
+    stale_sec = 30 * 60  # 30 min — dead task lock should not block for hours
     payload = (
         f"locked_at={utc_now_iso()}\n"
         f"task_type={getattr(ctx, 'current_task_type', '')}\n"

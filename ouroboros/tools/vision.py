@@ -22,7 +22,7 @@ from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_VLM_MODEL = "anthropic/claude-sonnet-4.6"
+_DEFAULT_VLM_MODEL = "codex/gpt-5.4-mini"  # Codex OAuth (free, vision-capable)
 
 
 def _get_vlm_model() -> str:
