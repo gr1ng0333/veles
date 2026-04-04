@@ -1,18 +1,21 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.1.49-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.1.52-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.1.49 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.1.52 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Release notes
+- 7.1.52 — project_bible: fix duplicate get_tools() and ToolEntry API; tools now registered correctly
+- 7.1.51 — copilot-telegram-bot: streaming SSE responses (chat_stream generator, real-time message editing, STREAM=false fallback); PROJECT_BIBLE updated
+- 7.1.50 — evolution_review: one-call multi-model code review for evolution cycles (uses get_evolution_reviewer_models automatically); reflection fallback: qwen→copilot/haiku
 - 7.1.49 — veles_channel: own voice tools (veles_say/veles_channel_history/veles_channel_stats) for @veles_agi
 - 7.1.48 — migrate aux tools to Codex/Copilot: research_report, web_monitor, search, SYSTEM.md reviewer guidance
 - 7.1.47 — remote_network_diag: 7 network diagnostic tools (ping/traceroute/port_check/dns/vpn/iptables/netstat); model_modes: get_evolution_reviewer_models(); inbox: YouTube as 8th source
@@ -94,6 +97,12 @@
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
 ## Changelog
+### v7.1.52 (2026-04-04)
+- project_bible: fix duplicate get_tools() definition and wrong ToolEntry API (schema/handler); tools now load correctly; smoke test updated
+### v7.1.51 (2026-04-04)
+- copilot-telegram-bot: streaming SSE responses (chat_stream generator, real-time message editing, STREAM=false fallback); PROJECT_BIBLE updated
+### v7.1.50 (2026-04-04)
+- evolution_review: one-call multi-model code review for evolution cycles (uses get_evolution_reviewer_models automatically); reflection fallback: qwen→copilot/haiku
 ### v7.1.49 (2026-04-04)
 - veles_channel: 3 first-person tools (veles_say/veles_channel_history/veles_channel_stats) for @veles_agi; post deduplication via SHA; local post log at memory/channel_posts.jsonl
 ### v7.1.48 (2026-04-04)

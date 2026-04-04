@@ -360,6 +360,92 @@ def _execute_project_bible_list(ctx: ToolContext) -> Dict[str, Any]:
     except Exception as e:
         return {"ok": False, "error": f"List error: {e}"}
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Schemas
+# ──────────────────────────────────────────────────────────────────────────────
+
+_ALIAS_PROP = {"alias": {"type": "string", "description": "Project alias (e.g. 'copilot-tgbot')"}}
+
+_READ_SCHEMA = {
+    "name": "project_bible_read",
+    "description": (
+        "Read the full PROJECT_BIBLE for an external project. "
+        "Returns goal, stack, constraints, current state, next steps. "
+        "Call at the start of every autonomous project evolution cycle."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": _ALIAS_PROP,
+        "required": ["alias"],
+    },
+}
+
+_INIT_SCHEMA = {
+    "name": "project_bible_init",
+    "description": (
+        "Create a new PROJECT_BIBLE for an external project. "
+        "Sets up the anchor document that enables autonomous evolution cycles. "
+        "Pass overwrite=true to replace an existing file."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "alias": {"type": "string", "description": "Short alias for the project (letters/digits/-/_)"},
+            "repo_url": {"type": "string", "description": "GitHub URL of the project"},
+            "goal": {"type": "string", "description": "One-sentence project goal"},
+            "stack": {"type": "string", "description": "Tech stack (e.g. 'Python, FastAPI, SQLite')"},
+            "touch": {"type": "string", "description": "Which files/modules to modify (markdown bullet list)"},
+            "no_touch": {"type": "string", "description": "Which files/modules to leave alone (markdown bullet list)"},
+            "good_commit": {"type": "string", "description": "Criteria for a good commit (markdown bullet list)"},
+            "overwrite": {"type": "boolean", "description": "If true, replace existing PROJECT_BIBLE"},
+        },
+        "required": ["alias", "repo_url", "goal", "stack"],
+    },
+}
+
+_UPDATE_SCHEMA = {
+    "name": "project_bible_update",
+    "description": (
+        "Update a named section in the PROJECT_BIBLE. "
+        "Use after each evolution cycle to record what was done and what's next. "
+        "mode='replace' (default) replaces section; mode='append' adds to it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "alias": {"type": "string", "description": "Project alias"},
+            "section": {"type": "string", "description": "Section heading to update (e.g. 'Current state', 'Next steps')"},
+            "content": {"type": "string", "description": "New section content (markdown)"},
+            "mode": {"type": "string", "enum": ["replace", "append"], "description": "replace (default) or append"},
+        },
+        "required": ["alias", "section", "content"],
+    },
+}
+
+_STATUS_SCHEMA = {
+    "name": "project_bible_status",
+    "description": (
+        "Get a compact status snapshot of an external project: "
+        "goal, current state, and next steps. "
+        "Faster than project_bible_read when you only need orientation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": _ALIAS_PROP,
+        "required": ["alias"],
+    },
+}
+
+_LIST_SCHEMA = {
+    "name": "project_bible_list",
+    "description": "List all known project bibles on disk. Shows alias, goal, and file size for each project.",
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Tool registry
@@ -368,138 +454,9 @@ def _execute_project_bible_list(ctx: ToolContext) -> Dict[str, Any]:
 
 def get_tools() -> List[ToolEntry]:
     return [
-        ToolEntry(
-            name="project_bible_read",
-            description=(
-                "Read the full PROJECT_BIBLE for an external project. "
-                "Returns goal, stack, constraints, current state, next steps. "
-                "Call at the start of every autonomous project evolution cycle."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "alias": {
-                        "type": "string",
-                        "description": "Project alias (e.g. 'copilot-tgbot')",
-                    },
-                },
-                "required": ["alias"],
-            },
-            execute=lambda ctx, alias: _execute_project_bible_read(ctx, alias),
-        ),
-        ToolEntry(
-            name="project_bible_init",
-            description=(
-                "Create a new PROJECT_BIBLE for an external project. "
-                "Sets up the anchor document that enables autonomous evolution cycles. "
-                "Pass overwrite=true to replace an existing file."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "alias": {
-                        "type": "string",
-                        "description": "Short alias for the project (letters/digits/-/_)",
-                    },
-                    "repo_url": {
-                        "type": "string",
-                        "description": "GitHub URL of the project (e.g. https://github.com/user/repo)",
-                    },
-                    "goal": {
-                        "type": "string",
-                        "description": "One-sentence project goal",
-                    },
-                    "stack": {
-                        "type": "string",
-                        "description": "Tech stack (e.g. 'Python, FastAPI, SQLite')",
-                    },
-                    "touch": {
-                        "type": "string",
-                        "description": "Which files/modules to modify (markdown bullet list)",
-                    },
-                    "no_touch": {
-                        "type": "string",
-                        "description": "Which files/modules to leave alone (markdown bullet list)",
-                    },
-                    "good_commit": {
-                        "type": "string",
-                        "description": "Criteria for a good commit (markdown bullet list)",
-                    },
-                    "overwrite": {
-                        "type": "boolean",
-                        "description": "If true, replace existing PROJECT_BIBLE",
-                    },
-                },
-                "required": ["alias", "repo_url", "goal", "stack"],
-            },
-            execute=lambda ctx, alias, repo_url, goal, stack, touch=None, no_touch=None, good_commit=None, overwrite=False: _execute_project_bible_init(
-                ctx, alias, repo_url, goal, stack, touch, no_touch, good_commit, overwrite
-            ),
-        ),
-        ToolEntry(
-            name="project_bible_update",
-            description=(
-                "Update a named section in the PROJECT_BIBLE. "
-                "Use after each evolution cycle to record what was done and what's next. "
-                "mode='replace' (default) replaces section; mode='append' adds to it."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "alias": {
-                        "type": "string",
-                        "description": "Project alias",
-                    },
-                    "section": {
-                        "type": "string",
-                        "description": "Section heading to update (e.g. 'Current state', 'Next steps')",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "New section content (markdown)",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["replace", "append"],
-                        "description": "replace (default) or append",
-                    },
-                },
-                "required": ["alias", "section", "content"],
-            },
-            execute=lambda ctx, alias, section, content, mode="replace": _execute_project_bible_update(
-                ctx, alias, section, content, mode
-            ),
-        ),
-        ToolEntry(
-            name="project_bible_status",
-            description=(
-                "Get a compact status snapshot of an external project: "
-                "goal, current state, and next steps. "
-                "Faster than project_bible_read when you only need orientation, not full file."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "alias": {
-                        "type": "string",
-                        "description": "Project alias",
-                    },
-                },
-                "required": ["alias"],
-            },
-            execute=lambda ctx, alias: _execute_project_bible_status(ctx, alias),
-        ),
-        ToolEntry(
-            name="project_bible_list",
-            description=(
-                "List all known project bibles on disk. "
-                "Shows alias, goal, and file size for each project."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-            execute=lambda ctx: _execute_project_bible_list(ctx),
-        ),
+        ToolEntry(name="project_bible_read", schema=_READ_SCHEMA, handler=lambda ctx, **kw: _execute_project_bible_read(ctx, **kw)),
+        ToolEntry(name="project_bible_init", schema=_INIT_SCHEMA, handler=lambda ctx, **kw: _execute_project_bible_init(ctx, **kw)),
+        ToolEntry(name="project_bible_update", schema=_UPDATE_SCHEMA, handler=lambda ctx, **kw: _execute_project_bible_update(ctx, **kw)),
+        ToolEntry(name="project_bible_status", schema=_STATUS_SCHEMA, handler=lambda ctx, **kw: _execute_project_bible_status(ctx, **kw)),
+        ToolEntry(name="project_bible_list", schema=_LIST_SCHEMA, handler=lambda ctx, **kw: _execute_project_bible_list(ctx)),
     ]

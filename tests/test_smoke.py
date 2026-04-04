@@ -173,6 +173,7 @@ EXPECTED_TOOLS = [
     "extract_patterns",
     # Task digest
     "task_digest",
+    "evolution_review",
     # Version sync
     "version_sync",
     # Telegram
@@ -248,6 +249,8 @@ EXPECTED_TOOLS = [
     "yt_subscribe", "yt_unsubscribe", "yt_status", "yt_check", "yt_latest",
     # Veles channel (own voice)
     "veles_say", "veles_channel_history", "veles_channel_stats",
+    # Project Bible (autonomous external project evolution)
+    "project_bible_read", "project_bible_init", "project_bible_update", "project_bible_status", "project_bible_list",
 ]
 
 
