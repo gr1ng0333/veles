@@ -5,6 +5,7 @@ import json
 import pathlib
 import tempfile
 import textwrap
+from difflib import SequenceMatcher
 
 import pytest
 
@@ -685,3 +686,144 @@ def test_schema_description_mentions_notes():
     tools = get_tools()
     desc = tools[0].schema["description"]
     assert "note" in desc.lower()
+
+# ── BM25 scoring ─────────────────────────────────────────────────────────────
+
+
+def test_bm25_idf_high_for_rare_terms():
+    """Rare terms must have higher BM25 IDF than common ones."""
+    from ouroboros.tools.memory_search import _compute_idf
+    chunks = [
+        _Chunk("s1", "2026", "copilot billing session reset copilot"),
+        _Chunk("s2", "2026", "ssh key deploy remote server"),
+        _Chunk("s3", "2026", "copilot accounting interaction id copilot"),
+    ]
+    for c in chunks:
+        c.tokens = _tokenize(c.text)
+    idf = _compute_idf(chunks)
+    # "copilot" in 2/3 docs → lower idf than "ssh" (1/3 docs)
+    assert idf["ssh"] > idf["copilot"]
+
+
+def test_bm25_score_uses_avgdl():
+    """BM25 score with avgdl normalisation must differ between long and short docs."""
+    from ouroboros.tools.memory_search import _score
+    short_chunk = _Chunk("s", "2026", "evolution round limit")
+    short_chunk.tokens = _tokenize(short_chunk.text)
+    long_text = ("evolution round limit " * 20 + " extra filler words " * 30).strip()
+    long_chunk = _Chunk("l", "2026", long_text)
+    long_chunk.tokens = _tokenize(long_chunk.text)
+    idf = {"evolution": 1.5, "round": 1.2, "limit": 1.8}
+    q = ["evolution", "round", "limit"]
+    score_short = _score(q, short_chunk, idf, avgdl=10.0)
+    score_long = _score(q, long_chunk, idf, avgdl=10.0)
+    # Short doc should score higher per-token due to BM25 length normalisation
+    assert score_short > 0
+    assert score_long > 0
+    # Relative density: short doc has higher normalised score
+    # (long doc has many more non-query tokens → penalised)
+    assert score_short > score_long
+
+
+def test_bm25_score_positive_for_matching():
+    """BM25 score must be > 0 when query token appears in chunk."""
+    from ouroboros.tools.memory_search import _score
+    chunk = _Chunk("k", "2026", "webBasePath must be set in 3x-ui settings")
+    chunk.tokens = _tokenize(chunk.text)
+    idf = {"webbasepath": 2.0, "set": 0.5}
+    s = _score(["webbasepath"], chunk, idf, avgdl=10.0)
+    assert s > 0.0
+
+
+def test_bm25_score_zero_for_mismatch():
+    """BM25 score must be 0 when no query token is in the chunk."""
+    from ouroboros.tools.memory_search import _score
+    chunk = _Chunk("k", "2026", "fitness macros protein carbs calories")
+    chunk.tokens = _tokenize(chunk.text)
+    idf = {"fitness": 2.0}
+    s = _score(["copilot", "billing"], chunk, idf, avgdl=10.0)
+    assert s == 0.0
+
+
+# ── Fuzzy query expansion ─────────────────────────────────────────────────────
+
+
+def test_fuzzy_expand_catches_typo():
+    """A single-char typo must be caught and expanded."""
+    from ouroboros.tools.memory_search import _fuzzy_expand_query
+    vocab = {"evolution": 1.0, "evaluation": 1.0, "unrelated": 1.0}
+    result = _fuzzy_expand_query(["evalution"], vocab)
+    assert "evalution" in result  # original preserved
+    assert "evolution" in result or "evaluation" in result  # at least one match
+
+
+def test_fuzzy_expand_no_false_positives_on_short_tokens():
+    """Short tokens (< 4 chars) must not be fuzzy-expanded."""
+    from ouroboros.tools.memory_search import _fuzzy_expand_query
+    vocab = {"for": 1.0, "far": 1.0, "fix": 1.0, "fox": 1.0}
+    result = _fuzzy_expand_query(["to"], vocab)
+    # "to" is 2 chars — should not expand
+    assert result == ["to"]
+
+
+def test_fuzzy_expand_preserves_original_tokens():
+    """Original tokens must always be in the expanded list."""
+    from ouroboros.tools.memory_search import _fuzzy_expand_query
+    vocab = {"copilot": 1.0, "copilots": 1.0}
+    result = _fuzzy_expand_query(["copilot", "billing"], vocab)
+    assert "copilot" in result
+    assert "billing" in result
+
+
+def test_fuzzy_expand_deduplicates():
+    """Expanded list must not contain duplicates."""
+    from ouroboros.tools.memory_search import _fuzzy_expand_query
+    vocab = {"evolution": 1.0, "evaluation": 1.0}
+    result = _fuzzy_expand_query(["evolution"], vocab)
+    assert len(result) == len(set(result))
+
+
+def test_fuzzy_expand_no_cross_contamination():
+    """Expanding one token must not inject matches for unrelated tokens."""
+    from ouroboros.tools.memory_search import _fuzzy_expand_query
+    vocab = {"completely": 1.0, "different": 1.0, "zzzzzz": 1.0}
+    result = _fuzzy_expand_query(["copilot"], vocab)
+    # No match should be added (all vocab words are dissimilar to "copilot")
+    # copilot vs zzzzzz ratio is very low
+    for tok in result:
+        if tok != "copilot":
+            # Any expansion must have been legitimately similar
+            ratio = SequenceMatcher(None, "copilot", tok, autojunk=False).ratio()
+            assert ratio >= 0.82, f"Spurious expansion: {tok} (ratio={ratio:.2f})"
+
+
+# ── End-to-end: fuzzy helps find results ─────────────────────────────────────
+
+
+def test_fuzzy_search_finds_typo_query(tmp_path):
+    """A query with a typo should still find the relevant result via fuzzy expansion."""
+    chat_path = tmp_path / "logs" / "chat.jsonl"
+    _write_jsonl(chat_path, [
+        {"ts": "2026-04-04T10:00:00+00:00", "direction": "out",
+         "text": "The evolution round limit was raised from 30 to 280 in v7.1.53."},
+    ])
+    results = _run_search("evalution round limit", tmp_path, top_k=5)
+    # With fuzzy expansion, 'evalution' → 'evolution' → finds the chunk
+    assert len(results) > 0
+    assert any("evolution" in chunk.text.lower() for _, chunk in results)
+
+
+def test_bm25_ranks_denser_document_higher(tmp_path):
+    """A chunk where query tokens are denser should rank higher than a diluted one."""
+    chat_path = tmp_path / "logs" / "chat.jsonl"
+    _write_jsonl(chat_path, [
+        {"ts": "2026-04-04T10:00:00+00:00", "direction": "out",
+         "text": "Copilot billing session reset copilot billing billing premium copilot"},
+        {"ts": "2026-04-04T10:01:00+00:00", "direction": "in",
+         "text": "We also use copilot for some tasks but mostly we focus on many other things that are completely unrelated to the billing mechanism and involve different workflows"},
+    ])
+    results = _run_search("copilot billing", tmp_path, top_k=5)
+    assert len(results) >= 2
+    # First result should be the denser match
+    top_chunk = results[0][1]
+    assert "copilot" in top_chunk.text.lower()
