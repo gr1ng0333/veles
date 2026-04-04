@@ -7,6 +7,8 @@ This map is always in context. Skill files are loaded on demand only.
 |------|------|--------------|
 | `3xui` | `prompts/skills/3xui.md` | Working with 3x-ui panel: inbounds, clients, traffic, certificates, webBasePath |
 | `ssh-servers` | `prompts/skills/ssh-servers.md` | SSH key deploy, remote health check, systemd service management on remote hosts |
+| `copilot-tgbot` | `prompts/skills/copilot-tgbot.md` | Working on copilot-telegram-bot project: bot.py, storage.py, web.py, billing trick, SQLite schema |
+| `ouro-fitness-bot` | `prompts/skills/ouro-fitness-bot.md` | Working on ouro-fitness-bot: FatSecret, daemon, calisthenics program, deploy on server |
 
 ## Protocol
 
