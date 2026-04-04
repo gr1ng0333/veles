@@ -34,7 +34,6 @@ _USER_AGENT = (
 
 # ── HTML parsing ──────────────────────────────────────────────────────────────
 
-# Each post block starts at tgme_widget_message_wrap
 _POST_BLOCK_RE = re.compile(
     r'<div class="tgme_widget_message_wrap[^"]*"[^>]*>(.*?)'
     r'(?=<div class="tgme_widget_message_wrap|$)',
@@ -135,14 +134,7 @@ def _tg_channel_read(
     since_post_id: int = 0,
     before_post_id: int = 0,
 ) -> str:
-    """Read posts from a public Telegram channel.
-
-    Args:
-        channel: Channel username without @, e.g. "abstractDL"
-        limit: Max number of posts to return (1–200, default 20)
-        since_post_id: Return only posts with id >= this value (0 = no filter)
-        before_post_id: Start fetching from posts before this id (0 = latest)
-    """
+    """Read posts from a public Telegram channel."""
     channel = channel.lstrip("@").strip()
     if not channel:
         return json.dumps({"error": "channel must not be empty"})
@@ -151,12 +143,11 @@ def _tg_channel_read(
 
     collected: List[Dict[str, Any]] = []
     seen_ids: set = set()
-    max_pages = 10  # safety cap
 
     params = f"?before={before_post_id}" if before_post_id else ""
 
     try:
-        for _ in range(max_pages):
+        for _ in range(10):  # max 10 pages
             if len(collected) >= limit:
                 break
 
@@ -184,7 +175,6 @@ def _tg_channel_read(
 
             collected.extend(new_posts)
 
-            # Stop pagination if we've passed since_post_id boundary
             min_id_on_page = min(p["id"] for p in page_posts)
             if since_post_id > 0 and min_id_on_page < since_post_id:
                 break
@@ -207,40 +197,53 @@ def _tg_channel_read(
     }, ensure_ascii=False)
 
 
+# ── Registry ──────────────────────────────────────────────────────────────────
+
+_SCHEMA = {
+    "name": "tg_channel_read",
+    "description": (
+        "Read posts from a public Telegram channel via t.me/s/ web preview. "
+        "No API key required. Returns post id, date, text, views, and external links. "
+        "Supports filtering by post id and pagination.\n\n"
+        "Parameters:\n"
+        "- channel: username without @, e.g. 'abstractDL'\n"
+        "- limit: max posts to return (1–200, default 20)\n"
+        "- since_post_id: return only posts with id >= this value\n"
+        "- before_post_id: start fetching from posts before this id"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": "Channel username (without @), e.g. 'abstractDL'",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max posts to return (1–200, default 20)",
+                "default": 20,
+            },
+            "since_post_id": {
+                "type": "integer",
+                "description": "Return only posts with id >= this value (0 = no filter)",
+                "default": 0,
+            },
+            "before_post_id": {
+                "type": "integer",
+                "description": "Start fetching from posts before this id (0 = latest)",
+                "default": 0,
+            },
+        },
+        "required": ["channel"],
+    },
+}
+
+
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
             name="tg_channel_read",
-            description=(
-                "Read posts from a public Telegram channel via t.me/s/ web preview. "
-                "No API key required. Returns post id, date, text, views, "
-                "and external links. Supports pagination via since_post_id / before_post_id."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "channel": {
-                        "type": "string",
-                        "description": "Channel username (without @), e.g. 'abstractDL'",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max posts to return (1–200, default 20)",
-                        "default": 20,
-                    },
-                    "since_post_id": {
-                        "type": "integer",
-                        "description": "Return only posts with id >= this value (0 = no filter)",
-                        "default": 0,
-                    },
-                    "before_post_id": {
-                        "type": "integer",
-                        "description": "Start fetching from posts before this id (0 = latest)",
-                        "default": 0,
-                    },
-                },
-                "required": ["channel"],
-            },
-            execute=_tg_channel_read,
+            schema=_SCHEMA,
+            handler=lambda ctx, **kw: _tg_channel_read(ctx, **kw),
         )
     ]
