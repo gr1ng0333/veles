@@ -1,0 +1,2 @@
+c178e62 feat: add tg_digest tool — multi-channel Telegram digest in one call
+e84d2b6 fix: tg_channel_read — correct ToolEntry schema format
