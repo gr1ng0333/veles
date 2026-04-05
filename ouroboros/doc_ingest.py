@@ -30,7 +30,7 @@ def ingest_legacy_word_document(
     activation_mode: str = 'deferred',
     timeout_sec: int = 60,
 ) -> Dict[str, Any]:
-    normalized_name = file_name or 'file.doc'
+    normalized_name = pathlib.Path(file_name or "file.doc").name or "file.doc"
     meta_common = {
         'message_id': int(message_id or 0),
         'telegram_file_id': telegram_file_id or '',
