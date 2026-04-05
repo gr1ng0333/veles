@@ -455,6 +455,7 @@ EXPECTED_TOOLS = [
     "short_video_pack_download",
     "tech_debt",
     "test_coverage_map",
+    "test_gap_report",
 ]
 
 
