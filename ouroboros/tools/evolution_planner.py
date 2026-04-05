@@ -482,7 +482,7 @@ def _evolution_plan(
     all_candidates.extend(_candidates_from_test_gaps(untested_modules))
 
     # Observability improvements for hot+large modules
-    all_candidates.extend(_candidates_from_observability(module_lines, spots))
+    all_candidates.extend(_candidates_observability(module_lines, spots))
 
     # ── Apply focus boost ──────────────────────────────────────────────────────
     all_candidates = _focus_boost(all_candidates, focus)

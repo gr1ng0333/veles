@@ -1,7 +1,7 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.1.60-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.1.61-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
@@ -13,6 +13,7 @@
 ---
 
 ## Release notes
+- 7.1.61 — evolution_plan: synthesize hot_spots + patterns + focus + test-gaps into ranked action candidates
 - 7.1.60 — tool_map: full toolset self-awareness (292 tools grouped by module, filter+format params); update_tool_snapshot.py: auto-sync EXPECTED_TOOLS in test_smoke.py
 - 7.1.58 — evolution_focus: cross-cycle strategic goal memory (set/get/note/cycle/clear + context injection)
 - 7.1.57 — memory_search: BM25 scoring + fuzzy query expansion (typo-tolerant search)
