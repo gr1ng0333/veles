@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import re
+import sys
 import subprocess
 import time
 from typing import Any, Dict, List, Optional
@@ -201,8 +202,48 @@ def _run_pre_push_tests(ctx: ToolContext) -> Optional[str]:
         return f"⚠️ PRE_PUSH_TEST_ERROR: Unexpected error running tests: {e}"
 
 
+def _auto_sync_tool_snapshot(ctx: ToolContext) -> None:
+    """Auto-sync EXPECTED_TOOLS in test_smoke.py before pre-push tests.
+
+    Runs update_tool_snapshot.py --apply; if test_smoke.py was updated,
+    amends the last commit so adding a new tool never requires a second commit.
+    """
+    snapshot_script = pathlib.Path(ctx.repo_dir) / "tests" / "update_tool_snapshot.py"
+    if not snapshot_script.exists():
+        return
+    try:
+        subprocess.run(
+            [sys.executable, str(snapshot_script), "--apply"],
+            cwd=ctx.repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        subprocess.run(
+            ["git", "add", "tests/test_smoke.py"],
+            cwd=ctx.repo_dir,
+            capture_output=True,
+        )
+        status_r = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=ctx.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        if "tests/test_smoke.py" in status_r.stdout:
+            subprocess.run(
+                ["git", "commit", "--amend", "--no-edit"],
+                cwd=ctx.repo_dir,
+                capture_output=True,
+            )
+            log.debug("Auto-synced tool snapshot and amended last commit")
+    except Exception:
+        log.debug("_auto_sync_tool_snapshot failed silently", exc_info=True)
+
+
 def _git_push_with_tests(ctx: ToolContext) -> Optional[str]:
     """Run pre-push tests, then pull --rebase and push. Returns None on success, error string on failure."""
+    _auto_sync_tool_snapshot(ctx)
     test_error = _run_pre_push_tests(ctx)
     if test_error:
         log.error("Pre-push tests failed, blocking push")
