@@ -33,6 +33,17 @@ def _write(tmp: Path, rel: str, src: str) -> Path:
     return p
 
 
+def _make_pkg(tmp: Path) -> Path:
+    """Create a small synthetic package: a → b → c, a → c.
+    Uses 'import pkg.X' so the graph builder resolves internal edges.
+    """
+    root = tmp / "pkg"
+    _write(root, "a.py", "import pkg.b\nimport pkg.c\n")
+    _write(root, "b.py", "import pkg.c\n")
+    _write(root, "c.py", "# leaf\n")
+    return root
+
+
 # ── Unit: _module_key ─────────────────────────────────────────────────────────
 
 def test_module_key_simple(tmp_path):
@@ -123,24 +134,15 @@ def test_classify_tier_medium():
 
 # ── Integration: _build_coupling_graph ───────────────────────────────────────
 
-def _make_pkg(tmp: Path) -> Path:
-    """Create a small synthetic package: a → b → c, a → c."""
-    root = tmp / "pkg"
-    _write(root, "a.py", "from pkg import b\nfrom pkg import c\n")
-    _write(root, "b.py", "from pkg import c\n")
-    _write(root, "c.py", "# leaf\n")
-    return root
-
-
 def test_build_graph_edges(tmp_path):
     root = _make_pkg(tmp_path)
     files = _collect_py_files(root)
     fwd, ce_ext, mod_map = _build_coupling_graph(files, root)
 
-    assert "b" in fwd.get("a", set())
-    assert "c" in fwd.get("a", set())
-    assert "c" in fwd.get("b", set())
-    assert not fwd.get("c")  # leaf has no internal imports
+    assert "b" in fwd.get("a", set()), f"fwd['a']={fwd.get('a')}"
+    assert "c" in fwd.get("a", set()), f"fwd['a']={fwd.get('a')}"
+    assert "c" in fwd.get("b", set()), f"fwd['b']={fwd.get('b')}"
+    assert not fwd.get("c"), f"leaf 'c' should have no internal imports, got {fwd.get('c')}"
 
 
 def test_build_graph_no_self_loops(tmp_path):
@@ -163,13 +165,13 @@ def test_compute_metrics_ca_ce(tmp_path):
 
     # c is the leaf — Ca=2 (imported by a and b), Ce=0
     c = by_mod["c"]
-    assert c["ca"] == 2
+    assert c["ca"] == 2, f"c.ca={c['ca']}, expected 2"
     assert c["ce"] == 0
     assert c["instability"] == 0.0
 
     # a imports b and c — Ce=2; nobody imports a (in this graph) — Ca=0
     a = by_mod["a"]
-    assert a["ce"] == 2
+    assert a["ce"] == 2, f"a.ce={a['ce']}, expected 2"
     assert a["ca"] == 0
     assert a["instability"] == 1.0
 
@@ -197,23 +199,26 @@ def test_compute_metrics_isolated(tmp_path):
 
 
 def test_compute_metrics_zone_unstable(tmp_path):
-    """A module with many outgoing, zero incoming → UNSTABLE."""
+    """A module with many outgoing, zero incoming → UNSTABLE (I=1.0 >= threshold)."""
     root = _make_pkg(tmp_path)
     files = _collect_py_files(root)
     fwd, ce_ext, mod_map = _build_coupling_graph(files, root)
     records = _compute_metrics(fwd, ce_ext, mod_map)
     by_mod = {r["module"]: r for r in records}
     # 'a' has I=1.0 → UNSTABLE (1.0 >= _UNSTABLE_I=0.75)
-    assert by_mod["a"]["zone"] == "UNSTABLE"
+    assert by_mod["a"]["zone"] == "UNSTABLE", f"a.zone={by_mod['a']['zone']}, I={by_mod['a']['instability']}"
 
 
 # ── Integration: _filter_records ─────────────────────────────────────────────
 
 def _make_records():
     return [
-        {"module": "tools.search", "ca": 2, "ce": 10, "instability": 0.83, "zone": "UNSTABLE", "tier": "HIGH", "importers": [], "imports": []},
-        {"module": "agent", "ca": 12, "ce": 1, "instability": 0.08, "zone": "RIGID", "tier": "CRITICAL", "importers": [], "imports": []},
-        {"module": "utils.helper", "ca": 0, "ce": 0, "instability": None, "zone": "ISOLATED", "tier": "MEDIUM", "importers": [], "imports": []},
+        {"module": "tools.search", "ca": 2, "ce": 10, "ce_internal": 10, "ce_external": 0,
+         "instability": 0.83, "zone": "UNSTABLE", "tier": "HIGH", "importers": [], "imports": []},
+        {"module": "agent", "ca": 12, "ce": 1, "ce_internal": 1, "ce_external": 0,
+         "instability": 0.08, "zone": "RIGID", "tier": "CRITICAL", "importers": [], "imports": []},
+        {"module": "utils.helper", "ca": 0, "ce": 0, "ce_internal": 0, "ce_external": 0,
+         "instability": None, "zone": "ISOLATED", "tier": "MEDIUM", "importers": [], "imports": []},
     ]
 
 
