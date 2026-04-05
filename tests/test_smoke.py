@@ -440,6 +440,7 @@ EXPECTED_TOOLS = [
     "close_github_issue",
     "comment_on_issue",
     "complete_focus_cycle",
+    "coupling_map",
     "create_github_issue",
     "dead_code",
     "deep_research",
