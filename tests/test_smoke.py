@@ -441,6 +441,7 @@ EXPECTED_TOOLS = [
     "comment_on_issue",
     "complete_focus_cycle",
     "create_github_issue",
+    "dead_code",
     "deep_research",
     "get_evolution_focus",
     "get_github_issue",
