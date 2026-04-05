@@ -453,6 +453,7 @@ EXPECTED_TOOLS = [
     "exception_audit",
     "get_evolution_focus",
     "get_github_issue",
+    "health_report",
     "list_github_issues",
     "module_health",
     "ops_timeline",

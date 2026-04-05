@@ -335,9 +335,9 @@ class TestGetTools:
 
     def test_execute_callable(self) -> None:
         tool = get_tools()[0]
-        assert callable(tool.execute)
+        assert callable(tool.handler)
 
     def test_execute_quick(self, real_ctx: ToolContext) -> None:
         tool = get_tools()[0]
-        out = tool.execute(real_ctx, quick=True, max_actions=3)
+        out = tool.handler(real_ctx, quick=True, max_actions=3)
         assert "Health Report" in out
