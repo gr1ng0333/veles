@@ -454,6 +454,7 @@ EXPECTED_TOOLS = [
     "get_github_issue",
     "list_github_issues",
     "module_health",
+    "ops_timeline",
     "performance_profile",
     "security_scan",
     "semantic_diff",
