@@ -455,6 +455,7 @@ EXPECTED_TOOLS = [
     "list_github_issues",
     "module_health",
     "performance_profile",
+    "security_scan",
     "semantic_diff",
     "set_evolution_focus",
     "short_video_pack_download",
