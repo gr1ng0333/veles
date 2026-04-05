@@ -454,6 +454,7 @@ EXPECTED_TOOLS = [
     "semantic_diff",
     "set_evolution_focus",
     "short_video_pack_download",
+    "symbol_search",
     "tech_debt",
     "test_coverage_map",
     "test_gap_report",
