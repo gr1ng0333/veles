@@ -447,6 +447,7 @@ EXPECTED_TOOLS = [
     "dead_code",
     "deep_research",
     "dep_cycles",
+    "doc_coverage",
     "get_evolution_focus",
     "get_github_issue",
     "list_github_issues",

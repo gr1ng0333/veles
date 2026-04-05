@@ -469,6 +469,6 @@ def get_tools() -> List[ToolEntry]:
                     "required": [],
                 },
             },
-            execute=lambda ctx, **kw: _doc_coverage(ctx, **kw),
+            handler=lambda ctx, **kw: _doc_coverage(ctx, **kw),
         )
     ]
