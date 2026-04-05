@@ -82,18 +82,17 @@ class _Suggestion:
         }
 
 
-_EFFORT_SCORE = {"low": 1, "medium": 2, "high": 3}
-_IMPACT_SCORE = {"low": 1, "medium": 2, "high": 3}
-_SEV_SCORE = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+_EFFORT_MULT = {"low": 1.2, "medium": 1.0, "high": 0.8}
+_IMPACT_MULT = {"low": 0.8, "medium": 1.0, "high": 1.2}
+_SEV_BASE = {"low": 2, "medium": 4, "high": 7, "critical": 10}
 
 
 def _score(severity: str, impact: str, effort: str) -> float:
     """Compute priority 1-10 from severity, impact, effort."""
-    sev = _SEV_SCORE.get(severity.lower(), 1)
-    imp = _IMPACT_SCORE.get(impact, 2)
-    eff = _EFFORT_SCORE.get(effort, 2)
-    raw = (sev * 2 + imp) / (eff + 0.5)
-    return min(10.0, round(raw * 10 / 8.5, 1))
+    sev = _SEV_BASE.get(severity.lower(), 2)
+    imp = _IMPACT_MULT.get(impact, 1.0)
+    eff = _EFFORT_MULT.get(effort, 1.0)
+    return min(10.0, round(sev * imp * eff, 1))
 
 
 # ── Source 1: dep_cycles ──────────────────────────────────────────────────────
@@ -431,6 +430,7 @@ def _collect_exception_audit(repo_root: Path, path: Optional[str]) -> List[_Sugg
         from ouroboros.tools.exception_audit import (
             _collect_py_files,
             _scan_file as _exc_scan_file,
+            _ALL_PATTERNS,
         )
     except ImportError:
         return []
@@ -446,6 +446,8 @@ def _collect_exception_audit(repo_root: Path, path: Optional[str]) -> List[_Sugg
 
     suggestions: List[_Suggestion] = []
     py_files = _collect_py_files(repo_root, path)
+    enabled = set(_ALL_PATTERNS)
+    max_nest_depth = 4
 
     for fpath in py_files:
         try:
@@ -453,7 +455,7 @@ def _collect_exception_audit(repo_root: Path, path: Optional[str]) -> List[_Sugg
         except ValueError:
             rel = str(fpath)
         try:
-            findings = _exc_scan_file(fpath, rel)
+            findings = _exc_scan_file(fpath, rel, enabled, max_nest_depth)
         except Exception:
             continue
 
@@ -462,14 +464,17 @@ def _collect_exception_audit(repo_root: Path, path: Optional[str]) -> List[_Sugg
             effort = "low"
             impact = "high" if sev == "high" else "medium"
             priority = _score(sev, impact, effort)
+            # exception_audit _Finding has .detail (not .message/.snippet)
+            detail = getattr(f, "detail", "") or ""
+            message = getattr(f, "message", detail) or detail
             suggestions.append(_Suggestion(
                 priority=priority,
                 category=f"exception:{f.pattern}",
                 effort=effort,
                 impact=impact,
-                action=f"Fix {f.pattern}: {f.message}",
+                action=f"Fix {f.pattern}: {message or f.pattern}",
                 location=f"{f.file}:{f.line}",
-                details=f.snippet if hasattr(f, "snippet") else "",
+                details=detail,
                 source="exception_audit",
             ))
 
