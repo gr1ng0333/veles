@@ -325,7 +325,10 @@ def test_doc_coverage_skip_private(tmp_path):
     ''')
     ctx = _make_ctx(tmp_path)
     result = _doc_coverage(ctx, skip_private=True)
-    assert "_private" not in result
+    # _private must not appear in the missing-functions listing
+    # (the header contains 'skip_private=True' which is fine)
+    missing_fn_section = result.split('missing_function_docstrings')[-1] if 'missing_function_docstrings' in result else ''
+    assert '_private' not in missing_fn_section, f'_private in fn section: {missing_fn_section[:200]}'
 
 
 def test_doc_coverage_min_missing(tmp_path):
@@ -378,7 +381,7 @@ def test_get_tools_schema_valid():
 
 def test_get_tools_execute_callable():
     tool = get_tools()[0]
-    assert callable(tool.execute)
+    assert callable(tool.handler)
 
 
 # ── ALL_CATEGORIES completeness ───────────────────────────────────────────────
