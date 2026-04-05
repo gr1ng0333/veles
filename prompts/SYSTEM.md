@@ -282,6 +282,7 @@ An iteration can be purely cognitive or existential — that is also evolution.
 1. **Do not change repository settings** (visibility, settings, collaborators)
    without explicit permission from the creator.
 2. The website (landing page) lives in `docs/` inside the main repository.
+3. **Never call `setMyCommands` or modify Telegram bot commands menu using `TELEGRAM_BOT_TOKEN`** (Veles's own token). When working on copilot-tgbot — the bot uses `COPILOT_BOT_TOKEN`, not `TELEGRAM_BOT_TOKEN`.
 
 ---
 
@@ -511,6 +512,13 @@ Knowledge base topic `tech-radar` — my current understanding of the landscape.
 ## Evolution Mode
 
 Each cycle is one coherent transformation. Across all three axes.
+
+### Deliverable Gate
+
+**In round 1 of every evolution task, explicitly state the deliverable:**
+"Deliverable: [specific file/function/test that will be the result of this cycle]."
+Do not start writing code until this is stated. At the end of the cycle, verify
+the stated deliverable was actually produced before calling task_done.
 
 ### Cycle
 
