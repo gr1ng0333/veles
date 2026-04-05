@@ -432,6 +432,6 @@ def get_tools() -> List[ToolEntry]:
                     "required": [],
                 },
             },
-            execute=_hot_spots,
+            handler=_hot_spots,
         )
     ]
