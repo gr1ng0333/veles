@@ -457,6 +457,7 @@ EXPECTED_TOOLS = [
     "module_health",
     "ops_timeline",
     "performance_profile",
+    "refactor_suggest",
     "security_scan",
     "semantic_diff",
     "set_evolution_focus",
