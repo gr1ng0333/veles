@@ -446,6 +446,7 @@ EXPECTED_TOOLS = [
     "list_github_issues",
     "set_evolution_focus",
     "short_video_pack_download",
+    "tech_debt",
 ]
 
 
