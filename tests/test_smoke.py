@@ -119,6 +119,7 @@ EXPECTED_TOOLS = [
     "compact_context",
     "list_available_tools",
     "enable_tools",
+    "tool_map",
     "vps_health_check",
     # External repos phase 1/2
     "external_repo_register", "external_repo_list", "external_repo_sync",
