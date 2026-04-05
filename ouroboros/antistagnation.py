@@ -13,11 +13,11 @@ log = logging.getLogger(__name__)
 class AntiStagnationConfig:
     stagnation_rounds: int = 8
     stagnation_grace: int = 4
-    task_round_warn: int = 250
-    task_round_cap: int = 280
-    extension_cap: int = 350
+    task_round_warn: int = 120
+    task_round_cap: int = 140
+    extension_cap: int = 175
     extension_progress_window: int = 5
-    task_max_rounds: int = 280
+    task_max_rounds: int = 140
     small_completion_threshold: int = 100
     small_completion_max_rounds: int = 8
     context_drop_pct: int = 30
@@ -39,11 +39,11 @@ def load_antistagnation_config() -> AntiStagnationConfig:
     return AntiStagnationConfig(
         stagnation_rounds=_env_int("OUROBOROS_STAGNATION_ROUNDS", 8),
         stagnation_grace=_env_int("OUROBOROS_STAGNATION_GRACE", 4),
-        task_round_warn=_env_int("OUROBOROS_TASK_ROUND_WARN", 250),
-        task_round_cap=_env_int("OUROBOROS_TASK_ROUND_CAP", 280),
-        extension_cap=_env_int("OUROBOROS_TASK_ROUND_EXTENSION_CAP", 350),
+        task_round_warn=_env_int("OUROBOROS_TASK_ROUND_WARN", 120),
+        task_round_cap=_env_int("OUROBOROS_TASK_ROUND_CAP", 140),
+        extension_cap=_env_int("OUROBOROS_TASK_ROUND_EXTENSION_CAP", 175),
         extension_progress_window=_env_int("OUROBOROS_TASK_PROGRESS_WINDOW", 5),
-        task_max_rounds=_env_int("OUROBOROS_TASK_MAX_ROUNDS", 280),
+        task_max_rounds=_env_int("OUROBOROS_TASK_MAX_ROUNDS", 140),
         small_completion_threshold=_env_int("OUROBOROS_SMALL_COMPLETION_THRESHOLD", 100),
         small_completion_max_rounds=_env_int("OUROBOROS_SMALL_COMPLETION_MAX_ROUNDS", 8),
         context_drop_pct=_env_int("OUROBOROS_CONTEXT_DROP_PCT", 30, minimum=5),
