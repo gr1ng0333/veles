@@ -173,6 +173,8 @@ EXPECTED_TOOLS = [
     "extract_patterns",
     # Task digest
     "task_digest",
+    # Hot spots
+    "hot_spots",
     "evolution_review",
     # Version sync
     "version_sync",
