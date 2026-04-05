@@ -598,36 +598,37 @@ def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
             name="health_report",
-            description=(
-                "Project-wide codebase health dashboard. Orchestrates security_scan, "
-                "dep_cycles, tech_debt, exception_audit, doc_coverage, type_coverage, "
-                "and todo_scanner into a single A–F grade with ranked action list. "
-                "Replaces ~10 separate tool calls and manual aggregation. "
-                "Params: path (str, optional), format ('text'|'json'), "
-                "max_actions (int, default 10), quick (bool, skip slow coverage scans)."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Limit scan to a subdirectory (e.g. 'ouroboros/')",
-                    },
-                    "format": {
-                        "type": "string",
-                        "enum": ["text", "json"],
-                        "description": "Output format (default: text)",
-                    },
-                    "max_actions": {
-                        "type": "integer",
-                        "description": "Max action items to surface (default 10)",
-                    },
-                    "quick": {
-                        "type": "boolean",
-                        "description": "Skip slow doc/type coverage scans (default false)",
+            schema={
+                "name": "health_report",
+                "description": (
+                    "Project-wide codebase health dashboard. Orchestrates security_scan, "
+                    "dep_cycles, tech_debt, exception_audit, doc_coverage, type_coverage, "
+                    "and todo_scanner into a single A–F grade with ranked action list. "
+                    "Replaces ~10 separate tool calls and manual aggregation."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Limit scan to a subdirectory (e.g. 'ouroboros')",
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format (default: text)",
+                        },
+                        "max_actions": {
+                            "type": "integer",
+                            "description": "Max action items to surface (default 10)",
+                        },
+                        "quick": {
+                            "type": "boolean",
+                            "description": "Skip slow doc/type coverage scans (default false)",
+                        },
                     },
                 },
             },
-            execute=lambda ctx, **kw: _health_report(ctx, **kw),
+            handler=lambda ctx, **kw: _health_report(ctx, **kw),
         )
     ]
