@@ -36,9 +36,15 @@ def _readme_text_version():
 
 
 def _readme_changelog_version():
-    """First changelog header in README."""
+    """First changelog entry in README.
+
+    Supports two formats:
+    - ``### v7.1.70`` / ``### 7.1.70``  (old header-style)
+    - ``- 7.1.70 — ...``               (new dash-list style, used from v7.1.54+)
+    """
     txt = (ROOT / "README.md").read_text()
-    m = re.search(r'###\s*v?([\d.]+)', txt)
+    # Match either "### vX.Y.Z" or "- X.Y.Z" (the leading dash+space style)
+    m = re.search(r'(?:###\s*v?|-\s+)(\d+\.\d+\.\d+)', txt)
     assert m, "No changelog entry found in README.md"
     return m.group(1)
 
