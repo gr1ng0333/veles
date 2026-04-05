@@ -100,6 +100,7 @@ class TestToolMap:
 
     def test_no_registry_returns_error(self):
         from ouroboros.tools import tool_discovery
+        from ouroboros.tools.tool_discovery import _tool_map
         old = tool_discovery._registry
         tool_discovery._registry = None
         try:
