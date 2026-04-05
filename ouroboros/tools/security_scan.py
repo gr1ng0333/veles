@@ -180,10 +180,10 @@ def _is_format_call(node: ast.expr) -> bool:
 # Hardcoded secrets: assignment patterns like `password = "..."`, `token = "..."`
 _SECRET_ASSIGN_RE = re.compile(
     r"""
-    (?:^|\s)                       # start or whitespace before
+    (?:^|[\s,=(])                  # start or separator before
     (?P<key>
-        password | passwd | secret | api_key | apikey | token |
-        access_key | private_key | auth_token | client_secret
+        \w*(?:password|passwd|secret|api_?key|apikey|token|access_key|private_key|auth_token|client_secret)\w*
+
     )
     \s*=\s*                        # assignment
     (?P<quote>['"])                # opening quote
