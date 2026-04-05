@@ -462,6 +462,7 @@ EXPECTED_TOOLS = [
     "tech_debt",
     "test_coverage_map",
     "test_gap_report",
+    "todo_scanner",
     "type_coverage",
 ]
 
