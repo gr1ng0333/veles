@@ -1,18 +1,19 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.1.63-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.1.64-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.1.63 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.1.64 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Release notes
+- 7.1.64 — evolution_plan: [FIXED]/[RESOLVED] filter in _parse_pattern_register; resolved patterns excluded from evolution candidates; +2 tests
 - 7.1.63 — auto-sync EXPECTED_TOOLS snapshot on pre-push: git.py amends last commit when test_smoke.py diverges; eliminates double-commit pattern for new tools
 - 7.1.62 — tech_debt: automated structural debt scanner (7 categories: oversized funcs/params/modules, high complexity, deep nesting, FIXME/TODO, god objects); 25 tests
 - 7.1.61 — evolution_plan: synthesize hot_spots + patterns + focus + test-gaps into ranked action candidates
@@ -106,6 +107,11 @@
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
 ## Changelog
+### v7.1.64 (2026-04-05)
+- `_parse_pattern_register` in `hot_spots.py`: skip patterns with `[FIXED]`/`[RESOLVED]`/`[DONE]` prefix
+- `patterns.md`: marked `tool timeout on commit/push` and `pre-push test timeout` as `[FIXED]` (resolved v7.1.22)
+- `tests/test_hot_spots.py`: +2 tests for resolved-pattern filtering
+
 ### v7.1.63 (2026-04-05)
 - auto-sync EXPECTED_TOOLS snapshot on pre-push: _auto_sync_tool_snapshot in git.py runs update_tool_snapshot.py --apply and amends last commit if test_smoke.py diverges; eliminates double-commit pattern
 

@@ -254,3 +254,53 @@ def test_get_tools_returns_entry() -> None:
     assert "days" in props
     assert "top_k" in props
     assert "format" in props
+
+
+def test_parse_pattern_register_fixed_filtered(tmp_path: pathlib.Path) -> None:
+    """[FIXED] and [RESOLVED] patterns must be excluded from results."""
+    kb_dir = tmp_path / "memory" / "knowledge"
+    kb_dir.mkdir(parents=True)
+    _write(
+        kb_dir / "patterns.md",
+        """\
+        # Pattern Register
+
+        | Class | Count | Evidence | Root cause | Fix |
+        |---|---:|---|---|---|
+        | [FIXED] tool timeout on commit/push | 202+ | foo | resolved in v7.1.22 | done |
+        | [RESOLVED] pre-push test timeout | 122+ | bar | resolved in v7.1.22 | done |
+        | [DONE] some other issue | 50+ | baz | resolved | done |
+        | SSH / remote execution error | 116+ | qux | poor scoping | fix scoping |
+        | wrong file path | 45+ | quux | path mismatch | verify paths |
+        """,
+    )
+    patterns = _parse_pattern_register(tmp_path)
+    # Only non-fixed patterns should appear
+    assert len(patterns) == 2
+    class_names = [p["class"] for p in patterns]
+    assert "SSH / remote execution error" in class_names
+    assert "wrong file path" in class_names
+    # No fixed patterns
+    for p in patterns:
+        assert not p["class"].lower().startswith("[fixed]")
+        assert not p["class"].lower().startswith("[resolved]")
+        assert not p["class"].lower().startswith("[done]")
+
+
+def test_parse_pattern_register_all_fixed(tmp_path: pathlib.Path) -> None:
+    """If all patterns are [FIXED], return empty list."""
+    kb_dir = tmp_path / "memory" / "knowledge"
+    kb_dir.mkdir(parents=True)
+    _write(
+        kb_dir / "patterns.md",
+        """\
+        # Pattern Register
+
+        | Class | Count | Evidence | Root cause | Fix |
+        |---|---:|---|---|---|
+        | [FIXED] tool timeout | 202+ | foo | done | done |
+        | [RESOLVED] pre-push failure | 122+ | bar | done | done |
+        """,
+    )
+    patterns = _parse_pattern_register(tmp_path)
+    assert patterns == []

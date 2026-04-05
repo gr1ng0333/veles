@@ -183,9 +183,13 @@ def _scan_complexity(repo_dir: pathlib.Path) -> Dict[str, Any]:
 def _parse_pattern_register(drive_root: pathlib.Path) -> List[Dict[str, Any]]:
     """Parse knowledge/patterns.md for recurring error classes.
 
-    Returns list of {class, count, root_cause} dicts sorted by count desc.
+    Returns list of {class, count, root_cause, status} dicts sorted by count desc.
     patterns.md uses a markdown table format:
     | Class | Count | Evidence | Root cause | Fix |
+
+    Supports [FIXED] or [RESOLVED] prefix in class name to mark resolved patterns.
+    Resolved patterns are excluded from the returned list so they don't pollute
+    evolution_plan recommendations.
     """
     patterns_file = drive_root / "memory" / "knowledge" / "patterns.md"
     if not patterns_file.exists():
@@ -195,6 +199,8 @@ def _parse_pattern_register(drive_root: pathlib.Path) -> List[Dict[str, Any]]:
     except Exception as exc:
         log.warning("hot_spots: cannot read patterns.md: %s", exc)
         return []
+
+    _RESOLVED_PREFIXES = ("[fixed]", "[resolved]", "[done]")
 
     patterns: List[Dict[str, Any]] = []
     for line in content.splitlines():
@@ -208,6 +214,11 @@ def _parse_pattern_register(drive_root: pathlib.Path) -> List[Dict[str, Any]]:
         class_name = parts[0]
         count_str = parts[1] if len(parts) > 1 else "1"
         root_cause = parts[3] if len(parts) > 3 else ""
+
+        # Check if pattern is marked as resolved — skip it entirely
+        class_lower = class_name.lower()
+        if any(class_lower.startswith(pfx) for pfx in _RESOLVED_PREFIXES):
+            continue
 
         # Parse count: "12+" → 12, "5" → 5
         count_m = re.match(r"(\d+)", count_str)
