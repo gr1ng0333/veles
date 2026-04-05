@@ -107,6 +107,7 @@ def _run_digest(
                 send_fn(owner_chat_id, f"⚠️ Auto-digest failed: {repr(e)[:200]}")
             except Exception:
                 pass
+        raise  # Re-raise so caller knows digest failed
 
 
 class DigestScheduler:
@@ -175,16 +176,21 @@ class DigestScheduler:
         log.info("DigestScheduler: scheduled run is due (next_run=%s), firing now", next_run_str)
 
         interval_hours = float(schedule.get("interval_hours", 6.0))
-        schedule["last_run_at"] = now.isoformat()
-        schedule["next_run_at"] = (now + timedelta(hours=interval_hours)).isoformat()
-        schedule["run_count"] = int(schedule.get("run_count", 0)) + 1
-        _save_schedule(schedule)
-
         owner_chat_id = self._owner_chat_id_fn()
-        _run_digest(
-            schedule=schedule,
-            send_fn=self._send_fn,
-            owner_chat_id=owner_chat_id,
-            repo_dir=self._repo_dir,
-            drive_root=self._drive_root,
-        )
+
+        try:
+            _run_digest(
+                schedule=schedule,
+                send_fn=self._send_fn,
+                owner_chat_id=owner_chat_id,
+                repo_dir=self._repo_dir,
+                drive_root=self._drive_root,
+            )
+            # Save updated schedule only after successful run
+            schedule["last_run_at"] = now.isoformat()
+            schedule["next_run_at"] = (now + timedelta(hours=interval_hours)).isoformat()
+            schedule["run_count"] = int(schedule.get("run_count", 0)) + 1
+            _save_schedule(schedule)
+        except Exception:
+            # Digest failed — do NOT advance next_run_at so it retries next cycle
+            log.warning("DigestScheduler: digest failed, next_run_at NOT advanced (will retry)")
