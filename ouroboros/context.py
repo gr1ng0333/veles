@@ -485,6 +485,18 @@ def build_llm_messages(
     except Exception:
         pass
 
+
+    # Evolution focus — cross-cycle strategic goal (injected for evolution tasks)
+    if task_type == "evolution":
+        try:
+            from ouroboros.tools.evolution_focus import load_evolution_focus, format_focus_for_context
+            focus = load_evolution_focus(env.drive_root)
+            if focus:
+                focus_text = format_focus_for_context(focus)
+                if focus_text.strip():
+                    semi_stable_parts.append(focus_text)
+        except Exception:
+            pass
     semi_stable_text = "\n\n".join(semi_stable_parts)
 
     # Dynamic content: changes every round
