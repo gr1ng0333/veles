@@ -447,6 +447,7 @@ EXPECTED_TOOLS = [
     "dead_code",
     "deep_research",
     "dep_cycles",
+    "diff_review",
     "doc_coverage",
     "duplicate_code",
     "exception_audit",
