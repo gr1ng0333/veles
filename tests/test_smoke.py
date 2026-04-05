@@ -435,6 +435,7 @@ EXPECTED_TOOLS = [
     "generate_evolution_stats",
     # Misc
     "add_focus_note",
+    "callgraph",
     "change_impact",
     "clear_evolution_focus",
     "close_github_issue",
