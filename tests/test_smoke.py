@@ -452,6 +452,7 @@ EXPECTED_TOOLS = [
     "set_evolution_focus",
     "short_video_pack_download",
     "tech_debt",
+    "test_coverage_map",
 ]
 
 
