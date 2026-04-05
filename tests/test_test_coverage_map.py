@@ -11,7 +11,7 @@ import pytest
 from ouroboros.tools.test_coverage_map import (
     FunctionCoverage,
     FunctionInfo,
-    TestFileInfo,
+    _TestFileInfo,
     _analyse_file,
     _check_coverage_signals,
     _collect_py_files,
@@ -102,15 +102,15 @@ class TestExtractFunctions:
         assert _extract_functions(src) == []
 
 
-# ── TestFileInfo ──────────────────────────────────────────────────────────────
+# ── _TestFileInfo ──────────────────────────────────────────────────────────────
 
-class TestTestFileInfo:
+class TestTestFileInfoParsing:
     def test_collects_test_names(self, tmp_path: Path) -> None:
         f = _write(tmp_path / "test_foo.py", (
             "def test_my_func(): pass\n"
             "def test_other(): pass\n"
         ))
-        tfi = TestFileInfo(f)
+        tfi = _TestFileInfo(f)
         assert "test_my_func" in tfi.test_func_names
         assert "test_other" in tfi.test_func_names
 
@@ -120,7 +120,7 @@ class TestTestFileInfo:
             "    result = my_func(1, 2)\n"
             "    assert result\n"
         ))
-        tfi = TestFileInfo(f)
+        tfi = _TestFileInfo(f)
         assert "my_func" in tfi.call_names
 
     def test_collects_import_names(self, tmp_path: Path) -> None:
@@ -128,7 +128,7 @@ class TestTestFileInfo:
             "from mymodule import helper_fn\n"
             "def test_x(): pass\n"
         ))
-        tfi = TestFileInfo(f)
+        tfi = _TestFileInfo(f)
         assert "helper_fn" in tfi.import_names
 
     def test_class_test_methods(self, tmp_path: Path) -> None:
@@ -137,7 +137,7 @@ class TestTestFileInfo:
             "    def test_method(self):\n"
             "        target_fn()\n"
         ))
-        tfi = TestFileInfo(f)
+        tfi = _TestFileInfo(f)
         assert "test_method" in tfi.test_func_names
         assert "target_fn" in tfi.call_names
 
@@ -148,9 +148,9 @@ class TestCheckCoverageSignals:
     def _make_func(self, name: str, class_name: str = "") -> FunctionInfo:
         return FunctionInfo(name=name, line=1, is_method=bool(class_name), class_name=class_name)
 
-    def _make_tfi(self, tmp_path: Path, name: str, content: str) -> TestFileInfo:
+    def _make_tfi(self, tmp_path: Path, name: str, content: str) -> _TestFileInfo:
         f = _write(tmp_path / name, content)
-        return TestFileInfo(f)
+        return _TestFileInfo(f)
 
     def test_name_match_exact(self, tmp_path: Path) -> None:
         func = self._make_func("foo")
@@ -281,7 +281,7 @@ class TestHandler:
         _write(repo / "mymod.py", "def alpha(): pass\ndef beta(): pass\n")
         _write(tests_dir / "test_mymod.py", "def test_alpha(): pass\n")
 
-        result = _test_coverage_map(None, target=str(repo / "mymod.py"))
+        result = _test_coverage_map(None, target=str(repo / "mymod.py"), _repo_dir=repo)
         assert "Test Coverage Map" in result
         assert "alpha" in result
         assert "beta" in result
@@ -293,7 +293,7 @@ class TestHandler:
         _write(repo / "mymod.py", "def foo(): pass\n")
         _write(tests_dir / "test_mymod.py", "def test_foo(): pass\n")
 
-        result = _test_coverage_map(None, target=str(repo / "mymod.py"), format="json")
+        result = _test_coverage_map(None, target=str(repo / "mymod.py"), format="json", _repo_dir=repo)
         data = json.loads(result)
         assert "functions" in data
         assert "stats" in data
@@ -311,7 +311,7 @@ class TestHandler:
         _write(repo / "pkg" / "b.py", "def func_b(): pass\n")
         _write(tests_dir / "test_a.py", "def test_func_a(): pass\n")
 
-        result = _test_coverage_map(None, target=str(repo / "pkg"))
+        result = _test_coverage_map(None, target=str(repo / "pkg"), _repo_dir=repo)
         assert "Test Coverage Map" in result
 
     def test_get_tools_returns_entry(self) -> None:
