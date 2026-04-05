@@ -496,6 +496,6 @@ def get_tools() -> List[ToolEntry]:
                     "required": [],
                 },
             },
-            execute=_type_coverage,
+            handler=_type_coverage,
         )
     ]
