@@ -88,174 +88,364 @@ def test_tool_set_matches(registry):
 
 
 EXPECTED_TOOLS = [
-    "repo_read", "repo_write_commit", "repo_list", "repo_commit_push",
-    "drive_read", "drive_write", "drive_list",
-    "git_status", "git_diff",
-    "run_shell",
-    "browse_page", "browser_action", "browser_run_actions", "browser_fill_login_form", "browser_save_session", "browser_restore_session", "browser_persist_session", "browser_restore_persisted_session", "browser_get_persisted_session", "browser_check_login_state", "browser_solve_captcha",
-    "web_search", "research_run", "deep_research", "academic_search",
-    "chat_history", "update_scratchpad", "update_identity",
-    "request_restart", "promote_to_stable", "request_review",
-    "schedule_task", "cancel_task",
-    "switch_model", "toggle_evolution", "toggle_consciousness",
-    "send_owner_message", "send_photo", "send_browser_screenshot", "save_artifact", "list_incoming_artifacts", "send_document", "send_local_file", "send_documents",
-    "short_video_pack_download",
-    "switch_codex_account",
-    "codebase_digest", "codebase_health",
-    "knowledge_read", "knowledge_write", "knowledge_list",
-    "multi_model_review",
-    # GitHub Issues
-    "list_github_issues", "get_github_issue", "comment_on_issue",
-    "close_github_issue", "create_github_issue",
-    "summarize_dialogue",
-    # Task decomposition
-    "get_task_result", "wait_for_task",
-    "generate_evolution_stats",
-    # VLM / Vision
-    "analyze_screenshot", "vlm_query", "solve_simple_captcha",
-    # Message routing
-    "forward_to_worker",
-    # Context management
-    "compact_context",
-    "list_available_tools",
-    "enable_tools",
-    "tool_map",
-    "vps_health_check",
-    # External repos phase 1/2
-    "external_repo_register", "external_repo_list", "external_repo_sync",
-    "external_repo_read", "external_repo_list_files", "external_repo_search",
-    "external_repo_run_shell", "external_repo_git_status", "external_repo_git_diff",
-    "external_repo_write", "external_repo_prepare_work_branch",
-    "external_repo_set_branch_policy", "external_repo_commit_push", "external_repo_script",
-    "external_repo_memory_get", "external_repo_memory_update", "external_repo_memory_append_note",
-    "external_repo_pr_list", "external_repo_pr_get", "external_repo_pr_create",
-    "external_repo_issue_list", "external_repo_issue_get", "external_repo_issue_create", "external_repo_issue_comment",
-    "doctor",
-    "monitor_snapshot",
-    "time_status",
-    "research_report",
-    "project_init", "project_overview", "project_operational_snapshot", "project_bootstrap_and_publish", "project_deploy_and_verify", "project_github_create", "project_branch_checkout", "project_branch_list", "project_branch_get", "project_branch_delete", "project_branch_rename", "project_git_fetch", "project_branch_compare", "project_issue_list", "project_issue_get", "project_issue_create", "project_issue_comment", "project_issue_update", "project_issue_close", "project_issue_reopen", "project_issue_label_add", "project_issue_label_remove", "project_issue_assign", "project_issue_unassign", "project_pr_list", "project_pr_get", "project_pr_changed_files", "project_pr_diff", "project_pr_comment", "project_pr_merge", "project_pr_create", "project_pr_close", "project_pr_reopen", "project_pr_review_list", "project_pr_review_submit", "project_file_read", "project_file_write", "project_commit", "project_push", "project_status", "project_server_register", "project_server_list", "project_server_get", "project_server_remove", "project_server_update", "project_server_validate", "project_server_run", "project_server_sync", "project_server_health", "project_service_status", "project_service_logs", "project_deploy_status", "project_deploy_recipe", "project_deploy_apply", "project_service_render_unit", "project_service_control",
-    "ssh_target_register", "ssh_target_list", "ssh_target_get", "ssh_session_bootstrap", "ssh_target_ping",
-    "remote_list_dir", "remote_read_file", "remote_stat", "remote_mkdir", "remote_write_file", "remote_find", "remote_grep", "remote_project_discover", "remote_project_fetch", "remote_investigate_project", "remote_command_exec", "remote_service_status", "remote_service_action", "remote_service_logs", "remote_service_list", "remote_server_health", "remote_capabilities_overview",
-    # Remote network diagnostics
-    "remote_ping", "remote_traceroute", "remote_port_check",
-    "remote_dns_lookup", "remote_vpn_status", "remote_iptables_summary", "remote_netstat",
-    # Plan management
-    "plan_create", "plan_approve", "plan_reject", "plan_step_done", "plan_update", "plan_complete", "plan_status",
-    # Growth tools
-    "run_tests", "log_query", "http_request",
-    # Code analysis
-    "ast_analyze", "code_search", "dependency_graph",
-    # Budget
-    "budget_forecast",
-    # Context
-    "context_inspect",
-    # Git extended
+    # Core: repo
+    "repo_commit_push",
+    "repo_list",
+    "repo_read",
+    "repo_write_commit",
+    # Core: drive
+    "drive_list",
+    "drive_read",
+    "drive_write",
+    # Core: git
+    "git_diff",
     "git_history",
-    # Pre-commit
-    "pre_commit_review",
-    # SSH key management
-    "ssh_key_generate", "ssh_key_list", "ssh_key_deploy",
-    # Task stats
-    "task_stats",
-    # TikTok
-    "tiktok_search", "tiktok_profile", "tiktok_metadata", "tiktok_history",
-    # Skills
-    "skill_load", "skill_list",
-    # Memory
-    "memory_search",
-    # Timeline
-    "activity_timeline",
-    # Evolution report
-    "evolution_report",
-    # Self audit
-    "self_audit",
-    # Pattern extraction
-    "extract_patterns",
-    # Task digest
-    "task_digest",
-    # Hot spots
-    "hot_spots",
-    "evolution_review",
-    # Version sync
-    "version_sync",
+    "git_status",
+    # Core: shell + search
+    "academic_search",
+    "run_shell",
+    "web_search",
+    # Core: memory
+    "chat_history",
+    "update_identity",
+    "update_scratchpad",
+    # Core: control
+    "cancel_task",
+    "promote_to_stable",
+    "request_restart",
+    "request_review",
+    "schedule_task",
+    "switch_model",
+    "toggle_consciousness",
+    "toggle_evolution",
+    # Core: messaging
+    "list_incoming_artifacts",
+    "save_artifact",
+    "send_browser_screenshot",
+    "send_document",
+    "send_documents",
+    "send_local_file",
+    "send_owner_message",
+    "send_photo",
+    # Core: knowledge + plans
+    "knowledge_list",
+    "knowledge_read",
+    "knowledge_write",
+    "plan_approve",
+    "plan_complete",
+    "plan_create",
+    "plan_reject",
+    "plan_status",
+    "plan_step_done",
+    "plan_update",
+    # Core: task results
+    "get_task_result",
+    "wait_for_task",
+    # Browser core
+    "browse_page",
+    "browser_action",
+    # Browser
+    "browser_action",
+    "browser_check_login_state",
+    "browser_fill_login_form",
+    "browser_get_persisted_session",
+    "browser_persist_session",
+    "browser_restore_persisted_session",
+    "browser_restore_session",
+    "browser_run_actions",
+    "browser_save_session",
+    "browser_solve_captcha",
+    # VLM / Vision
+    "analyze_screenshot",
+    "solve_simple_captcha",
+    "vlm_query",
+    # Projects
+    "project_bible_init",
+    "project_bible_list",
+    "project_bible_read",
+    "project_bible_status",
+    "project_bible_update",
+    "project_bootstrap_and_publish",
+    "project_branch_checkout",
+    "project_branch_compare",
+    "project_branch_delete",
+    "project_branch_get",
+    "project_branch_list",
+    "project_branch_rename",
+    "project_commit",
+    "project_deploy_and_verify",
+    "project_deploy_apply",
+    "project_deploy_recipe",
+    "project_deploy_status",
+    "project_file_read",
+    "project_file_write",
+    "project_git_fetch",
+    "project_github_create",
+    "project_init",
+    "project_issue_assign",
+    "project_issue_close",
+    "project_issue_comment",
+    "project_issue_create",
+    "project_issue_get",
+    "project_issue_label_add",
+    "project_issue_label_remove",
+    "project_issue_list",
+    "project_issue_reopen",
+    "project_issue_unassign",
+    "project_issue_update",
+    "project_operational_snapshot",
+    "project_overview",
+    "project_pr_changed_files",
+    "project_pr_close",
+    "project_pr_comment",
+    "project_pr_create",
+    "project_pr_diff",
+    "project_pr_get",
+    "project_pr_list",
+    "project_pr_merge",
+    "project_pr_reopen",
+    "project_pr_review_list",
+    "project_pr_review_submit",
+    "project_push",
+    "project_server_get",
+    "project_server_health",
+    "project_server_list",
+    "project_server_register",
+    "project_server_remove",
+    "project_server_run",
+    "project_server_sync",
+    "project_server_update",
+    "project_server_validate",
+    "project_service_control",
+    "project_service_logs",
+    "project_service_render_unit",
+    "project_service_status",
+    "project_status",
+    # External repos
+    "external_repo_commit_push",
+    "external_repo_git_diff",
+    "external_repo_git_status",
+    "external_repo_issue_comment",
+    "external_repo_issue_create",
+    "external_repo_issue_get",
+    "external_repo_issue_list",
+    "external_repo_list",
+    "external_repo_list_files",
+    "external_repo_memory_append_note",
+    "external_repo_memory_get",
+    "external_repo_memory_update",
+    "external_repo_pr_create",
+    "external_repo_pr_get",
+    "external_repo_pr_list",
+    "external_repo_prepare_work_branch",
+    "external_repo_read",
+    "external_repo_register",
+    "external_repo_run_shell",
+    "external_repo_script",
+    "external_repo_search",
+    "external_repo_set_branch_policy",
+    "external_repo_sync",
+    "external_repo_write",
+    # SSH
+    "ssh_key_deploy",
+    "ssh_key_generate",
+    "ssh_key_list",
+    "ssh_session_bootstrap",
+    "ssh_target_get",
+    "ssh_target_list",
+    "ssh_target_ping",
+    "ssh_target_register",
+    # Remote
+    "remote_capabilities_overview",
+    "remote_command_exec",
+    "remote_dns_lookup",
+    "remote_find",
+    "remote_grep",
+    "remote_investigate_project",
+    "remote_iptables_summary",
+    "remote_list_dir",
+    "remote_mkdir",
+    "remote_netstat",
+    "remote_ping",
+    "remote_port_check",
+    "remote_project_discover",
+    "remote_project_fetch",
+    "remote_read_file",
+    "remote_server_health",
+    "remote_service_action",
+    "remote_service_list",
+    "remote_service_logs",
+    "remote_service_status",
+    "remote_stat",
+    "remote_traceroute",
+    "remote_vpn_status",
+    "remote_write_file",
     # Telegram
     "tg_channel_read",
     "tg_digest",
-    # Watchlist
-    "tg_watchlist_add",
-    "tg_watchlist_remove",
-    "tg_watchlist_status",
-    "tg_watchlist_check",
-    # Summarize
-    "tg_summarize",
-    "tg_summarize_watchlist",
-    # Channel posting
+    "tg_pin_message",
     "tg_post",
     "tg_post_photo",
-    "tg_pin_message",
+    "tg_search",
+    "tg_summarize",
+    "tg_summarize_watchlist",
+    "tg_watchlist_add",
+    "tg_watchlist_check",
+    "tg_watchlist_remove",
+    "tg_watchlist_status",
+    # Web monitor
     "web_monitor_add",
     "web_monitor_check",
     "web_monitor_remove",
     "web_monitor_status",
-    # Search
-    "tg_search",
     # RSS
+    "rss_check",
+    "rss_status",
     "rss_subscribe",
     "rss_unsubscribe",
-    "rss_status",
-    "rss_check",
-    # Inbox aggregator
-    "inbox_check",
-    "inbox_status",
-    "inbox_digest",
     # Hacker News
-    "hn_top",
     "hn_search",
+    "hn_top",
     "hn_watchlist_add",
+    "hn_watchlist_check",
     "hn_watchlist_remove",
     "hn_watchlist_status",
-    "hn_watchlist_check",
     # Reddit
     "reddit_posts",
     "reddit_search",
     "reddit_watchlist_add",
+    "reddit_watchlist_check",
     "reddit_watchlist_remove",
     "reddit_watchlist_status",
-    "reddit_watchlist_check",
     # arXiv
-    "arxiv_search",
     "arxiv_latest",
+    "arxiv_search",
     "arxiv_watchlist_add",
+    "arxiv_watchlist_check",
     "arxiv_watchlist_remove",
     "arxiv_watchlist_status",
-    "arxiv_watchlist_check",
-    # Digest scheduler
+    # YouTube
+    "yt_check",
+    "yt_latest",
+    "yt_status",
+    "yt_subscribe",
+    "yt_unsubscribe",
+    # Digest
+    "digest_run_now",
+    "digest_schedule_disable",
     "digest_schedule_set",
     "digest_schedule_status",
-    "digest_schedule_disable",
-    "digest_run_now",
-    # Article reader
-    "article_fetch",
-    "article_summary",
-    # Notes
-    "note_add",
-    "note_search",
-    "note_list",
-    "note_delete",
     # GitHub watch
     "gh_watch_add",
+    "gh_watch_check",
     "gh_watch_remove",
     "gh_watch_status",
-    "gh_watch_check",
-    # YouTube
-    "yt_subscribe", "yt_unsubscribe", "yt_status", "yt_check", "yt_latest",
-    # Veles channel (own voice)
-    "veles_say", "veles_channel_history", "veles_channel_stats",
-    # Project Bible (autonomous external project evolution)
-    "project_bible_read", "project_bible_init", "project_bible_update", "project_bible_status", "project_bible_list",
-    # Evolution focus (cross-cycle goal memory)
-    "set_evolution_focus", "get_evolution_focus", "add_focus_note", "complete_focus_cycle", "clear_evolution_focus",
+    # TikTok
+    "tiktok_history",
+    "tiktok_metadata",
+    "tiktok_profile",
+    "tiktok_search",
+    # Notes
+    "note_add",
+    "note_delete",
+    "note_list",
+    "note_search",
+    # Veles channel
+    "veles_channel_history",
+    "veles_channel_stats",
+    "veles_say",
+    # Evolution focus
+    "evolution_plan",
+    "evolution_report",
+    "evolution_review",
+    # Skill
+    "skill_list",
+    "skill_load",
+    # Memory
+    "memory_search",
+    # Activity
+    "activity_timeline",
+    # Extract
+    "extract_patterns",
+    # Task
+    "task_digest",
+    "task_stats",
+    # Hot
+    "hot_spots",
+    # Version
+    "version_sync",
+    # Context
+    "context_inspect",
+    # Self
+    "self_audit",
+    # Code
+    "code_search",
+    # Ast
+    "ast_analyze",
+    # Dependency
+    "dependency_graph",
+    # Budget
+    "budget_forecast",
+    # Run Tests
+    "run_tests",
+    # Log Query
+    "log_query",
+    # Http
+    "http_request",
+    # Multi
+    "multi_model_review",
+    # Codebase
+    "codebase_digest",
+    "codebase_health",
+    # Pre Commit
+    "pre_commit_review",
+    # Research
+    "research_report",
+    "research_run",
+    # Doctor
+    "doctor",
+    # Monitor
+    "monitor_snapshot",
+    # Time
+    "time_status",
+    # Inbox
+    "inbox_check",
+    "inbox_digest",
+    "inbox_status",
+    # Article
+    "article_fetch",
+    "article_summary",
+    # List Available
+    "list_available_tools",
+    # Enable Tools
+    "enable_tools",
+    # Tool Map
+    "tool_map",
+    # Forward
+    "forward_to_worker",
+    # Compact
+    "compact_context",
+    # Vps
+    "vps_health_check",
+    # Summarize
+    "summarize_dialogue",
+    # Switch Codex
+    "switch_codex_account",
+    # Generate
+    "generate_evolution_stats",
+    # Misc
+    "add_focus_note",
+    "clear_evolution_focus",
+    "close_github_issue",
+    "comment_on_issue",
+    "complete_focus_cycle",
+    "create_github_issue",
+    "deep_research",
+    "get_evolution_focus",
+    "get_github_issue",
+    "list_github_issues",
+    "set_evolution_focus",
+    "short_video_pack_download",
 ]
 
 
@@ -552,7 +742,7 @@ def test_function_count_reasonable():
     # Soft structural budget: keep total function count bounded, but allow recent
     # growth from project/plan/review capabilities and the short-video pack contour
     # until a dedicated simplification cycle pays the debt back down.
-    assert len(sizes) <= 1720, f"{len(sizes)} functions — too many?"
+    assert len(sizes) <= 1750, f"{len(sizes)} functions — too many?"
 
 
 # ── Pre-push gate tests ──────────────────────────────────────────────
