@@ -177,9 +177,9 @@ def _parse_changed_lines(diff_text: str) -> Dict[str, Set[int]]:
             start_line = int(hunk_header_match.group(1))
             current_line = start_line
 
-            # Walk through hunk lines
-            rest = hunk_part[hunk_header_match.end():]
-            for raw_line in rest.splitlines():
+            # Walk through hunk lines (skip the trailing @@ header text on same line)
+            rest_lines = hunk_part[hunk_header_match.end():].splitlines()
+            for raw_line in rest_lines[1:]:  # first element is @@ ... tail, skip it
                 if raw_line.startswith("+"):
                     added_lines.add(current_line)
                     current_line += 1
