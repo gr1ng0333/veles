@@ -174,13 +174,13 @@ class FunctionTrend:
 
     @property
     def trend_label(self) -> str:
+        swing = self.peak - self.trough
         d = abs(self.delta)
+        # Volatile check first: large swing even if net delta is small
+        if swing >= 5 and swing > max(d, 3) * 1.5:
+            return "volatile"
         if d < 2:
             return "stable"
-        swing = self.peak - self.trough
-        # Volatile: the range of values significantly exceeds the net delta
-        if swing > max(d, 3) * 1.5:
-            return "volatile"
         if self.delta > 0:
             return "rising"
         return "falling"
