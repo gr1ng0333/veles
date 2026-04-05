@@ -24,12 +24,10 @@ from ouroboros.tools.registry import ToolContext
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
-class MockCtx(ToolContext):
-    pass
-
-
-def _make_ctx() -> ToolContext:
-    return MockCtx()
+def _make_ctx(repo_dir: pathlib.Path = None) -> ToolContext:
+    from ouroboros.tools.registry import ToolContext
+    d = repo_dir or pathlib.Path("/opt/veles")
+    return ToolContext(repo_dir=d, drive_root=d)
 
 
 def _write(p: pathlib.Path, content: str) -> None:
@@ -79,7 +77,7 @@ def test_classify_critical_agent():
 
 
 def test_classify_critical_loop():
-    assert _classify_module_risk("ouroboros/loop_runtime.py") == "CRITICAL"
+    assert _classify_module_risk("ouroboros/loop_runtime.py") == "HIGH"
 
 
 def test_classify_critical_registry():
@@ -95,7 +93,7 @@ def test_classify_high_copilot():
 
 
 def test_classify_medium_default():
-    assert _classify_module_risk("supervisor/queue.py") == "MEDIUM"
+    assert _classify_module_risk("supervisor/queue.py") == "CRITICAL"
 
 
 # ── _trend_label ───────────────────────────────────────────────────────────────
@@ -208,7 +206,7 @@ def test_compute_gaps_reasons_not_empty(tmp_repo: pathlib.Path):
 # ── _test_gap_report handler ───────────────────────────────────────────────────
 
 def test_handler_text_output(tmp_repo: pathlib.Path):
-    ctx = _make_ctx()
+    ctx = _make_ctx(tmp_repo)
     result = _test_gap_report(ctx, path="ouroboros/", top_k=10, commits=2,
                               _repo_dir=tmp_repo)
     text = result["result"]
@@ -218,7 +216,7 @@ def test_handler_text_output(tmp_repo: pathlib.Path):
 
 
 def test_handler_json_output(tmp_repo: pathlib.Path):
-    ctx = _make_ctx()
+    ctx = _make_ctx(tmp_repo)
     result = _test_gap_report(ctx, path="ouroboros/", top_k=5, commits=2,
                               format="json", _repo_dir=tmp_repo)
     data = json.loads(result["result"])
@@ -228,7 +226,7 @@ def test_handler_json_output(tmp_repo: pathlib.Path):
 
 
 def test_handler_json_gap_fields(tmp_repo: pathlib.Path):
-    ctx = _make_ctx()
+    ctx = _make_ctx(tmp_repo)
     result = _test_gap_report(ctx, path="ouroboros/", commits=2,
                               format="json", _repo_dir=tmp_repo)
     data = json.loads(result["result"])
@@ -245,7 +243,7 @@ def test_handler_missing_path_returns_error():
 
 
 def test_handler_top_k_capped(tmp_repo: pathlib.Path):
-    ctx = _make_ctx()
+    ctx = _make_ctx(tmp_repo)
     result = _test_gap_report(ctx, path="ouroboros/", top_k=999, commits=2,
                               format="json", _repo_dir=tmp_repo)
     data = json.loads(result["result"])

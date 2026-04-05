@@ -1,18 +1,19 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.1.72-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.1.73-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.1.72 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.1.73 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Release notes
+- 7.1.73 — test_gap_report tool — coverage gaps ranked by multi-signal risk (complexity+trend+churn+tier); 31 tests
 - 7.1.72 — complexity_trend tool — per-function cyclomatic complexity delta over git history (rising/falling/volatile); 33 tests
 - 7.1.71 — coupling_map tool — Robert Martin Ca/Ce/Instability metrics, zones (RIGID/BALANCED/UNSTABLE/ISOLATED), 29 tests
 - 7.1.70 — test_coverage_map tool — per-function AST coverage heuristics (name_match/call_ref/import_ref signals); 31 tests
