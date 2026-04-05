@@ -449,6 +449,7 @@ EXPECTED_TOOLS = [
     "dep_cycles",
     "doc_coverage",
     "duplicate_code",
+    "exception_audit",
     "get_evolution_focus",
     "get_github_issue",
     "list_github_issues",
