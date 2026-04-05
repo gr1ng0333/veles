@@ -142,7 +142,7 @@ def _extract_functions(path: pathlib.Path) -> List[FunctionInfo]:
 
 # ── AST analysis: test file signals ──────────────────────────────────────────
 
-class TestFileInfo:
+class _TestFileInfo:
     """Pre-parsed test file: name-match candidates, call names, import names."""
 
     def __init__(self, path: pathlib.Path) -> None:
@@ -199,7 +199,7 @@ class TestFileInfo:
 
 # ── Coverage signals ──────────────────────────────────────────────────────────
 
-def _find_test_files(source_path: pathlib.Path, repo_dir: pathlib.Path) -> List[TestFileInfo]:
+def _find_test_files(source_path: pathlib.Path, repo_dir: pathlib.Path) -> List[_TestFileInfo]:
     """Find test files that are likely to test the given source file."""
     stem = source_path.stem  # e.g. "dep_cycles"
     tests_dir = repo_dir / "tests"
@@ -214,12 +214,12 @@ def _find_test_files(source_path: pathlib.Path, repo_dir: pathlib.Path) -> List[
         elif stem in f.stem:
             candidates.append(f)
 
-    return [TestFileInfo(p) for p in candidates]
+    return [_TestFileInfo(p) for p in candidates]
 
 
 def _check_coverage_signals(
     func: FunctionInfo,
-    test_files: List[TestFileInfo],
+    test_files: List[_TestFileInfo],
 ) -> Tuple[bool, str]:
     """
     Return (is_covered, signal_description).
@@ -283,7 +283,7 @@ def _analyse_file(
     repo_dir: pathlib.Path,
     include_private: bool,
     status_filter: Optional[str],
-) -> Tuple[List[FunctionCoverage], List[TestFileInfo]]:
+) -> Tuple[List[FunctionCoverage], List[_TestFileInfo]]:
     """Analyse one file. Returns (coverage_list, test_files_used)."""
     functions = _extract_functions(source_path)
     test_files = _find_test_files(source_path, repo_dir)
@@ -450,8 +450,9 @@ def _test_coverage_map(
     status: str = "all",
     include_private: bool = False,
     format: str = "text",
+    _repo_dir: Optional[pathlib.Path] = None,
 ) -> str:
-    repo_dir = _REPO_DIR
+    repo_dir = _repo_dir if _repo_dir is not None else _REPO_DIR
     resolved = _resolve_target(target, repo_dir)
     if resolved is None:
         return f"❌ Cannot resolve target: {target!r}"
