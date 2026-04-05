@@ -446,6 +446,7 @@ EXPECTED_TOOLS = [
     "get_evolution_focus",
     "get_github_issue",
     "list_github_issues",
+    "module_health",
     "semantic_diff",
     "set_evolution_focus",
     "short_video_pack_download",
