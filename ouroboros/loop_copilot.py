@@ -23,8 +23,8 @@ log = _rootlog.getChild("loop_copilot") if hasattr(_rootlog, "getChild") else _r
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-MAX_SESSION_RESETS = 10
-COPILOT_MAX_ROUNDS = COPILOT_SESSION_ROUND_LIMIT * MAX_SESSION_RESETS  # 280
+MAX_SESSION_RESETS = 5
+COPILOT_MAX_ROUNDS = COPILOT_SESSION_ROUND_LIMIT * MAX_SESSION_RESETS  # 140
 COPILOT_WRAP_UP_ROUNDS_BEFORE = 2  # inject wrap-up N rounds before session boundary
 
 EVOLUTION_COPILOT_REQUEST_DELAY_SEC = float(
