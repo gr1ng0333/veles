@@ -102,6 +102,9 @@
 - Формулировка запроса сильно влияет на discovery: неточный вопрос может увести поиск в соседнюю, но правдоподобную тему.
 
 ## Changelog
+### v7.1.58 (2026-04-05)
+- evolution_focus: cross-cycle strategic goal memory — set/get/note/cycle/clear + context injection for evolution tasks; 27 tests
+
 ### v7.1.57 (2026-04-05)
 - `memory_search`: upgraded scoring from TF-IDF to BM25 (k1=1.5, b=0.75); added fuzzy query expansion via difflib.SequenceMatcher (threshold 0.82) — typo-tolerant, synonym-aware search across all memory sources. 58 tests green.
 
