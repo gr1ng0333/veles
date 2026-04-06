@@ -253,6 +253,8 @@ EXPECTED_TOOLS = [
     "project_bible_read", "project_bible_init", "project_bible_update", "project_bible_status", "project_bible_list",
     # RAG document search
     "rag_index", "rag_query", "rag_list", "rag_delete",
+    # Telegram user account (on-demand, firewall-protected)
+    "tg_inbox_read", "tg_send_as_me", "tg_user_account_status",
 ]
 
 
