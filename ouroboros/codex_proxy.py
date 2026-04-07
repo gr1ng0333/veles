@@ -195,21 +195,66 @@ def _output_to_chat_message(output: List[Dict[str, Any]]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _parse_sse_response(raw: str) -> Dict[str, Any]:
-    """Parse SSE stream text and extract the response.completed event payload."""
+    """Parse SSE stream and extract the response.completed event payload.
+
+    If response.completed has empty output (new Codex API behavior since
+    Apr 2026), reconstructs output from SSE delta events that precede it.
+    """
     current_event = ""
     current_data_lines: List[str] = []
 
+    # Accumulate content from SSE deltas as fallback
+    delta_texts: Dict[int, List[str]] = {}      # output_index -> text chunks
+    delta_fn_args: Dict[int, List[str]] = {}     # output_index -> argument chunks
+    item_meta: Dict[int, Dict[str, Any]] = {}    # output_index -> item from output_item.done/added
+    completed_payload: Optional[Dict[str, Any]] = None
+
+    def _dispatch(event_name: str, data_str: str) -> None:
+        nonlocal completed_payload
+        try:
+            data = json.loads(data_str)
+        except json.JSONDecodeError:
+            if event_name == "response.completed":
+                log.warning("Failed to parse response.completed data: %s", data_str[:200])
+            return
+
+        etype = data.get("type", event_name)
+
+        if event_name == "response.completed" or etype == "response.completed":
+            completed_payload = data
+            return
+
+        idx = data.get("output_index")
+        if idx is None:
+            return
+
+        if etype == "response.output_item.added":
+            item = data.get("item", {})
+            if idx not in item_meta:
+                item_meta[idx] = item
+
+        elif etype == "response.output_item.done":
+            item = data.get("item", {})
+            item_meta[idx] = item  # final state overrides added
+
+        elif etype == "response.output_text.delta":
+            delta = data.get("delta", "")
+            if delta:
+                delta_texts.setdefault(idx, []).append(delta)
+
+        elif etype == "response.function_call_arguments.delta":
+            delta = data.get("delta", "")
+            if delta:
+                delta_fn_args.setdefault(idx, []).append(delta)
+
+    # Parse SSE lines
     for line in raw.split("\n"):
         stripped = line.strip()
 
         if stripped == "":
             # Blank line -> dispatch buffered event
-            if current_event == "response.completed" and current_data_lines:
-                data_str = "\n".join(current_data_lines)
-                try:
-                    return json.loads(data_str)
-                except json.JSONDecodeError:
-                    log.warning("Failed to parse response.completed data: %s", data_str[:200])
+            if current_data_lines:
+                _dispatch(current_event, "\n".join(current_data_lines))
             current_event = ""
             current_data_lines = []
             continue
@@ -219,12 +264,64 @@ def _parse_sse_response(raw: str) -> Dict[str, Any]:
         elif stripped.startswith("data:"):
             current_data_lines.append(stripped[5:].strip())
 
-    # Handle case where stream ends without trailing blank line
-    if current_event == "response.completed" and current_data_lines:
-        data_str = "\n".join(current_data_lines)
-        return json.loads(data_str)
+    # Handle trailing event without blank line
+    if current_data_lines:
+        _dispatch(current_event, "\n".join(current_data_lines))
 
-    raise ValueError("No response.completed event found in SSE stream")
+    if completed_payload is None:
+        raise ValueError("No response.completed event found in SSE stream")
+
+    # Check if output is empty and we have delta content to reconstruct
+    response = completed_payload.get("response", {})
+    output = response.get("output", [])
+
+    if not output and (delta_texts or delta_fn_args):
+        reconstructed: List[Dict[str, Any]] = []
+        all_indices = sorted(set(
+            list(delta_texts.keys()) +
+            list(delta_fn_args.keys()) +
+            list(item_meta.keys())
+        ))
+
+        for idx in all_indices:
+            meta = item_meta.get(idx, {})
+            item_type = meta.get("type", "")
+
+            # Skip reasoning items — no visible content
+            if item_type == "reasoning":
+                continue
+
+            # Text message
+            if idx in delta_texts:
+                text = "".join(delta_texts[idx])
+                if text:
+                    reconstructed.append({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    })
+
+            # Function call
+            if idx in delta_fn_args or item_type == "function_call":
+                args = "".join(delta_fn_args.get(idx, []))
+                if not args and meta.get("arguments"):
+                    args = meta["arguments"]
+                reconstructed.append({
+                    "type": "function_call",
+                    "call_id": meta.get("call_id", ""),
+                    "name": meta.get("name", ""),
+                    "arguments": args or "{}",
+                })
+
+        if reconstructed:
+            response["output"] = reconstructed
+            log.info(
+                "Reconstructed %d output items from SSE deltas "
+                "(response.completed had empty output)",
+                len(reconstructed),
+            )
+
+    return completed_payload
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +369,7 @@ def _do_request(access_token: str, payload: Dict[str, Any]) -> Tuple[Dict[str, A
     # Extract quota from response headers
     quota = _extract_codex_quota(resp_headers)
 
-    # Debug: dump raw SSE response
+    # Debug: dump raw SSE response (first 50KB)
     try:
         Path("/tmp/codex_sse_raw.txt").write_text(raw[:50000], encoding="utf-8")
     except Exception:
