@@ -110,6 +110,33 @@ def _parse_docx(path: pathlib.Path) -> str:
         return ""
 
 
+def _parse_doc(path: pathlib.Path) -> str:
+    """Extract text from legacy .doc via antiword (fallback to python-docx)."""
+    import shutil
+    import subprocess
+    # Try antiword first (native .doc support)
+    antiword = shutil.which('antiword')
+    if antiword:
+        try:
+            proc = subprocess.run(
+                [antiword, str(path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout.strip()
+        except Exception as exc:
+            log.warning("rag: antiword failed for %s: %s", path, exc)
+    # Fallback: some .doc files are actually .docx with wrong extension
+    try:
+        import docx  # type: ignore
+        doc = docx.Document(str(path))
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    except Exception:
+        pass
+    log.warning("rag: cannot parse legacy .doc %s (no antiword, not a docx)", path)
+    return ""
+
+
 _TEXT_EXTS = frozenset("""
 .txt .md .rst .tex .yaml .yml .toml .ini .cfg .conf .env
 .py .js .ts .go .rs .java .c .cpp .h .rb .php .swift .kt
@@ -122,8 +149,10 @@ def _parse_file(path: pathlib.Path) -> str:
     ext = path.suffix.lower()
     if ext == ".pdf":
         return _parse_pdf(path)
-    if ext in (".docx", ".doc"):
+    if ext == ".docx":
         return _parse_docx(path)
+    if ext == ".doc":
+        return _parse_doc(path)
     if ext in _TEXT_EXTS or not ext:
         return _parse_text(path)
     # Try as text anyway
