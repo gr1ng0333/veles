@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -12,19 +13,243 @@ from typing import Any, Dict, List, Optional, Tuple
 log = logging.getLogger(__name__)
 
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-TOKEN_FILE = Path("/opt/veles-data/state/codex_tokens.json")
-ACCOUNTS_STATE_FILE = Path("/opt/veles-data/state/codex_accounts_state.json")
-REFRESH_THRESHOLD_SEC = 3600
-RATE_LIMIT_COOLDOWN_SEC = 600
-RATE_LIMIT_REPEAT_WINDOW = 1800
-RATE_LIMIT_ESCALATED_SEC = 3600
-RATE_LIMIT_EXHAUSTED_SEC = 7200
+
+# ── Paths ───────────────────────────────────────────────────────────────
+# Single source of truth for all Codex account data (tokens + state).
+# Survives restarts AND crashes (atomic writes via tmp+rename).
+ACCOUNTS_FILE = Path("/opt/veles-data/state/codex_accounts.json")
+
+# Legacy paths — read on migration only, then ignored
+_LEGACY_STATE_FILE = Path("/opt/veles-data/state/codex_accounts_state.json")
+_LEGACY_TOKEN_FILE = Path("/opt/veles-data/state/codex_tokens.json")
+
+# ── Timing constants ────────────────────────────────────────────────────
+REFRESH_THRESHOLD_SEC = 3600        # refresh access when <1h left
+RATE_LIMIT_COOLDOWN_SEC = 600       # 10 min after 429
+RATE_LIMIT_REPEAT_WINDOW = 1800     # 30 min window for repeated 429
+RATE_LIMIT_ESCALATED_SEC = 3600     # 1h if repeated 429
+RATE_LIMIT_EXHAUSTED_SEC = 7200     # 2h if quota fully used
+QUOTA_REFRESH_MIN_INTERVAL = 300    # skip quota probe if fresher than 5m
 AUTH_FAILURE_CODES = {401, 403}
 
 _accounts_lock = threading.Lock()
 _accounts: List[Dict[str, Any]] = []
 _active_idx: int = 0
 
+
+# ════════════════════════════════════════════════════════════════════════
+#  ATOMIC PERSISTENCE
+# ════════════════════════════════════════════════════════════════════════
+
+def _atomic_write_json(path: Path, data: Any) -> None:
+    """Write JSON atomically: write to tmp file then os.replace.
+    Survives crashes — either old file or new file, never partial."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  ACCOUNT LOADING — single file, with .env seed fallback
+# ════════════════════════════════════════════════════════════════════════
+
+def _tolerant_json_loads(raw: str) -> Any:
+    """Parse JSON that may have single quotes, unquoted keys, trailing commas, BOM."""
+    s = raw.strip()
+    if s.startswith("\ufeff"):
+        s = s[1:]
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        inner = s[1:-1]
+        if s[0] == '"':
+            inner = inner.replace('\\"', '"')
+        if inner.lstrip().startswith(("[", "{")):
+            s = inner
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    fixed = s.replace("'", '"')
+    fixed = re.sub(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:', r' "\1":', fixed)
+    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+    return json.loads(fixed)
+
+
+def _empty_account(refresh: str) -> Dict[str, Any]:
+    """Create a fresh account dict from a refresh token."""
+    return {
+        "access": "",
+        "refresh": refresh,
+        "expires": 0.0,
+        "cooldown_until": 0.0,
+        "dead": False,
+        "last_429_at": 0.0,
+        "request_timestamps": [],
+        "quota": {},
+        "last_error": {},
+    }
+
+
+def _parse_env_seed() -> List[Dict[str, Any]]:
+    """Parse CODEX_ACCOUNTS from .env as initial seed (refresh tokens only)."""
+    raw = os.environ.get("CODEX_ACCOUNTS", "")
+    if not raw:
+        return []
+    try:
+        parsed = _tolerant_json_loads(raw)
+        if not isinstance(parsed, list):
+            return []
+        accounts = []
+        for item in parsed:
+            if isinstance(item, dict) and item.get("refresh"):
+                accounts.append(_empty_account(item["refresh"]))
+        if accounts:
+            log.info("Parsed %d Codex accounts from CODEX_ACCOUNTS env (seed)", len(accounts))
+        return accounts
+    except (json.JSONDecodeError, ValueError) as e:
+        log.error("Failed to parse CODEX_ACCOUNTS env: %s  |  raw[:200]=%s", e, raw[:200])
+        return []
+
+
+def _migrate_legacy_state(accounts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge runtime state from legacy codex_accounts_state.json if it exists."""
+    if not _LEGACY_STATE_FILE.exists():
+        return accounts
+    try:
+        raw_state = json.loads(_LEGACY_STATE_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw_state, dict):
+            state_list = raw_state.get("accounts", [])
+        elif isinstance(raw_state, list):
+            state_list = raw_state
+        else:
+            return accounts
+        if not isinstance(state_list, list):
+            return accounts
+
+        now = time.time()
+        cutoff = now - 604800
+        for i, s in enumerate(state_list):
+            if i >= len(accounts) or not isinstance(s, dict):
+                continue
+            # Only take state that's newer/better than seed
+            if s.get("access"):
+                accounts[i]["access"] = s["access"]
+            if s.get("refresh"):
+                accounts[i]["refresh"] = s["refresh"]
+            if s.get("expires"):
+                accounts[i]["expires"] = float(s["expires"])
+            accounts[i]["cooldown_until"] = float(s.get("cooldown_until", 0))
+            accounts[i]["last_429_at"] = float(s.get("last_429_at", 0))
+            if s.get("quota") and isinstance(s["quota"], dict):
+                accounts[i]["quota"] = s["quota"]
+            if s.get("last_error") and isinstance(s["last_error"], dict):
+                accounts[i]["last_error"] = s["last_error"]
+            raw_ts = s.get("request_timestamps", [])
+            if isinstance(raw_ts, list):
+                accounts[i]["request_timestamps"] = [
+                    t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff
+                ]
+        log.info("Migrated state from legacy %s", _LEGACY_STATE_FILE)
+        return accounts
+    except Exception as e:
+        log.warning("Failed to migrate legacy state: %s", e)
+        return accounts
+
+
+def _load_accounts() -> List[Dict[str, Any]]:
+    """Load accounts from the single source of truth file.
+
+    Priority:
+    1. ACCOUNTS_FILE exists → use it (already has tokens + state)
+    2. Legacy state file exists → seed from .env, merge legacy state, save to new file
+    3. Neither exists → seed from .env, save to new file
+    """
+    if ACCOUNTS_FILE.exists():
+        try:
+            data = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                accs = data.get("accounts", [])
+                if isinstance(accs, list) and accs:
+                    now = time.time()
+                    cutoff = now - 604800
+                    for acc in accs:
+                        raw_ts = acc.get("request_timestamps", [])
+                        if isinstance(raw_ts, list):
+                            acc["request_timestamps"] = [
+                                t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff
+                            ]
+                    log.info("Loaded %d Codex accounts from %s", len(accs), ACCOUNTS_FILE)
+
+                    # Check if .env has MORE accounts than the file (user added new ones)
+                    env_accounts = _parse_env_seed()
+                    if len(env_accounts) > len(accs):
+                        # Append new accounts from .env seed
+                        for i in range(len(accs), len(env_accounts)):
+                            accs.append(env_accounts[i])
+                        log.info("Added %d new accounts from .env seed", len(env_accounts) - len(accs))
+                        _atomic_write_json(ACCOUNTS_FILE, {"active_idx": data.get("active_idx", 0), "accounts": accs})
+
+                    return accs
+        except Exception as e:
+            log.warning("Failed to load %s: %s", ACCOUNTS_FILE, e)
+
+    # No accounts file yet — seed from .env
+    accounts = _parse_env_seed()
+    if not accounts:
+        return []
+
+    # Try merging legacy state
+    accounts = _migrate_legacy_state(accounts)
+
+    # Save to new canonical file
+    try:
+        _atomic_write_json(ACCOUNTS_FILE, {"active_idx": 0, "accounts": accounts})
+        log.info("Created %s with %d accounts", ACCOUNTS_FILE, len(accounts))
+    except Exception as e:
+        log.warning("Failed to create %s: %s", ACCOUNTS_FILE, e)
+
+    return accounts
+
+
+def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
+    """Save current state to the single source of truth file."""
+    global _active_idx
+    try:
+        now = time.time()
+        cutoff_7d = now - 604800
+        serializable = []
+        for acc in accounts:
+            raw_ts = acc.get("request_timestamps", [])
+            pruned = [t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff_7d]
+            acc["request_timestamps"] = pruned
+            serializable.append({
+                "access": acc.get("access", ""),
+                "refresh": acc.get("refresh", ""),
+                "expires": acc.get("expires", 0),
+                "cooldown_until": acc.get("cooldown_until", 0),
+                "dead": acc.get("dead", False),
+                "last_429_at": acc.get("last_429_at", 0),
+                "request_timestamps": pruned,
+                "quota": acc.get("quota", {}),
+                "last_error": acc.get("last_error", {}),
+            })
+        _atomic_write_json(ACCOUNTS_FILE, {"active_idx": _active_idx, "accounts": serializable})
+    except Exception as e:
+        log.warning("Failed to save accounts state: %s", e)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  LEGACY SINGLE-TOKEN SUPPORT (_load_tokens / _save_tokens)
+#  Used by consciousness prefix and single-account fallback
+# ════════════════════════════════════════════════════════════════════════
 
 def _load_tokens(prefix: str = "CODEX") -> Dict[str, str]:
     if prefix == "CODEX":
@@ -43,9 +268,9 @@ def _load_tokens(prefix: str = "CODEX") -> Dict[str, str]:
         "expires": os.environ.get(expires_key, "0"),
         "account_id": os.environ.get(account_key, ""),
     }
-    if prefix == "CODEX" and not tokens["access_token"] and TOKEN_FILE.exists():
+    if prefix == "CODEX" and not tokens["access_token"] and _LEGACY_TOKEN_FILE.exists():
         try:
-            stored = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
+            stored = json.loads(_LEGACY_TOKEN_FILE.read_text(encoding="utf-8"))
             tokens["access_token"] = stored.get("access_token", "")
             tokens["refresh_token"] = stored.get("refresh_token", "")
             tokens["expires"] = str(stored.get("expires", "0"))
@@ -73,11 +298,15 @@ def _save_tokens(tokens: Dict[str, str], prefix: str = "CODEX") -> None:
         os.environ[account_key] = tokens["account_id"]
     if prefix == "CODEX":
         try:
-            TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-            TOKEN_FILE.write_text(json.dumps(tokens, indent=2), encoding="utf-8")
+            _LEGACY_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _LEGACY_TOKEN_FILE.write_text(json.dumps(tokens, indent=2), encoding="utf-8")
         except Exception as e:
             log.warning("Failed to save codex tokens to file: %s", e)
 
+
+# ════════════════════════════════════════════════════════════════════════
+#  OAUTH REFRESH
+# ════════════════════════════════════════════════════════════════════════
 
 def _do_refresh(refresh_token: str, auth_endpoint: str, urlopen) -> Optional[Dict[str, str]]:
     now = time.time()
@@ -139,114 +368,9 @@ def refresh_token_if_needed(auth_endpoint: str, urlopen, prefix: str = "CODEX") 
     return tokens["access_token"]
 
 
-def _tolerant_json_loads(raw: str) -> Any:
-    s = raw.strip()
-    if s.startswith("﻿"):
-        s = s[1:]
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
-        inner = s[1:-1]
-        if s[0] == '"':
-            inner = inner.replace('\"', '"')
-        if inner.lstrip().startswith(("[", "{")):
-            s = inner
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        pass
-    fixed = s.replace("'", '"')
-    fixed = re.sub(r'(?<=[{,])\s*([A-Za-z_]\w*)\s*:', r' "\1":', fixed)
-    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-    return json.loads(fixed)
-
-
-def _load_accounts() -> List[Dict[str, Any]]:
-    raw = os.environ.get("CODEX_ACCOUNTS", "")
-    accounts: List[Dict[str, Any]] = []
-    if raw:
-        try:
-            parsed = _tolerant_json_loads(raw)
-            if isinstance(parsed, list):
-                for item in parsed:
-                    if isinstance(item, dict) and item.get("refresh"):
-                        accounts.append({
-                            "access": item.get("access", ""),
-                            "refresh": item["refresh"],
-                            "expires": float(item.get("expires", 0)),
-                            "cooldown_until": 0.0,
-                            "dead": False,
-                            "last_429_at": 0.0,
-                            "request_timestamps": [],
-                            "quota": {},
-                            "last_error": {},
-                        })
-            if accounts:
-                log.info("Loaded %d Codex accounts from CODEX_ACCOUNTS", len(accounts))
-            else:
-                log.warning("CODEX_ACCOUNTS parsed but contained 0 valid accounts (need 'refresh' key)")
-        except (json.JSONDecodeError, ValueError) as e:
-            log.error("Failed to parse CODEX_ACCOUNTS: %s  |  raw[:200]=%s", e, raw[:200])
-    if ACCOUNTS_STATE_FILE.exists():
-        try:
-            raw_state = json.loads(ACCOUNTS_STATE_FILE.read_text(encoding="utf-8"))
-            if isinstance(raw_state, dict):
-                state = raw_state.get("accounts", [])
-            elif isinstance(raw_state, list):
-                state = raw_state
-            else:
-                state = []
-            if isinstance(state, list):
-                for i, s in enumerate(state):
-                    if i < len(accounts) and isinstance(s, dict):
-                        if s.get("access"):
-                            accounts[i]["access"] = s["access"]
-                        if s.get("refresh"):
-                            accounts[i]["refresh"] = s["refresh"]
-                        if s.get("expires"):
-                            accounts[i]["expires"] = float(s["expires"])
-                        accounts[i]["cooldown_until"] = float(s.get("cooldown_until", 0))
-                        accounts[i]["last_429_at"] = float(s.get("last_429_at", 0))
-                        if s.get("quota") and isinstance(s["quota"], dict):
-                            accounts[i]["quota"] = s["quota"]
-                        if s.get("last_error") and isinstance(s["last_error"], dict):
-                            accounts[i]["last_error"] = s["last_error"]
-                        raw_ts = s.get("request_timestamps", [])
-                        if isinstance(raw_ts, list):
-                            cutoff = time.time() - 604800
-                            accounts[i]["request_timestamps"] = [
-                                t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff
-                            ]
-        except Exception as e:
-            log.warning("Failed to load accounts state: %s", e)
-    return accounts
-
-
-def _save_accounts_state(accounts: List[Dict[str, Any]]) -> None:
-    global _active_idx
-    try:
-        ACCOUNTS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        serializable = []
-        now = time.time()
-        cutoff_7d = now - 604800
-        for acc in accounts:
-            raw_ts = acc.get("request_timestamps", [])
-            pruned = [t for t in raw_ts if isinstance(t, (int, float)) and t > cutoff_7d]
-            acc["request_timestamps"] = pruned
-            serializable.append({
-                "access": acc.get("access", ""),
-                "refresh": acc.get("refresh", ""),
-                "expires": acc.get("expires", 0),
-                "cooldown_until": acc.get("cooldown_until", 0),
-                "dead": acc.get("dead", False),
-                "last_429_at": acc.get("last_429_at", 0),
-                "request_timestamps": pruned,
-                "quota": acc.get("quota", {}),
-                "last_error": acc.get("last_error", {}),
-            })
-        state_obj = {"active_idx": _active_idx, "accounts": serializable}
-        ACCOUNTS_STATE_FILE.write_text(json.dumps(state_obj, indent=2), encoding="utf-8")
-    except Exception as e:
-        log.warning("Failed to save accounts state: %s", e)
-
+# ════════════════════════════════════════════════════════════════════════
+#  MULTI-ACCOUNT MANAGEMENT
+# ════════════════════════════════════════════════════════════════════════
 
 def _init_accounts(force: bool = False) -> None:
     global _accounts, _active_idx
@@ -255,9 +379,9 @@ def _init_accounts(force: bool = False) -> None:
     _accounts = _load_accounts()
     if _accounts:
         restored_idx = -1
-        if ACCOUNTS_STATE_FILE.exists():
+        if ACCOUNTS_FILE.exists():
             try:
-                raw_state = json.loads(ACCOUNTS_STATE_FILE.read_text(encoding="utf-8"))
+                raw_state = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
                 if isinstance(raw_state, dict):
                     restored_idx = int(raw_state.get("active_idx", -1))
             except Exception:
@@ -265,16 +389,16 @@ def _init_accounts(force: bool = False) -> None:
         now = time.time()
         if 0 <= restored_idx < len(_accounts):
             acc = _accounts[restored_idx]
-            if not acc["dead"] and acc["cooldown_until"] < now:
+            if not acc.get("dead") and acc.get("cooldown_until", 0) < now:
                 _active_idx = restored_idx
             else:
-                for i, acc in enumerate(_accounts):
-                    if not acc["dead"] and acc["cooldown_until"] < now:
+                for i, a in enumerate(_accounts):
+                    if not a.get("dead") and a.get("cooldown_until", 0) < now:
                         _active_idx = i
                         break
         else:
-            for i, acc in enumerate(_accounts):
-                if not acc["dead"] and acc["cooldown_until"] < now:
+            for i, a in enumerate(_accounts):
+                if not a.get("dead") and a.get("cooldown_until", 0) < now:
                     _active_idx = i
                     break
         log.info("Codex multi-account: %d accounts loaded, active=#%d", len(_accounts), _active_idx)
@@ -288,12 +412,12 @@ def _get_active_account() -> Optional[Tuple[Dict[str, Any], int]]:
             return None
         now = time.time()
         acc = _accounts[_active_idx]
-        if not acc["dead"] and acc["cooldown_until"] < now:
+        if not acc.get("dead") and acc.get("cooldown_until", 0) < now:
             return acc, _active_idx
         for i in range(len(_accounts)):
             idx = (_active_idx + 1 + i) % len(_accounts)
             acc = _accounts[idx]
-            if not acc["dead"] and acc["cooldown_until"] < now:
+            if not acc.get("dead") and acc.get("cooldown_until", 0) < now:
                 _active_idx = idx
                 log.info("Codex account rotation: switched to #%d", idx)
                 return acc, idx
@@ -334,13 +458,16 @@ def _on_dead_account(account_idx: int) -> None:
 
 
 def _refresh_account(acc: Dict[str, Any], account_idx: int, auth_endpoint: str, urlopen) -> str:
+    """Refresh access token ONLY if it's expired or about to expire.
+    This is the ONLY place that consumes refresh tokens for multi-account."""
     now = time.time()
-    if acc["access"] and (acc["expires"] - now) > REFRESH_THRESHOLD_SEC:
+    # If access token still has >1h of life — don't touch refresh at all
+    if acc.get("access") and (acc.get("expires", 0) - now) > REFRESH_THRESHOLD_SEC:
         return acc["access"]
-    if not acc["refresh"]:
+    if not acc.get("refresh"):
         log.warning("Account #%d: no refresh token", account_idx)
-        return acc["access"]
-    log.info("Refreshing account #%d token (expires in %.0fs)", account_idx, max(0, acc["expires"] - now))
+        return acc.get("access", "")
+    log.info("Refreshing account #%d token (expires in %.0fs)", account_idx, max(0, acc.get("expires", 0) - now))
     result = _do_refresh(acc["refresh"], auth_endpoint, urlopen)
     if result:
         with _accounts_lock:
@@ -348,9 +475,9 @@ def _refresh_account(acc: Dict[str, Any], account_idx: int, auth_endpoint: str, 
             acc["refresh"] = result["refresh_token"]
             acc["expires"] = float(result["expires"])
             _save_accounts_state(_accounts)
-        log.info("Account #%d token refreshed", account_idx)
+        log.info("Account #%d token refreshed, new refresh saved", account_idx)
         return acc["access"]
-    return acc["access"]
+    return acc.get("access", "")
 
 
 def _is_multi_account() -> bool:
@@ -374,6 +501,10 @@ def _record_successful_request(account_idx: int) -> None:
             _accounts[account_idx]["last_error"] = {}
             _save_accounts_state(_accounts)
 
+
+# ════════════════════════════════════════════════════════════════════════
+#  HTTP ERROR CLASSIFICATION
+# ════════════════════════════════════════════════════════════════════════
 
 def _body_snippet(raw: Any, limit: int = 500) -> str:
     if raw is None:
@@ -485,26 +616,37 @@ def force_switch_account(target_idx: int = -1) -> Dict[str, Any]:
         now = time.time()
         if target_idx >= 0:
             if target_idx >= len(_accounts):
-                return {"ok": False, "active_idx": _active_idx, "total": len(_accounts), "message": f"Index {target_idx} out of range (0-{len(_accounts)-1})"}
+                return {"ok": False, "active_idx": _active_idx, "total": len(_accounts),
+                        "message": f"Index {target_idx} out of range (0-{len(_accounts)-1})"}
             acc = _accounts[target_idx]
-            if acc["dead"]:
-                return {"ok": False, "active_idx": _active_idx, "total": len(_accounts), "message": f"Account #{target_idx} is dead"}
+            if acc.get("dead"):
+                return {"ok": False, "active_idx": _active_idx, "total": len(_accounts),
+                        "message": f"Account #{target_idx} is dead"}
             _active_idx = target_idx
             _save_accounts_state(_accounts)
             log.info("Force-switched to Codex account #%d", target_idx)
-            return {"ok": True, "active_idx": target_idx, "total": len(_accounts), "message": f"Switched to account #{target_idx}"}
+            return {"ok": True, "active_idx": target_idx, "total": len(_accounts),
+                    "message": f"Switched to account #{target_idx}"}
         for i in range(len(_accounts)):
             idx = (_active_idx + 1 + i) % len(_accounts)
             acc = _accounts[idx]
-            if not acc["dead"] and acc["cooldown_until"] < now:
+            if not acc.get("dead") and acc.get("cooldown_until", 0) < now:
                 _active_idx = idx
                 _save_accounts_state(_accounts)
                 log.info("Force-rotated to Codex account #%d", idx)
-                return {"ok": True, "active_idx": idx, "total": len(_accounts), "message": f"Rotated to account #{idx}"}
-        return {"ok": False, "active_idx": _active_idx, "total": len(_accounts), "message": "All other accounts dead or on cooldown"}
+                return {"ok": True, "active_idx": idx, "total": len(_accounts),
+                        "message": f"Rotated to account #{idx}"}
+        return {"ok": False, "active_idx": _active_idx, "total": len(_accounts),
+                "message": "All other accounts dead or on cooldown"}
 
+
+# ════════════════════════════════════════════════════════════════════════
+#  BOOTSTRAP & QUOTA (called at startup / on /accounts)
+# ════════════════════════════════════════════════════════════════════════
 
 def bootstrap_refresh_missing_access_tokens(auth_endpoint: str, urlopen) -> Dict[str, Any]:
+    """Refresh ONLY accounts that have NO valid access token.
+    Does NOT touch accounts with a live access token — their refresh stays intact."""
     refreshed: List[int] = []
     failed: List[int] = []
     skipped: List[int] = []
@@ -522,7 +664,9 @@ def bootstrap_refresh_missing_access_tokens(auth_endpoint: str, urlopen) -> Dict
             if acc.get("dead"):
                 skipped.append(idx)
                 continue
-            if acc.get("access"):
+            # KEY FIX: skip if access token exists AND is not expired
+            now = time.time()
+            if acc.get("access") and (acc.get("expires", 0) - now) > REFRESH_THRESHOLD_SEC:
                 skipped.append(idx)
                 continue
             if not acc.get("refresh"):
@@ -537,21 +681,17 @@ def bootstrap_refresh_missing_access_tokens(auth_endpoint: str, urlopen) -> Dict
     return {"total": total, "refreshed": refreshed, "failed": failed, "skipped": skipped}
 
 
-
-QUOTA_REFRESH_MIN_INTERVAL = 300  # 5 minutes — skip if fresher
-
-
 def refresh_all_quotas() -> Dict[int, Optional[Dict[str, Any]]]:
-    """Send a minimal request through each live account to capture fresh quota headers.
+    """Probe each live account for quota headers WITHOUT refreshing tokens.
 
-    Returns {account_idx: quota_dict or None if failed}.
+    Only sends a minimal request to accounts that already have a valid access token.
+    Does NOT call _refresh_account — never consumes refresh tokens.
     """
     import ssl
     import urllib.error
     import urllib.request
 
     CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
-    AUTH_ENDPOINT = "https://auth.openai.com/oauth/token"
 
     with _accounts_lock:
         _init_accounts()
@@ -567,19 +707,21 @@ def refresh_all_quotas() -> Dict[int, Optional[Dict[str, Any]]]:
         if acc.get("cooldown_until", 0) > now:
             results[idx] = None
             continue
+
         # Skip if quota was updated recently
         existing_q = acc.get("quota") or {}
         if existing_q.get("updated_at", 0) > now - QUOTA_REFRESH_MIN_INTERVAL:
             results[idx] = existing_q
             continue
 
-        # Refresh token if needed
-        access = _refresh_account(acc, idx, AUTH_ENDPOINT, urllib.request.urlopen)
-        if not access:
-            results[idx] = None
+        # KEY CHANGE: only probe if we already have a valid access token
+        access = acc.get("access", "")
+        if not access or acc.get("expires", 0) < now:
+            # No valid access — skip, don't burn refresh token for quota check
+            results[idx] = acc.get("quota") or None
             continue
 
-        # Minimal Codex request
+        # Minimal Codex request just for headers
         payload = {
             "model": "gpt-5.4",
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
@@ -600,9 +742,8 @@ def refresh_all_quotas() -> Dict[int, Optional[Dict[str, Any]]]:
             ctx = ssl.create_default_context()
             with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
                 resp_headers = dict(resp.headers)
-                resp.read()  # drain body
+                resp.read()
 
-            # Extract quota from headers
             quota: Dict[str, Any] = {}
             for k, v in resp_headers.items():
                 kl = k.lower()
@@ -633,13 +774,13 @@ def refresh_all_quotas() -> Dict[int, Optional[Dict[str, Any]]]:
             _set_last_error(idx, diagnostic)
             if diagnostic["category"] == "rate_limit":
                 _on_rate_limit(idx, retry_after=diagnostic.get("retry_after", 0), reason=diagnostic.get("reason", "rate_limited"))
-                quota = {
+                q = {
                     k: diagnostic[k]
                     for k in ("primary_used_percent", "secondary_used_percent")
                     if diagnostic.get(k) is not None
                 }
-                if quota:
-                    _update_account_quota(idx, quota)
+                if q:
+                    _update_account_quota(idx, q)
                 log.warning("Quota refresh hit rate limit for account #%d: %s", idx, diagnostic)
             else:
                 log.warning("Quota refresh HTTP failure for account #%d: %s", idx, diagnostic)
@@ -648,11 +789,14 @@ def refresh_all_quotas() -> Dict[int, Optional[Dict[str, Any]]]:
             log.warning("Failed to refresh quota for account #%d: %s", idx, e)
             results[idx] = None
 
-        # Pause between accounts to avoid rate limits
         time.sleep(1.5)
 
     return results
 
+
+# ════════════════════════════════════════════════════════════════════════
+#  STATUS REPORTING
+# ════════════════════════════════════════════════════════════════════════
 
 def get_accounts_status(force_reload: bool = False) -> List[Dict[str, Any]]:
     with _accounts_lock:
@@ -684,7 +828,6 @@ def get_accounts_status(force_reload: bool = False) -> List[Dict[str, Any]]:
                 entry["last_error_category"] = last_error.get("category", "")
                 entry["last_error_reason"] = last_error.get("reason", "")
                 entry["last_error_status_code"] = last_error.get("status_code", 0)
-            # Real OpenAI quota from x-codex-* headers
             if quota:
                 entry["quota_5h_used_pct"] = quota.get("primary_used_percent")
                 entry["quota_7d_used_pct"] = quota.get("secondary_used_percent")
