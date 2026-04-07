@@ -12,7 +12,7 @@
 ## Deployed Bot
 
 **Bot:** [@copilot_ai_claude_bot](https://t.me/copilot_ai_claude_bot)  
-**Server:** `402213.vm.spacecore.network` (DE, Spacecore) — тот же сервер что и Veles  
+**Server:** `402213.vm.spacecore.network` (DE, Spacecore) — сервер Андрея  
 **IP:** `94.156.122.181`  
 **Working dir:** `/opt/repos/copilot-telegram-bot/` ← единственная директория, `/opt/copilot-tgbot/` удалена  
 **Env file:** `/etc/copilot-tgbot.env`  
@@ -31,8 +31,8 @@ journalctl -u copilot-tgbot -f
 cd /opt/repos/copilot-telegram-bot && git pull origin main && systemctl restart copilot-tgbot
 ```
 
-> **Note:** Veles живёт на том же сервере (`/opt/veles/`). SSH-ться к нему снаружи не нужно —
-> можно деплоить напрямую через `run_shell` (уже на том же хосте).
+> **Note:** Veles тоже живёт на этом сервере (`/opt/veles/`). Деплоить можно
+> напрямую через `run_shell` — SSH наружу не нужен.
 
 ---
 
