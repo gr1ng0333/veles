@@ -12,7 +12,8 @@
 ## Deployed Bot
 
 **Bot:** [@copilot_ai_claude_bot](https://t.me/copilot_ai_claude_bot)  
-**Server:** `402213.vm.spacecore.network`  
+**Server:** `402213.vm.spacecore.network` (DE, Spacecore) — тот же сервер что и Veles  
+**IP:** `94.156.122.181`  
 **Working dir:** `/opt/repos/copilot-telegram-bot/` ← единственная директория, `/opt/copilot-tgbot/` удалена  
 **Env file:** `/etc/copilot-tgbot.env`  
 **Systemd unit:** `/etc/systemd/system/copilot-tgbot.service`  
@@ -24,6 +25,14 @@ systemctl restart copilot-tgbot
 systemctl status copilot-tgbot
 journalctl -u copilot-tgbot -f
 ```
+
+### Deploy after code changes
+```bash
+cd /opt/repos/copilot-telegram-bot && git pull origin main && systemctl restart copilot-tgbot
+```
+
+> **Note:** Veles живёт на том же сервере (`/opt/veles/`). SSH-ться к нему снаружи не нужно —
+> можно деплоить напрямую через `run_shell` (уже на том же хосте).
 
 ---
 
@@ -206,12 +215,13 @@ MODELS = {
 
 ---
 
-## Current State (as of 2026-04-05 evening)
+## Current State (as of 2026-04-07)
 
 | Feature | Status |
 |---------|--------|
 | SQLite persistence | ✅ |
-| Streaming | ✅ (plain messages only when TOOLS_ENABLED=false) |
+| Streaming | ✅ (plain messages; tools_enabled=false) |
+| Streaming with tools | ✅ (fixed 2026-04-07: tool calls sync, final reply streamed) |
 | Vision (photos + image docs) | ✅ |
 | Text file documents | ✅ |
 | PDF documents | ✅ (pdfminer.six) |
