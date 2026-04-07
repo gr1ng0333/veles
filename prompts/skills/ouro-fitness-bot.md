@@ -3,7 +3,6 @@
 ## Project Overview
 
 **Repo:** https://github.com/gr1ng0333/ouro-fitness-bot (приватный)  
-**Status:** inactive — systemd service установлен, бот не запущен  
 **Goal:** Персональный фитнес-ассистент в Telegram: логирование еды/тренировок/веса, программа калистеники, FatSecret для КБЖУ  
 **Stack:** Python 3.10+, python-telegram-bot v20+, APScheduler (AsyncIOScheduler), FatSecret API
 
@@ -13,17 +12,21 @@
 
 | Параметр | Значение |
 |----------|---------|
-| Systemd service | `/etc/systemd/system/ouro-fitness-bot.service` |
-| WorkingDirectory | `/opt/repos/ouro-fitness-bot` (**не склонирован**) |
-| EnvironmentFile | `/etc/ouro-fitness-bot.env` |
-| Service status | `inactive (dead)` |
-| Venv | `/opt/repos/ouro-fitness-bot/.venv/bin/ouro-fitness-bot` |
+| **Server** | `402213.vm.spacecore.network` (DE, Spacecore) — сервер Андрея |
+| **IP** | `94.156.122.181` |
+| **Systemd service** | `/etc/systemd/system/ouro-fitness-bot.service` |
+| **WorkingDirectory** | `/opt/repos/ouro-fitness-bot` |
+| **EnvironmentFile** | `/etc/ouro-fitness-bot.env` |
+| **Service status** | `active` (задеплоен 2026-04-06) |
+| **Venv** | `/opt/repos/ouro-fitness-bot/.venv/bin/ouro-fitness-bot` |
 
-**Чтобы запустить:**
+> **Note:** Veles тоже живёт на этом сервере. Деплоить можно напрямую через `run_shell` — SSH наружу не нужен.
+
+### Start / restart / logs
 ```bash
-cd /opt/repos && git clone https://github.com/gr1ng0333/ouro-fitness-bot
-cd ouro-fitness-bot && python -m venv .venv && .venv/bin/pip install -e .
-systemctl start ouro-fitness-bot
+systemctl restart ouro-fitness-bot
+systemctl status ouro-fitness-bot
+journalctl -u ouro-fitness-bot -f
 ```
 
 ---
@@ -154,15 +157,14 @@ Beginner калистеника: 3-дневный split A/B/C с:
 
 ## Known Issues / Gotchas
 
-1. **Repo not cloned** — `/opt/repos/ouro-fitness-bot` не существует, сервис не запустится
-2. **FatSecret RU search empty** — нужен перевод перед API вызовом
-3. **Daemon field in dataclass** — если BotRuntime использует `slots=True`, поле `daemon` должно быть явно объявлено
-4. **Reply routing** — `fitness_awaiting_reply` ≠ "перехватить любой текст"
-5. **Dual logging** — fitness input должен логироваться только в fitness chat.jsonl, не дублировать в основном
+1. **FatSecret RU search empty** — нужен перевод перед API вызовом
+2. **Daemon field in dataclass** — если BotRuntime использует `slots=True`, поле `daemon` должно быть явно объявлено
+3. **Reply routing** — `fitness_awaiting_reply` ≠ "перехватить любой текст"
+4. **Dual logging** — fitness input должен логироваться только в fitness chat.jsonl, не дублировать в основном
 
 ---
 
-## Current State (as of 2026-04-04)
+## Current State (as of 2026-04-06)
 
 | Feature | Status |
 |---------|--------|
@@ -171,14 +173,6 @@ Beginner калистеника: 3-дневный split A/B/C с:
 | SQLite/JSON persistence | ✅ |
 | Proactive daemon (scheduler) | ✅ |
 | Calisthenics program generation | ✅ |
-| Deploy on new server | ❌ не склонирован |
-| Active (running) | ❌ inactive |
-
----
-
-## To Resume Work
-
-1. Склонировать репо на сервер
-2. Установить зависимости
-3. Проверить `/etc/ouro-fitness-bot.env` (токены актуальны?)
-4. `systemctl start ouro-fitness-bot && journalctl -u ouro-fitness-bot -f`
+| Deploy on server | ✅ задеплоен 2026-04-06 |
+| Active (running) | ✅ active |
+| No emoji in UI | ✅ убраны 2026-04-05 |
