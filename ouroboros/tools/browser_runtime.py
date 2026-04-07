@@ -752,10 +752,23 @@ def _extract_page_output(page: Any, output: str, ctx: ToolContext) -> str:
         data = page.screenshot(type="png", full_page=False)
         b64 = base64.b64encode(data).decode()
         ctx.browser_state.last_screenshot_b64 = b64
-        return (
+        # Auto-describe screenshot via Codex VLM
+        vlm_description = ""
+        try:
+            from ouroboros.vlm_preprocess import describe_screenshot
+            current_url = getattr(page, 'url', '') or ''
+            desc = describe_screenshot(b64, context_hint=f"URL: {current_url}")
+            if desc:
+                vlm_description = desc
+        except Exception as e:
+            log.warning("VLM screenshot auto-describe failed: %s", e)
+        result = (
             f"Screenshot captured ({len(b64)} bytes base64). "
             f"Call send_photo(image_base64='__last_screenshot__') to deliver it to the owner."
         )
+        if vlm_description:
+            result += f"\n\n[Screenshot description (via Codex VLM):]\n{vlm_description}"
+        return result
     if output == "html":
         html = page.content()
         return html[:50000] + ("... [truncated]" if len(html) > 50000 else "")

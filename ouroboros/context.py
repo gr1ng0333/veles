@@ -17,14 +17,19 @@ from ouroboros.memory import Memory
 log = logging.getLogger(__name__)
 
 def _build_user_content(task: Dict[str, Any]) -> Any:
-    """Build user message content. Supports text + optional image."""
+    """Build user message content. Images are auto-described via Codex VLM.
+
+    All images (from owner Telegram messages) are routed through
+    vlm_preprocess.describe_image() BEFORE entering the main LLM context.
+    This ensures images always go through Codex VLM (free, vision-capable)
+    regardless of the active main model.
+    """
     text = task.get("text", "")
     image_b64 = task.get("image_base64")
     image_mime = task.get("image_mime", "image/jpeg")
     image_caption = task.get("image_caption", "")
 
     if not image_b64:
-        # Return fallback text if both text and image are empty
         if not text:
             return "(empty message)"
         return text
@@ -37,25 +42,48 @@ def _build_user_content(task: Dict[str, Any]) -> Any:
         )
         return combined_text or '(attachment received)'
 
-    # Multipart content with text + image
-    parts = []
-    # Combine caption and text for the text part
-    combined_text = ""
-    if image_caption:
-        combined_text = image_caption
-    if text and text != image_caption:
-        combined_text = (combined_text + "\n" + text).strip() if combined_text else text
+    # Route image through Codex VLM for text description
+    try:
+        from ouroboros.vlm_preprocess import describe_image
+        vlm_description = describe_image(
+            image_b64=image_b64,
+            image_mime=image_mime,
+            caption=image_caption or text,
+        )
+    except Exception as e:
+        log.warning("VLM image preprocess import/call failed: %s", e)
+        vlm_description = None
 
-    # Always include a text part when there's an image
-    if not combined_text:
-        combined_text = "Analyze the screenshot"
-
-    parts.append({"type": "text", "text": combined_text})
-    parts.append({
-        "type": "image_url",
-        "image_url": {"url": f"data:{image_mime};base64,{image_b64}"}
-    })
-    return parts
+    if vlm_description:
+        # Build text-only content with VLM description
+        parts = []
+        if image_caption:
+            parts.append(f"[User sent an image with caption: {image_caption}]")
+        elif text:
+            parts.append(f"[User sent an image with message: {text}]")
+        else:
+            parts.append("[User sent an image]")
+        parts.append(f"[Image description (via Codex VLM):]\n{vlm_description}")
+        if text and text != image_caption:
+            parts.append(text)
+        return "\n\n".join(parts)
+    else:
+        # Fallback: include raw image as multipart (original behavior)
+        log.warning("VLM preprocess failed, falling back to raw multipart image")
+        parts = []
+        combined_text = ""
+        if image_caption:
+            combined_text = image_caption
+        if text and text != image_caption:
+            combined_text = (combined_text + "\n" + text).strip() if combined_text else text
+        if not combined_text:
+            combined_text = "Analyze the screenshot"
+        parts.append({"type": "text", "text": combined_text})
+        parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{image_mime};base64,{image_b64}"}
+        })
+        return parts
 
 def _build_runtime_section(env: Any, task: Dict[str, Any]) -> str:
     """Build the runtime context section (utc_now, repo_dir, drive_root, git_head, git_branch, task info, budget info)."""
