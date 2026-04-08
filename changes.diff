@@ -1,0 +1,12 @@
+diff --git a/watchdog.sh b/watchdog.sh
+index 811061b..ce34d52 100755
+--- a/watchdog.sh
++++ b/watchdog.sh
+@@ -4,7 +4,7 @@
+ 
+ HEARTBEAT_FILE="/opt/veles-data/logs/supervisor.jsonl"
+ LOG_FILE="/opt/veles-data/logs/watchdog.log"
+-MAX_STALE=180
++MAX_STALE=900
+ SCREEN_NAME="veles"
+ START_DIR="/opt/veles"
