@@ -339,12 +339,29 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str)
     except Exception as _e:
         _log_worker_crash(wid, _drive, "make_agent", _e, _tb.format_exc())
         return
+    # Focused agent — created lazily on first focused task
+    focused_agent = None
     while True:
         try:
             task = in_q.get()
             if task is None or task.get("type") == "shutdown":
                 break
-            events = agent.handle_task(task)
+            if task.get("type") == "focused":
+                # Use FocusedAgent: minimal context, tool whitelist, mandatory TG notification
+                if focused_agent is None:
+                    try:
+                        from ouroboros.focused_agent import FocusedAgent
+                        focused_agent = FocusedAgent(repo_dir=repo_dir, drive_root=drive_root, event_queue=out_q)
+                    except Exception as _fe:
+                        _log_worker_crash(wid, _drive, "make_focused_agent", _fe, _tb.format_exc())
+                        focused_agent = None
+                if focused_agent is not None:
+                    events = focused_agent.handle_task(task)
+                else:
+                    # Fallback to full agent if FocusedAgent init failed
+                    events = agent.handle_task(task)
+            else:
+                events = agent.handle_task(task)
             for e in events:
                 e2 = dict(e)
                 e2["worker_id"] = wid
