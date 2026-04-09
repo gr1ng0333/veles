@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import pathlib
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 import queue
 
 from ouroboros.utils import safe_relpath
@@ -200,6 +200,23 @@ CORE_TOOL_NAMES = {
 }
 
 
+# Tool presets for focused workers — whitelists by use-case.
+# None means "all tools" (no whitelist).
+FOCUSED_TOOL_PRESETS: Dict[str, Optional[Set[str]]] = {
+    "DEPLOY": {
+        "run_shell", "git_status", "git_diff",
+        "repo_commit_push", "send_owner_message",
+    },
+    "CODE": {
+        "run_shell", "git_status", "git_diff",
+        "repo_read", "repo_list",
+        "repo_write_commit", "repo_commit_push",
+        "send_owner_message", "knowledge_read",
+    },
+    "FULL": None,  # no restriction — all available tools
+}
+
+
 class ToolRegistry:
     """Ouroboros tool registry (SSOT).
 
@@ -210,6 +227,7 @@ class ToolRegistry:
     def __init__(self, repo_dir: pathlib.Path, drive_root: pathlib.Path):
         self._entries: Dict[str, ToolEntry] = {}
         self._ctx = ToolContext(repo_dir=repo_dir, drive_root=drive_root)
+        self._whitelist: Optional[Set[str]] = None  # None = no restriction
         self._load_modules()
 
     def _load_modules(self) -> None:
@@ -233,6 +251,19 @@ class ToolRegistry:
     def set_context(self, ctx: ToolContext) -> None:
         self._ctx = ctx
 
+    def set_whitelist(self, names: List[str]) -> None:
+        """Restrict available tools to the given names only.
+
+        Always keeps 'send_owner_message' so the worker can report results.
+        """
+        allowed = set(names)
+        allowed.add("send_owner_message")  # always permitted — mandatory TG notification
+        self._whitelist = allowed
+
+    def clear_whitelist(self) -> None:
+        """Remove whitelist restriction — all tools become available."""
+        self._whitelist = None
+
     def register(self, entry: ToolEntry) -> None:
         """Register a new tool (for extension by Ouroboros)."""
         self._entries[entry.name] = entry
@@ -240,9 +271,18 @@ class ToolRegistry:
     # --- Contract ---
 
     def available_tools(self) -> List[str]:
+        if self._whitelist is not None:
+            return [e.name for e in self._entries.values() if e.name in self._whitelist]
         return [e.name for e in self._entries.values()]
 
     def schemas(self, core_only: bool = False) -> List[Dict[str, Any]]:
+        # Whitelist takes priority over core_only
+        if self._whitelist is not None:
+            return [
+                {"type": "function", "function": e.schema, "name": e.name}
+                for e in self._entries.values()
+                if e.name in self._whitelist
+            ]
         if not core_only:
             return [
                 {"type": "function", "function": e.schema, "name": e.name}
@@ -291,6 +331,9 @@ class ToolRegistry:
         entry = self._entries.get(name)
         if entry is None:
             return f"⚠️ Unknown tool: {name}. Available: {', '.join(sorted(self._entries.keys()))}"
+        # Whitelist enforcement
+        if self._whitelist is not None and name not in self._whitelist:
+            return f"⚠️ Tool '{name}' is not available in this context (whitelist active)."
         try:
             return entry.handler(self._ctx, **args)
         except TypeError as e:
@@ -302,7 +345,7 @@ class ToolRegistry:
         """Override the handler for a registered tool (used for closure injection)."""
         entry = self._entries.get(name)
         if entry:
-            self._entries[name] = ToolEntry(
+            self._entries[entry.name] = ToolEntry(
                 name=entry.name,
                 schema=entry.schema,
                 handler=handler,
