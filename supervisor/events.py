@@ -721,6 +721,38 @@ def _handle_owner_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
+
+
+def _handle_create_focused_worker(evt: Dict[str, Any], ctx: Any) -> None:
+    """Enqueue a focused worker task with minimal context and tool whitelist."""
+    st = ctx.load_state()
+    owner_chat_id = st.get("owner_chat_id")
+    if not owner_chat_id:
+        return
+
+    task_text = str(evt.get("task_text") or "").strip()
+    if not task_text:
+        ctx.send_with_budget(int(owner_chat_id), "⚠️ Focused worker: missing task_text")
+        return
+
+    tid = evt.get("task_id") or uuid.uuid4().hex[:8]
+    task = {
+        "id": tid,
+        "type": "focused",
+        "chat_id": int(owner_chat_id),
+        "text": task_text,
+        "system_prompt": str(evt.get("system_prompt") or ""),
+        "tool_whitelist": str(evt.get("tool_whitelist") or "FULL"),
+        "project_context": str(evt.get("project_context") or ""),
+        "depth": 0,
+    }
+    ctx.enqueue_task(task)
+    ctx.send_with_budget(
+        int(owner_chat_id),
+        f"⏳ Focused worker `{tid}` scheduled: {task_text[:80]}",
+    )
+    ctx.persist_queue_snapshot(reason="create_focused_worker_event")
+
 EVENT_HANDLERS = {
     "llm_usage": _handle_llm_usage,
     "task_heartbeat": _handle_task_heartbeat,
@@ -732,6 +764,7 @@ EVENT_HANDLERS = {
     "restart_request": _handle_restart_request,
     "promote_to_stable": _handle_promote_to_stable,
     "schedule_task": _handle_schedule_task,
+    "create_focused_worker": _handle_create_focused_worker,
     "cancel_task": _handle_cancel_task,
     "send_photo": _handle_send_photo,
     "send_document": _handle_send_document,
