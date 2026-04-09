@@ -274,7 +274,7 @@ def _dispatch_agent_post_restart_ack() -> None:
             f"Source: <code>{source}</code>\n\n"
             f"<code>launcher_start: {launcher_started_at} branch={BRANCH_DEV} sha={(current_sha or 'unknown')[:12]} mode={get_active_mode().key}</code>"
         )
-        send_with_budget(chat_id, service_text, force_budget=True, fmt="html")
+        send_with_budget(chat_id, service_text, force=True, parse_mode="HTML")
         def _run_agent_ack() -> None:
             ok = handle_post_restart_ack(
                 chat_id=chat_id,
@@ -474,7 +474,7 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
     # Dual-path commands: supervisor handles + LLM sees a note
     if lowered.startswith("/status"):
         status = status_text(WORKERS, PENDING, RUNNING, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC)
-        send_with_budget(chat_id, status, force_budget=True)
+        send_with_budget(chat_id, status, force=True)
         return True
     if lowered.startswith("/review"):
         queue_review_task(reason="owner:/review", force=True)
@@ -731,7 +731,7 @@ while True:
             continue
         if user_id != int(st.get("owner_id")):
             continue
-        log_chat("in", chat_id, user_id, text, scope="main")
+        log_chat("in", chat_id, user_id, text)
         st["last_owner_message_at"] = now_iso
         if bool(st.get("suppress_auto_resume_until_owner_message")) and owner_message_allows_auto_resume_release(text):
             st["suppress_auto_resume_until_owner_message"] = False

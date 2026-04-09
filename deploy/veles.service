@@ -1,0 +1,19 @@
+[Unit]
+Description=Veles AI Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/veles
+EnvironmentFile=/opt/veles/.env
+ExecStart=/opt/veles/venv/bin/python3 colab_launcher.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=veles
+
+[Install]
+WantedBy=multi-user.target

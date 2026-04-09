@@ -85,16 +85,13 @@ def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
 
 def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
     try:
-        log_text = evt.get("log_text")
-        fmt = str(evt.get("format") or "")
         is_progress = bool(evt.get("is_progress"))
+        fmt = str(evt.get("format") or "")
         ctx.send_with_budget(
             int(evt["chat_id"]),
             str(evt.get("text") or ""),
-            log_text=(str(log_text) if isinstance(log_text, str) else None),
-            fmt=fmt,
-            is_progress=is_progress,
-            chat_scope=str(evt.get("chat_scope") or "main"),
+            progress=is_progress,
+            parse_mode=fmt.upper() if fmt else "",
         )
     except Exception as e:
         ctx.append_jsonl(
@@ -323,7 +320,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             ctx.send_with_budget(
                 owner_chat_id,
                 _format_done_summary(str(task_id), task_type, runtime_sec, rounds, cost_usd),
-                is_progress=True,
+                progress=True,
             )
     except Exception:
         log.debug("Failed to send concise completion report", exc_info=True)
