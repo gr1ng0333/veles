@@ -404,6 +404,7 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
     On 401/403 after failed refresh → mark dead + rotate.
     """
     tried: set = set()
+    log.warning("DEBUG _call_with_rotation called, caller: %s", " | ".join(__import__('traceback').format_stack()[-4:-1]).replace("\n", " "))
     last_error: Optional[Exception] = None
 
     while True:
@@ -466,6 +467,7 @@ def _call_with_rotation(payload: Dict[str, Any]) -> Dict[str, Any]:
                 if diagnostic["category"] == "auth":
                     if attempt < MAX_RETRIES:
                         # Force refresh and retry only for real auth failures
+                        log.error("DEBUG auth failure on account #%d, attempt=%d, access=%.20s... will force refresh", idx, attempt, access_token[:20] if access_token else "NONE")
                         acc["expires"] = 0
                         access_token = _refresh_account(acc, idx)
                         if not access_token:

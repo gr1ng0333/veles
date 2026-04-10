@@ -516,7 +516,9 @@ class OuroborosAgent:
                     except Exception:
                         log.debug("Execution reflection failed (non-critical)", exc_info=True)
 
-                threading.Thread(target=_run_reflection, daemon=True, name="reflection").start()
+                # v7.2.3-debug: reflection thread disabled for Codex debug
+                # threading.Thread(target=_run_reflection, daemon=True, name="reflection").start()
+                log.info("v7.2.3-debug: reflection thread DISABLED")
             except Exception:
                 log.debug("Execution reflection setup failed (non-critical)", exc_info=True)
 
@@ -534,7 +536,9 @@ class OuroborosAgent:
                     except Exception:
                         log.warning("dialogue_consolidation_failed", exc_info=True)
 
-                threading.Thread(target=_run_consolidation, daemon=True).start()
+                # v7.2.3-debug: consolidation thread disabled for Codex debug
+                # threading.Thread(target=_run_consolidation, daemon=True).start()
+                log.info("v7.2.3-debug: consolidation thread DISABLED")
             except Exception:
                 log.debug("Dialogue consolidation setup failed (non-critical)", exc_info=True)
 
