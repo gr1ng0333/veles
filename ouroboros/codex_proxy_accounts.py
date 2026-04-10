@@ -190,12 +190,31 @@ def _load_accounts() -> List[Dict[str, Any]]:
 
                     # Check if .env has MORE accounts than the file (user added new ones)
                     env_accounts = _parse_env_seed()
+                    updated = False
                     if len(env_accounts) > len(accs):
                         # Append new accounts from .env seed
                         for i in range(len(accs), len(env_accounts)):
                             accs.append(env_accounts[i])
                         log.info("Added %d new accounts from .env seed", len(env_accounts) - len(accs))
+                        updated = True
+
+                    # Sync refresh tokens: if .env has different refresh for existing account,
+                    # developer has updated it — take the new one and invalidate old access
+                    for i in range(min(len(accs), len(env_accounts))):
+                        env_refresh = env_accounts[i].get("refresh", "")
+                        cur_refresh = accs[i].get("refresh", "")
+                        if env_refresh and env_refresh != cur_refresh:
+                            log.info("Account #%d: refresh token updated from .env (old≠new), resetting access", i)
+                            accs[i]["refresh"] = env_refresh
+                            accs[i]["access"] = ""
+                            accs[i]["expires"] = 0.0
+                            accs[i]["dead"] = False
+                            accs[i]["last_error"] = {}
+                            updated = True
+
+                    if updated:
                         _atomic_write_json(ACCOUNTS_FILE, {"active_idx": data.get("active_idx", 0), "accounts": accs})
+                        log.info("Synced updated refresh tokens from .env to %s", ACCOUNTS_FILE)
 
                     return accs
         except Exception as e:
