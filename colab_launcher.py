@@ -386,11 +386,13 @@ _digest_scheduler = DigestScheduler(
     owner_chat_id_fn=_get_owner_chat_id,
     send_fn=send_with_budget,
 )
-_digest_scheduler.start()
-log.info("DigestScheduler daemon started")
+# v7.2.3-debug: digest scheduler disabled for Codex debug
+# _digest_scheduler.start()
+log.info("DigestScheduler daemon DISABLED (v7.2.3-debug)")
 def _apply_background_runtime_policy() -> None:
     st = load_state()
-    if st.get("bg_consciousness_enabled"):
+    # v7.2.3-debug: ALL background threads disabled for Codex debug
+    if False and st.get("bg_consciousness_enabled"):
         _consciousness.start()
     else:
         _consciousness.stop()

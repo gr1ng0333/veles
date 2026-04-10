@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -80,6 +81,7 @@ def _save_tokens(tokens: Dict[str, str], prefix: str = "CODEX") -> None:
 
 
 def _do_refresh(refresh_token: str, auth_endpoint: str, urlopen) -> Optional[Dict[str, str]]:
+    log.warning("DEBUG _do_refresh called with refresh=%.20s... caller: %s", refresh_token, " | ".join(traceback.format_stack()[-4:-1]).replace("\n", " "))
     now = time.time()
     try:
         body = json.dumps({
@@ -328,12 +330,14 @@ def _on_rate_limit(account_idx: int, retry_after: int = 0, reason: str = "rate_l
 def _on_dead_account(account_idx: int) -> None:
     with _accounts_lock:
         if account_idx < len(_accounts):
+            log.error("DEBUG _on_dead_account #%d caller: %s", account_idx, " | ".join(traceback.format_stack()[-5:-1]).replace("\n", " "))
             _accounts[account_idx]["dead"] = True
             log.error("Codex account #%d marked dead", account_idx)
             _save_accounts_state(_accounts)
 
 
 def _refresh_account(acc: Dict[str, Any], account_idx: int, auth_endpoint: str, urlopen) -> str:
+    log.warning("DEBUG _refresh_account #%d access=%.20s... refresh=%.20s... expires=%.0f now=%.0f caller: %s", account_idx, acc.get("access","")[:20], acc.get("refresh","")[:20], acc.get("expires",0), time.time(), " | ".join(traceback.format_stack()[-4:-1]).replace("\n", " "))
     now = time.time()
     if acc["access"] and (acc["expires"] - now) > REFRESH_THRESHOLD_SEC:
         return acc["access"]
