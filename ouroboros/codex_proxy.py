@@ -371,7 +371,7 @@ def _do_request(access_token: str, payload: Dict[str, Any]) -> Tuple[Dict[str, A
 
     # Debug: dump raw SSE response (first 50KB)
     try:
-        Path("/tmp/codex_sse_raw.txt").write_text(raw[:500000], encoding="utf-8")
+        Path("/tmp/codex_sse_raw.txt").write_text(raw[:50000], encoding="utf-8")
     except Exception:
         pass
 
