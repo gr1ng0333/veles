@@ -150,3 +150,41 @@ For large directories — prefer `remote_command_exec` with `tar | ssh` pipeline
 ## Xray / 3x-ui diagnostics
 
 На 3x-ui хостах Xray часто не существует как отдельный `xray.service`: его поднимает `x-ui.service` как дочерний процесс. Поэтому сначала используй `remote_xray_status(alias="myserver")`, а уже потом проверяй `remote_service_status(alias="myserver", service_name="x-ui.service")`, `remote_service_logs(...)` и `remote_netstat(alias="myserver", state_filter="LISTEN")`. Отсутствие `xray.service` само по себе не означает падение Xray core.
+
+## Fleet-scale registry discipline
+
+Для одного-двух серверов достаточно alias + host. Для 20+ серверов это уже ломается. Держи записи как операционный реестр, а не как случайный список хостов.
+
+Минимум, который должен быть заполнен у target:
+- `provider`
+- `location`
+- `panel_type`
+- `panel_url`
+- `tags`
+- `status`
+- `last_health_at`
+- `known_ports`
+- `known_services`
+- `known_tls_domains`
+
+Если на хосте есть 3x-ui, panel credentials должны жить в том же registry, иначе `xui_panel_status` и `fleet_health` будут честно деградировать в warning/error.
+
+## Standalone monitoring
+
+Для периодического мониторинга не нужно гонять LLM-петлю. Используй автономный скрипт:
+
+```bash
+python3 scripts/fleet_monitor.py --stdout-format summary
+python3 scripts/fleet_monitor.py --tag vpn --tag 3xui
+python3 scripts/fleet_monitor.py --alias srv-80-71-227-193
+```
+
+По умолчанию он пишет:
+- snapshot: `/opt/veles-data/state/fleet_health_latest.json`
+- history: `/opt/veles-data/logs/fleet_health.jsonl`
+
+Exit codes:
+- `0` = ok
+- `1` = warn
+- `2` = critical
+- `3` = unknown/broken payload

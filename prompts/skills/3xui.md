@@ -200,3 +200,25 @@ Symptom: `ip -6 neigh` shows router as FAILED, `ping -6` fails.
 |-------|------|-------------------|
 | `spacecore-94` (old, deleted) | `94.156.122.66` | `:2053/4w7plggEiurTWqZyLj/` |
 | New DE server | `402213.vm.spacecore.network` | Check webBasePath via SSH if needed |
+
+## Native monitoring path
+
+Для мониторинга панели не нужен browser-first путь, если известны `panel_url`, `panel_username`, `panel_password` в SSH registry.
+
+Основные инструменты:
+- `xui_panel_status(alias=...)` — логин + `/api/server/status` + `/api/inbounds/list`
+- `remote_xray_status(alias=...)` — жив ли Xray как процесс/юнит
+- `fleet_health(tags=[...])` — агрегирует SSH health + Xray + panel status по флоту
+- `scripts/fleet_monitor.py` — тот же агрегат, но автономно для cron/systemd timer
+
+## Monitoring checklist
+
+Для каждого 3x-ui сервера нужно смотреть не только на то, что панель открывается:
+- проходит ли login
+- отвечает ли panel API
+- сколько всего inbounds
+- сколько из них enabled
+- есть ли traffic counters (`up/down/total`)
+- жив ли Xray и кто им управляет (`xray.service` vs `x-ui.service`)
+
+Если panel credentials не заданы в registry, это не повод угадывать через браузер. Это повод отметить хост как частично наблюдаемый и сначала заполнить registry.
