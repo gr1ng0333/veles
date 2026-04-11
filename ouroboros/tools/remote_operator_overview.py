@@ -85,6 +85,7 @@ def _registry_targets(ctx: ToolContext) -> List[Dict[str, Any]]:
             'location': public.get('location') or '',
             'panel_type': public.get('panel_type') or '',
             'panel_url': public.get('panel_url') or '',
+            'has_panel_credentials': bool(public.get('has_panel_credentials')),
             'tags': public.get('tags') or [],
             'status': public.get('status') or 'unknown',
             'last_health_at': public.get('last_health_at') or '',
