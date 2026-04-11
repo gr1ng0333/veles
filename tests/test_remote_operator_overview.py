@@ -30,6 +30,7 @@ def test_remote_capabilities_overview_tool_registered():
     registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
     names = _schema_names(registry)
     assert 'remote_capabilities_overview' in names
+    assert 'remote_operator_overview' in names
 
 
 def test_remote_capabilities_overview_summarizes_targets_and_workflows(tmp_path):
