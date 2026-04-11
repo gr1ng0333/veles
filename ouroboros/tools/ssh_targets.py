@@ -6,6 +6,7 @@ import pathlib
 import shlex
 import subprocess
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -59,10 +60,47 @@ def _load_registry(ctx: ToolContext) -> Dict[str, Any]:
         return {"targets": {}}
     if not isinstance(data, dict):
         return {"targets": {}}
-    targets = data.get("targets")
-    if not isinstance(targets, dict):
-        data["targets"] = {}
-    return data
+    targets_raw = data.get("targets")
+    if not isinstance(targets_raw, dict):
+        return {"targets": {}}
+
+    migrated_targets: Dict[str, Dict[str, Any]] = {}
+    alias_map: Dict[str, str] = {}
+    for raw_alias, raw_record in targets_raw.items():
+        if not isinstance(raw_record, dict):
+            continue
+        try:
+            record = _normalize_target_record(
+                alias=raw_record.get("alias") or raw_alias,
+                host=raw_record.get("host", ""),
+                port=raw_record.get("port", 22),
+                user=raw_record.get("user", ""),
+                auth_mode=raw_record.get("auth_mode", ""),
+                label=raw_record.get("label", ""),
+                default_remote_root=raw_record.get("default_remote_root", ""),
+                known_projects_paths=raw_record.get("known_projects_paths"),
+                known_services=raw_record.get("known_services"),
+                known_ports=raw_record.get("known_ports"),
+                known_tls_domains=raw_record.get("known_tls_domains"),
+                ssh_key_path=raw_record.get("ssh_key_path", ""),
+                password=raw_record.get("password", ""),
+                provider=raw_record.get("provider", ""),
+                location=raw_record.get("location", ""),
+                panel_type=raw_record.get("panel_type", ""),
+                panel_url=raw_record.get("panel_url", ""),
+                tags=raw_record.get("tags"),
+                status=raw_record.get("status", "unknown"),
+                last_health_at=raw_record.get("last_health_at", ""),
+                legacy_aliases=raw_record.get("legacy_aliases"),
+            )
+        except Exception:
+            continue
+        migrated_targets[record["alias"]] = record
+        alias_map[record["alias"]] = record["alias"]
+        for legacy in record.get("legacy_aliases") or []:
+            alias_map[legacy] = record["alias"]
+
+    return {"targets": migrated_targets, "alias_map": alias_map}
 
 
 def _save_registry(ctx: ToolContext, payload: Dict[str, Any]) -> None:
@@ -105,6 +143,55 @@ def _normalize_path_list(values: Optional[List[str]]) -> List[str]:
     return result
 
 
+def _normalize_metadata_string(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_tags(values: Optional[List[str]]) -> List[str]:
+    tags: List[str] = []
+    for item in values or []:
+        raw = str(item or "").strip()
+        if not raw:
+            continue
+        tag = _normalize_alias(raw)
+        if tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _normalize_status(value: Any) -> str:
+    status = str(value or "unknown").strip().lower() or "unknown"
+    allowed = {"unknown", "ok", "warn", "critical", "disabled"}
+    if status not in allowed:
+        raise SshTargetError(f"ssh target status must be one of: {', '.join(sorted(allowed))}")
+    return status
+
+
+def _normalize_timestamp(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SshTargetError("last_health_at must be ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _normalize_aliases(values: Optional[List[str]], primary_alias: str) -> List[str]:
+    aliases: List[str] = []
+    for item in values or []:
+        raw = str(item or "").strip()
+        if not raw:
+            continue
+        alias = _normalize_alias(raw)
+        if alias != primary_alias and alias not in aliases:
+            aliases.append(alias)
+    return aliases
+
+
 def _normalize_string_list(values: Optional[List[str]]) -> List[str]:
     result: List[str] = []
     for item in values or []:
@@ -138,6 +225,14 @@ def _normalize_target_record(
     known_tls_domains: Optional[List[str]] = None,
     ssh_key_path: str = "",
     password: str = "",
+    provider: str = "",
+    location: str = "",
+    panel_type: str = "",
+    panel_url: str = "",
+    tags: Optional[List[str]] = None,
+    status: str = "unknown",
+    last_health_at: str = "",
+    legacy_aliases: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     alias_norm = _normalize_alias(alias)
     host_norm = (host or "").strip()
@@ -167,12 +262,21 @@ def _normalize_target_record(
         "known_tls_domains": _normalize_string_list(known_tls_domains),
         "ssh_key_path": key_path,
         "password": secret_password,
+        "provider": _normalize_metadata_string(provider),
+        "location": _normalize_metadata_string(location),
+        "panel_type": _normalize_metadata_string(panel_type),
+        "panel_url": _normalize_metadata_string(panel_url),
+        "tags": _normalize_tags(tags),
+        "status": _normalize_status(status),
+        "last_health_at": _normalize_timestamp(last_health_at),
+        "legacy_aliases": _normalize_aliases(legacy_aliases, alias_norm),
     }
 
 
 def _public_target_view(record: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "alias": record["alias"],
+        "legacy_aliases": list(record.get("legacy_aliases") or []),
         "host": record["host"],
         "port": record["port"],
         "user": record["user"],
@@ -183,6 +287,13 @@ def _public_target_view(record: Dict[str, Any]) -> Dict[str, Any]:
         "known_services": list(record.get("known_services") or []),
         "known_ports": list(record.get("known_ports") or []),
         "known_tls_domains": list(record.get("known_tls_domains") or []),
+        "provider": record.get("provider", ""),
+        "location": record.get("location", ""),
+        "panel_type": record.get("panel_type", ""),
+        "panel_url": record.get("panel_url", ""),
+        "tags": list(record.get("tags") or []),
+        "status": record.get("status", "unknown"),
+        "last_health_at": record.get("last_health_at", ""),
         "ssh_key_path": record.get("ssh_key_path", "") if record.get("auth_mode") == "key" else "",
         "has_password": bool(record.get("password")) if record.get("auth_mode") == "password" else False,
     }
@@ -191,7 +302,8 @@ def _public_target_view(record: Dict[str, Any]) -> Dict[str, Any]:
 def _get_target_record(ctx: ToolContext, alias: str) -> Dict[str, Any]:
     alias_norm = _normalize_alias(alias)
     registry = _load_registry(ctx)
-    record = registry.get("targets", {}).get(alias_norm)
+    canonical_alias = registry.get("alias_map", {}).get(alias_norm, alias_norm)
+    record = registry.get("targets", {}).get(canonical_alias)
     if not isinstance(record, dict):
         raise SshTargetError(f"ssh target alias not found: {alias_norm}")
     return record
@@ -258,6 +370,72 @@ def _run_ssh_probe(ctx: ToolContext, record: Dict[str, Any], *, command: str = "
         env["DISPLAY"] = env.get("DISPLAY") or "veles-ssh"
         ssh_cmd = ["env", "SSH_ASKPASS_REQUIRE=force", "setsid", "-w", *ssh_cmd]
     return subprocess.run(ssh_cmd, cwd=ctx.repo_dir, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def _ssh_target_update(
+    ctx: ToolContext,
+    alias: str,
+    host: str = "",
+    user: str = "",
+    auth_mode: str = "",
+    port: Any = None,
+    label: str = "",
+    default_remote_root: str = "",
+    known_projects_paths: Optional[List[str]] = None,
+    known_services: Optional[List[str]] = None,
+    known_ports: Optional[List[Any]] = None,
+    known_tls_domains: Optional[List[str]] = None,
+    ssh_key_path: str = "",
+    password: str = "",
+    provider: str = "",
+    location: str = "",
+    panel_type: str = "",
+    panel_url: str = "",
+    tags: Optional[List[str]] = None,
+    status: str = "",
+    last_health_at: str = "",
+    legacy_aliases: Optional[List[str]] = None,
+) -> str:
+    alias_norm = _normalize_alias(alias)
+    registry = _load_registry(ctx)
+    canonical_alias = registry.get("alias_map", {}).get(alias_norm, alias_norm)
+    current = registry.get("targets", {}).get(canonical_alias)
+    if not isinstance(current, dict):
+        raise SshTargetError(f"ssh target alias not found: {alias_norm}")
+
+    record = _normalize_target_record(
+        alias=current["alias"],
+        host=host or current.get("host", ""),
+        port=current.get("port", 22) if port is None else port,
+        user=user or current.get("user", ""),
+        auth_mode=auth_mode or current.get("auth_mode", ""),
+        label=label or current.get("label", ""),
+        default_remote_root=default_remote_root or current.get("default_remote_root", ""),
+        known_projects_paths=current.get("known_projects_paths") if known_projects_paths is None else known_projects_paths,
+        known_services=current.get("known_services") if known_services is None else known_services,
+        known_ports=current.get("known_ports") if known_ports is None else known_ports,
+        known_tls_domains=current.get("known_tls_domains") if known_tls_domains is None else known_tls_domains,
+        ssh_key_path=ssh_key_path or current.get("ssh_key_path", ""),
+        password=password or current.get("password", ""),
+        provider=provider or current.get("provider", ""),
+        location=location or current.get("location", ""),
+        panel_type=panel_type or current.get("panel_type", ""),
+        panel_url=panel_url or current.get("panel_url", ""),
+        tags=current.get("tags") if tags is None else tags,
+        status=status or current.get("status", "unknown"),
+        last_health_at=last_health_at or current.get("last_health_at", ""),
+        legacy_aliases=current.get("legacy_aliases") if legacy_aliases is None else legacy_aliases,
+    )
+    registry.setdefault("targets", {})[record["alias"]] = record
+    alias_map = {record["alias"]: record["alias"]}
+    for key, value in (registry.get("alias_map") or {}).items():
+        if value != record["alias"]:
+            alias_map[key] = value
+    for legacy in record.get("legacy_aliases") or []:
+        alias_map[legacy] = record["alias"]
+    registry["alias_map"] = alias_map
+    _save_registry(ctx, registry)
+    return json.dumps({"status": "ok", "target": _public_target_view(record), "registry": {"count": len(registry.get("targets", {})), "aliases": sorted((registry.get("targets") or {}).keys())}}, ensure_ascii=False)
 
 
 def _normalize_probe_error(stderr: str, returncode: int) -> SshConnectionError:
@@ -330,6 +508,14 @@ def _ssh_target_register(
     known_tls_domains: Optional[List[str]] = None,
     ssh_key_path: str = "",
     password: str = "",
+    provider: str = "",
+    location: str = "",
+    panel_type: str = "",
+    panel_url: str = "",
+    tags: Optional[List[str]] = None,
+    status: str = "unknown",
+    last_health_at: str = "",
+    legacy_aliases: Optional[List[str]] = None,
 ) -> str:
     record = _normalize_target_record(
         alias=alias,
@@ -345,23 +531,24 @@ def _ssh_target_register(
         known_tls_domains=known_tls_domains,
         ssh_key_path=ssh_key_path,
         password=password,
+        provider=provider,
+        location=location,
+        panel_type=panel_type,
+        panel_url=panel_url,
+        tags=tags,
+        status=status,
+        last_health_at=last_health_at,
+        legacy_aliases=legacy_aliases,
     )
     registry = _load_registry(ctx)
     targets = registry.setdefault("targets", {})
+    alias_map = registry.setdefault("alias_map", {})
     targets[record["alias"]] = record
+    alias_map[record["alias"]] = record["alias"]
+    for legacy in record.get("legacy_aliases") or []:
+        alias_map[legacy] = record["alias"]
     _save_registry(ctx, registry)
-    return json.dumps(
-        {
-            "status": "ok",
-            "target": _public_target_view(record),
-            "registry": {
-                "path": str(_registry_path(ctx)),
-                "count": len(targets),
-                "aliases": sorted(targets.keys()),
-            },
-        },
-        ensure_ascii=False,
-    )
+    return json.dumps({"status": "ok", "target": _public_target_view(record), "registry": {"count": len(targets), "aliases": sorted(targets.keys())}}, ensure_ascii=False)
 
 
 def _ssh_target_list(ctx: ToolContext) -> str:
@@ -427,59 +614,86 @@ def get_tools() -> List[ToolEntry]:
     return [
         _tool_entry(
             "ssh_target_register",
-            "Register a first-class SSH target by stable alias for later remote work.",
+            "Register or replace an SSH target in the persistent registry.",
             {
-                "alias": {"type": "string", "description": "Stable alias for the remote host"},
-                "host": {"type": "string", "description": "SSH hostname or IP"},
-                "port": {"type": "integer", "description": "SSH port (default 22)"},
-                "user": {"type": "string", "description": "SSH username"},
-                "auth_mode": {"type": "string", "enum": ["password", "key"], "description": "Authentication mode"},
-                "label": {"type": "string", "description": "Optional human-friendly label"},
-                "default_remote_root": {"type": "string", "description": "Default remote working root"},
-                "known_projects_paths": {"type": "array", "items": {"type": "string"}, "description": "Known project directories on the remote host"},
-                "known_services": {"type": "array", "items": {"type": "string"}, "description": "systemd units that should stay healthy on the host"},
-                "known_ports": {"type": "array", "items": {"type": "integer"}, "description": "TCP ports that should be listening on the host"},
-                "known_tls_domains": {"type": "array", "items": {"type": "string"}, "description": "TLS domains to check from the controller side"},
-                "ssh_key_path": {"type": "string", "description": "Required for auth_mode=key"},
-                "password": {"type": "string", "description": "Required for auth_mode=password"},
+                "alias": {"type": "string"},
+                "host": {"type": "string"},
+                "user": {"type": "string"},
+                "auth_mode": {"type": "string", "enum": ["password", "key"]},
+                "port": {"type": "integer", "default": 22},
+                "label": {"type": "string"},
+                "default_remote_root": {"type": "string"},
+                "known_projects_paths": {"type": "array", "items": {"type": "string"}},
+                "known_services": {"type": "array", "items": {"type": "string"}},
+                "known_ports": {"type": "array", "items": {"type": "integer"}},
+                "known_tls_domains": {"type": "array", "items": {"type": "string"}},
+                "ssh_key_path": {"type": "string"},
+                "password": {"type": "string"},
+                "provider": {"type": "string"},
+                "location": {"type": "string"},
+                "panel_type": {"type": "string"},
+                "panel_url": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "status": {"type": "string", "enum": ["unknown", "ok", "warn", "critical", "disabled"], "default": "unknown"},
+                "last_health_at": {"type": "string"},
+                "legacy_aliases": {"type": "array", "items": {"type": "string"}},
             },
             ["alias", "host", "user", "auth_mode"],
             _ssh_target_register,
+            is_code_tool=True,
         ),
         _tool_entry(
-            "ssh_target_list",
-            "List registered SSH targets and cached session metadata.",
-            {},
-            [],
-            _ssh_target_list,
+            "ssh_target_update",
+            "Update metadata for an existing SSH target without rewriting the whole record.",
+            {
+                "alias": {"type": "string"},
+                "host": {"type": "string"},
+                "user": {"type": "string"},
+                "auth_mode": {"type": "string", "enum": ["password", "key"]},
+                "port": {"type": "integer"},
+                "label": {"type": "string"},
+                "default_remote_root": {"type": "string"},
+                "known_projects_paths": {"type": "array", "items": {"type": "string"}},
+                "known_services": {"type": "array", "items": {"type": "string"}},
+                "known_ports": {"type": "array", "items": {"type": "integer"}},
+                "known_tls_domains": {"type": "array", "items": {"type": "string"}},
+                "ssh_key_path": {"type": "string"},
+                "password": {"type": "string"},
+                "provider": {"type": "string"},
+                "location": {"type": "string"},
+                "panel_type": {"type": "string"},
+                "panel_url": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "status": {"type": "string", "enum": ["unknown", "ok", "warn", "critical", "disabled"]},
+                "last_health_at": {"type": "string"},
+                "legacy_aliases": {"type": "array", "items": {"type": "string"}},
+            },
+            ["alias"],
+            _ssh_target_update,
+            is_code_tool=True,
         ),
+        _tool_entry("ssh_target_list", "List all SSH targets from the persistent registry.", {}, [], _ssh_target_list),
         _tool_entry(
             "ssh_target_get",
-            "Get one registered SSH target by alias.",
-            {
-                "alias": {"type": "string", "description": "SSH target alias"},
-            },
+            "Get one SSH target from the persistent registry by alias.",
+            {"alias": {"type": "string"}},
             ["alias"],
             _ssh_target_get,
         ),
         _tool_entry(
             "ssh_session_bootstrap",
-            "Open or reuse a cached SSH session by target alias.",
-            {
-                "alias": {"type": "string", "description": "SSH target alias"},
-                "probe_command": {"type": "string", "description": "Optional remote command to validate the session"},
-            },
+            "Open or refresh a persistent SSH master connection for a registered target.",
+            {"alias": {"type": "string"}, "probe_command": {"type": "string", "default": "true"}},
             ["alias"],
             _ssh_session_bootstrap,
+            is_code_tool=True,
         ),
         _tool_entry(
             "ssh_target_ping",
-            "Run a lightweight probe command against a registered SSH target and return normalized connection info.",
-            {
-                "alias": {"type": "string", "description": "SSH target alias"},
-                "command": {"type": "string", "description": "Remote command to execute for probe"},
-            },
+            "Run a simple SSH command against a registered target to verify connectivity.",
+            {"alias": {"type": "string"}, "command": {"type": "string", "default": "pwd"}},
             ["alias"],
             _ssh_target_ping,
+            is_code_tool=True,
         ),
     ]
