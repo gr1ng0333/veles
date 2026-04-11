@@ -131,12 +131,12 @@ def _build_memory_sections(memory: Memory) -> List[str]:
     identity_raw = memory.load_identity()
     sections.append("## Identity\n\n" + clip_text(identity_raw, 80000))
 
-    # Active plan (if any)
+    # Active or draft plan (if any) — draft must be visible across model switches
     try:
-        from ouroboros.plans import get_active_plan, format_plan_for_context
-        active_plan = get_active_plan(memory.drive_root)
-        if active_plan:
-            sections.append(format_plan_for_context(active_plan))
+        from ouroboros.plans import get_active_plan, get_draft_plan, format_plan_for_context
+        plan_in_context = get_active_plan(memory.drive_root) or get_draft_plan(memory.drive_root)
+        if plan_in_context:
+            sections.append(format_plan_for_context(plan_in_context))
     except Exception:
         pass
 

@@ -53,7 +53,12 @@ def _plan_create(ctx: ToolContext, title: str, steps: list, notes: str = "") -> 
     return plans.format_plan_summary(plan)
 
 
-def _plan_approve(ctx: ToolContext, plan_id: str) -> str:
+def _plan_approve(ctx: ToolContext, plan_id: str = "") -> str:
+    if not plan_id:
+        draft = plans.get_draft_plan(ctx.drive_root)
+        if not draft:
+            return "No draft plan found to approve."
+        plan_id = draft["id"]
     plan = plans.approve_plan(ctx.drive_root, plan_id)
     current = _current_step(plan)
     step_line = ""
@@ -196,14 +201,17 @@ def get_tools() -> List[ToolEntry]:
             "name": "plan_approve",
             "description": (
                 "Approve a draft plan to start execution. Only call after owner confirms the plan. "
-                "First step automatically becomes 'in_progress'."
+                "First step automatically becomes 'in_progress'. "
+                "plan_id is optional — omit to auto-detect the latest draft."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "plan_id": {"type": "string", "description": "Plan ID to approve"},
+                    "plan_id": {
+                        "type": "string",
+                        "description": "Plan ID to approve (optional — auto-detects latest draft if omitted)",
+                    },
                 },
-                "required": ["plan_id"],
             },
         }, _plan_approve),
 

@@ -287,3 +287,116 @@ def test_complete_plan_requires_exact_plan_id(drive_root, sample_steps):
 
     with pytest.raises(ValueError, match="exact plan_id"):
         complete_plan(drive_root, "fitness-bot-extraction", summary="done")
+
+
+# ===== NEW TESTS FOR FIXED BEHAVIOURS =====
+
+def test_get_draft_plan(drive_root, sample_steps):
+    """Draft plan should be discoverable via get_draft_plan."""
+    from ouroboros.plans import get_draft_plan
+    assert get_draft_plan(drive_root) is None
+    plan = create_plan(drive_root, "Draft Test", sample_steps)
+    draft = get_draft_plan(drive_root)
+    assert draft is not None
+    assert draft["id"] == plan["id"]
+    assert draft["status"] == STATUS_DRAFT
+
+
+def test_get_draft_plan_not_visible_after_approve(drive_root, sample_steps):
+    """After approval, get_draft_plan returns None."""
+    from ouroboros.plans import get_draft_plan
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approve_plan(drive_root, plan["id"])
+    assert get_draft_plan(drive_root) is None
+
+
+def test_format_plan_for_context_shows_draft(drive_root, sample_steps):
+    """Draft plan shows its ID in context so model can approve without guessing."""
+    plan = create_plan(drive_root, "My Draft", sample_steps)
+    text = format_plan_for_context(plan)
+    assert "Draft Plan" in text
+    assert "awaiting approval" in text
+    assert plan["id"] in text
+
+
+def test_plan_approve_auto_detects_draft(drive_root, sample_steps):
+    """plan_approve with empty plan_id auto-detects the latest draft."""
+    from ouroboros.tools.plans import _plan_approve
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+    plan = create_plan(drive_root, "AutoDetect", sample_steps)
+
+    # Call approve WITHOUT specifying plan_id
+    result = _plan_approve(ctx, plan_id="")
+
+    assert "Status: active" in result
+    assert progress
+    assert "AutoDetect" in progress[-1]
+
+
+def test_plan_approve_no_draft_returns_message(drive_root, sample_steps):
+    """plan_approve with no draft gives helpful message instead of crashing."""
+    from ouroboros.tools.plans import _plan_approve
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+
+    result = _plan_approve(ctx, plan_id="")
+    assert "No draft plan" in result
+
+
+def test_step_done_auto_completes_last_step(drive_root, sample_steps):
+    """When the last step is marked done, plan auto-completes — no separate plan_complete needed."""
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approve_plan(drive_root, plan["id"])
+    step_done(drive_root, plan["id"], result="A")
+    step_done(drive_root, plan["id"], result="B")
+    updated = step_done(drive_root, plan["id"], result="C")
+
+    assert updated["status"] == STATUS_COMPLETED
+    assert updated["completed_at"] is not None
+
+
+def test_complete_plan_idempotent(drive_root, sample_steps):
+    """plan_complete is safe to call even after auto-complete by step_done."""
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approve_plan(drive_root, plan["id"])
+    step_done(drive_root, plan["id"], result="A")
+    step_done(drive_root, plan["id"], result="B")
+    step_done(drive_root, plan["id"], result="C")
+    # Now call complete again (idempotent)
+    result = complete_plan(drive_root, plan["id"], summary="Extra summary")
+    assert result["status"] == STATUS_COMPLETED
+    assert "Extra summary" in result["notes"]
+
+
+def test_plan_complete_tool_idempotent(drive_root, sample_steps):
+    """plan_complete tool works even if plan was auto-completed by step_done."""
+    from ouroboros.tools.plans import _plan_complete
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approve_plan(drive_root, plan["id"])
+    step_done(drive_root, plan["id"], result="A")
+    step_done(drive_root, plan["id"], result="B")
+    step_done(drive_root, plan["id"], result="C")
+    # plan is now auto-completed; calling _plan_complete should not crash
+    result = _plan_complete(ctx, plan["id"], summary="All done")
+    assert "completed" in result
+    assert progress  # should still emit something
+
+
+def test_step_done_tool_reports_auto_complete(drive_root, sample_steps):
+    """When last step done, progress message reflects plan completion."""
+    from ouroboros.tools.plans import _plan_step_done
+    progress = []
+    ctx = _make_tool_ctx(drive_root, progress)
+    plan = create_plan(drive_root, "Test", sample_steps)
+    approve_plan(drive_root, plan["id"])
+    step_done(drive_root, plan["id"], result="A")
+    step_done(drive_root, plan["id"], result="B")
+
+    result = _plan_step_done(ctx, plan["id"], result="C final step", commit="v9.0.0")
+    assert "completed" in result
+    message = progress[-1]
+    assert "больше нет активных шагов" in message
+    assert "3/3" in message
