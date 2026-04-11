@@ -7,6 +7,7 @@ from typing import Sequence
 
 from .db import EXPECTED_TABLES, get_schema_version, initialize_database, list_user_tables
 from .ingest import import_archive
+from .tasks_parser import parse_tasks_for_source
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +24,11 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument('--title', default='', help='Optional human-readable title for the source set')
     import_parser.add_argument('--notes', default='', help='Optional notes stored with the source set')
     import_parser.add_argument('--storage-root', type=Path, default=None, help='Optional directory for copied archives and extracted files')
+
+    parse_parser = subparsers.add_parser('parse-tasks', help='Parse one registered tasks PDF into task blocks, tasks, and page assets')
+    parse_parser.add_argument('db_path', type=Path, help='Path to SQLite database file')
+    parse_parser.add_argument('--source-file-id', required=True, type=int, help='source_files.id for a tasks_pdf record')
+    parse_parser.add_argument('--storage-root', type=Path, default=None, help='Optional directory overriding storage_root from source_files metadata')
     return parser
 
 
@@ -60,6 +66,12 @@ def cmd_import_archive(
     return 0
 
 
+def cmd_parse_tasks(db_path: Path, *, source_file_id: int, storage_root: Path | None) -> int:
+    summary = parse_tasks_for_source(db_path, source_file_id=source_file_id, storage_root=storage_root)
+    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -74,6 +86,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             notes=args.notes,
             storage_root=args.storage_root,
         )
+    if args.command == 'parse-tasks':
+        return cmd_parse_tasks(args.db_path, source_file_id=args.source_file_id, storage_root=args.storage_root)
     parser.error(f'Unknown command: {args.command}')
     return 2
 
