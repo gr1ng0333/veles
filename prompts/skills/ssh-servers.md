@@ -9,7 +9,7 @@ Full SSH contour — use these instead of `run_shell("ssh ...")`:
 | `ssh_target_register` | Register server alias (host, port, user, auth type) |
 | `ssh_target_list` | List registered targets |
 | `ssh_target_ping` | Test connectivity |
-| `ssh_target_remove` | Remove target |
+| `ssh_target_get` | Remove target |
 | `ssh_session_bootstrap` | Bootstrap/validate SSH auth + multiplexed session |
 | `ssh_key_generate` | Generate new SSH keypair |
 | `ssh_key_list` | List managed keys |
@@ -18,7 +18,7 @@ Full SSH contour — use these instead of `run_shell("ssh ...")`:
 | `remote_read_file` | Read remote file |
 | `remote_write_file` | Write file to remote host (with guardrails) |
 | `remote_list_dir` | List remote directory |
-| `remote_find_files` | Find files matching pattern |
+| `remote_find` | Find files matching pattern |
 | `remote_grep` | Grep in remote files |
 | `remote_mkdir` | Create remote directory |
 | `remote_service_status` | Check systemd service status |
@@ -26,7 +26,7 @@ Full SSH contour — use these instead of `run_shell("ssh ...")`:
 | `remote_service_logs` | Get service journal logs |
 | `remote_service_list` | List running services |
 | `remote_server_health` | Full snapshot: uptime/load/disk/memory/ports/services/TLS |
-| `remote_operator_overview` | Summary of contour capabilities |
+| `remote_capabilities_overview` (alias `remote_operator_overview`) | Summary of contour capabilities |
 
 ## Typical Sequences
 
@@ -37,7 +37,7 @@ Full SSH contour — use these instead of `run_shell("ssh ...")`:
 2. ssh_session_bootstrap(target="myserver", password="PASS")
    # This validates connectivity + sets up multiplexed session
 3. ssh_key_generate(name="myserver-key")
-4. ssh_key_deploy(target="myserver", key_name="myserver-key", password="PASS")
+4. ssh_key_deploy(alias="myserver", key_name="myserver-key", password="PASS")
    # Deploys public key to ~/.ssh/authorized_keys
 5. ssh_target_register(alias="myserver", host="IP", user="root", auth_type="key", key_name="myserver-key")
    # Re-register with key auth
@@ -57,7 +57,7 @@ Good `overall_status=ok` means all checks passed. Red flags appear in the `issue
 ### Run arbitrary command
 
 ```
-remote_command_exec(target="myserver", command="systemctl status nginx")
+remote_service_status(alias="myserver", service_name="nginx.service")
 ```
 
 ### Read file
@@ -76,9 +76,9 @@ remote_write_file(target="myserver", path="/etc/myapp/config.json", content="{..
 ### Manage systemd service
 
 ```
-remote_service_status(target="myserver", service="nginx")
+remote_service_status(alias="myserver", service_name="nginx.service")
 remote_service_action(target="myserver", service="nginx", action="restart")
-remote_service_logs(target="myserver", service="nginx", lines=50)
+remote_service_logs(alias="myserver", service_name="nginx.service", lines=50)
 ```
 
 ## Known Servers
@@ -139,9 +139,14 @@ For large directories — prefer `remote_command_exec` with `tar | ssh` pipeline
 ```
 1. remote_write_file — write service config / env file
 2. remote_write_file — write /etc/systemd/system/myapp.service
-3. remote_command_exec(command="systemctl daemon-reload")
+3. remote_service_action(alias="myserver", service_name="myapp.service", action="restart")
 4. remote_service_action(service="myapp", action="enable")
 5. remote_service_action(service="myapp", action="start")
-6. remote_service_status(service="myapp")
+6. remote_service_status(alias="myserver", service_name="myapp.service")
    # Verify: active (running)
 ```
+
+
+## Xray / 3x-ui diagnostics
+
+На 3x-ui хостах Xray часто не существует как отдельный `xray.service`: его поднимает `x-ui.service` как дочерний процесс. Поэтому сначала используй `remote_xray_status(alias="myserver")`, а уже потом проверяй `remote_service_status(alias="myserver", service_name="x-ui.service")`, `remote_service_logs(...)` и `remote_netstat(alias="myserver", state_filter="LISTEN")`. Отсутствие `xray.service` само по себе не означает падение Xray core.

@@ -535,6 +535,96 @@ def _append_audit(ctx: ToolContext, payload: Dict[str, Any]) -> None:
     ctx.pending_events.append(event)
 
 
+def _xray_candidate_services(record: Dict[str, Any]) -> List[str]:
+    candidates: List[str] = []
+    for name in list(record.get("known_services") or []):
+        if isinstance(name, str) and name.strip() and ("xray" in name or name.strip() == "x-ui.service"):
+            candidates.append(name.strip())
+    for fallback in ["xray.service", "x-ui.service"]:
+        if fallback not in candidates:
+            candidates.append(fallback)
+    return candidates
+
+
+def _remote_xray_status(ctx: ToolContext, alias: str, *, timeout_sec: Any = None) -> str:
+    normalized_alias = _normalize_alias(alias)
+    try:
+        timeout = _normalize_timeout(timeout_sec)
+        record = _get_target_record(ctx, normalized_alias)
+        services: List[Dict[str, Any]] = []
+        active_service = ""
+        for service_name in _xray_candidate_services(record):
+            svc = _run_remote_command(ctx, normalized_alias, _systemctl_status_command(service_name), timeout=timeout)
+            parsed = _parse_systemctl_show(svc["stdout"])
+            ok = svc["returncode"] == 0 and parsed.get("active_state") == "active"
+            services.append({
+                "service_name": service_name,
+                "returncode": svc["returncode"],
+                "service": parsed,
+                "stderr": _trim_output(svc["stderr"]),
+                "ok": ok,
+            })
+            if ok and not active_service:
+                active_service = service_name
+
+        proc = _run_remote_command(
+            ctx,
+            normalized_alias,
+            "ps -eo pid,ppid,comm,args --sort=pid | grep -E '[x]ray|[x]-ui'",
+            timeout=timeout,
+        )
+        net = _run_remote_command(
+            ctx,
+            normalized_alias,
+            "command -v ss >/dev/null 2>&1 && ss -ltnp | grep -E 'xray|:2053|:2083|:2096|:8443' || netstat -ltnp 2>/dev/null | grep -E 'xray|:2053|:2083|:2096|:8443'",
+            timeout=timeout,
+        )
+        process_lines = [line for line in (proc["stdout"] or "").splitlines() if line.strip()]
+        listener_lines = [line for line in (net["stdout"] or "").splitlines() if line.strip()]
+        xray_process_present = any("xray" in line.lower() for line in process_lines)
+
+        managed_by = "unknown"
+        if any(item["ok"] and item["service_name"] == "xray.service" for item in services):
+            managed_by = "xray.service"
+        elif any(item["ok"] and item["service_name"] == "x-ui.service" for item in services) and xray_process_present:
+            managed_by = "x-ui.service"
+        elif active_service:
+            managed_by = active_service
+
+        payload = {
+            "status": "ok",
+            "alias": normalized_alias,
+            "managed_by": managed_by,
+            "xray_process_present": xray_process_present,
+            "services": services,
+            "process_snapshot": {
+                "returncode": proc["returncode"],
+                "lines": process_lines[:20],
+                "stderr": _trim_output(proc["stderr"]),
+            },
+            "listener_snapshot": {
+                "returncode": net["returncode"],
+                "lines": listener_lines[:30],
+                "stderr": _trim_output(net["stderr"]),
+            },
+            "notes": [
+                "On 3x-ui hosts Xray is often spawned by x-ui.service instead of a standalone xray.service.",
+                "Use this tool before concluding that Xray is down from a missing xray.service unit.",
+            ],
+        }
+        _append_audit(ctx, {
+            "type": "remote_xray_status",
+            "alias": normalized_alias,
+            "managed_by": managed_by,
+            "xray_process_present": xray_process_present,
+        })
+        return json.dumps(payload, ensure_ascii=False)
+    except RemoteServiceError as exc:
+        return _error_payload(exc.kind, exc.message, alias=normalized_alias)
+    except SshConnectionError as exc:
+        return _error_payload(exc.kind, exc.message, alias=normalized_alias)
+
+
 def _error_payload(kind: str, message: str, **extra: Any) -> str:
     payload = {"status": "error", "kind": kind, "error": message}
     payload.update(extra)
@@ -826,5 +916,15 @@ def get_tools() -> List[ToolEntry]:
             },
             required=["alias"],
             handler=lambda ctx, alias, timeout_sec=None: _remote_server_health(ctx, alias, timeout_sec=timeout_sec),
+        ),
+        _tool_entry(
+            name="remote_xray_status",
+            description="Inspect Xray runtime on a registered SSH target, including 3x-ui setups where Xray is managed under x-ui.service.",
+            properties={
+                "alias": {"type": "string", "description": "Registered SSH target alias."},
+                "timeout_sec": {"type": "integer", "description": f"SSH timeout in seconds (1-{_MAX_TIMEOUT_SEC})."},
+            },
+            required=["alias"],
+            handler=lambda ctx, alias, timeout_sec=None: _remote_xray_status(ctx, alias, timeout_sec=timeout_sec),
         ),
     ]

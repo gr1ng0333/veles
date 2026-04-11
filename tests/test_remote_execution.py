@@ -75,3 +75,27 @@ def test_remote_command_exec_timeout(monkeypatch, tmp_path):
     assert result["status"] == "error"
     assert result["kind"] == "timeout"
     assert ctx.pending_events[-1]["error_kind"] == "timeout"
+
+
+def test_remote_command_exec_allows_read_only_diagnostics(monkeypatch, tmp_path):
+    ctx = _ctx(tmp_path)
+    monkeypatch.setattr(remote_execution, "_get_target_record", lambda _ctx, alias: {"alias": alias, "host": "example", "port": 22, "user": "root", "auth_mode": "key", "ssh_key_path": "/tmp/key"})
+    monkeypatch.setattr(remote_execution, "_bootstrap_session", lambda _ctx, alias: {"status": "ok"})
+    monkeypatch.setattr(remote_execution, "_base_ssh_command", lambda _ctx, record: ["ssh", f"{record['user']}@{record['host']}"])
+
+    def fake_run(cmd, cwd, capture_output, text, timeout):
+        assert cmd[-1] == "cd . && systemctl show x-ui.service"
+        return subprocess.CompletedProcess(cmd, 0, stdout="ActiveState=active\n", stderr="")
+
+    monkeypatch.setattr(remote_execution.subprocess, "run", fake_run)
+    result = json.loads(remote_execution.remote_command_exec(ctx, alias="prod", command="systemctl show x-ui.service"))
+    assert result["status"] == "ok"
+    assert result["mutation_risk_level"] == "read_only"
+
+
+def test_remote_command_exec_denies_mutating_systemctl_in_read_only(monkeypatch, tmp_path):
+    ctx = _ctx(tmp_path)
+    monkeypatch.setattr(remote_execution, "_get_target_record", lambda _ctx, alias: {"alias": alias, "host": "example", "port": 22, "user": "root", "auth_mode": "key", "ssh_key_path": "/tmp/key"})
+    result = json.loads(remote_execution.remote_command_exec(ctx, alias="prod", command="systemctl restart x-ui.service"))
+    assert result["status"] == "error"
+    assert result["kind"] == "policy_deny"

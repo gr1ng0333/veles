@@ -19,6 +19,7 @@ _READ_ONLY_TOOLS = [
     'remote_service_logs',
     'remote_service_list',
     'remote_server_health',
+    'remote_xray_status',
 ]
 
 _MUTATING_TOOLS = [
@@ -136,6 +137,7 @@ def remote_capabilities_overview(ctx: ToolContext) -> str:
             'has_registered_targets': bool(target_count),
             'default_mode': 'read_only_first',
             'operator_entrypoint': 'remote_capabilities_overview',
+            'compat_alias': 'remote_operator_overview',
         },
         'targets': targets,
         'capability_map': {
@@ -149,6 +151,7 @@ def remote_capabilities_overview(ctx: ToolContext) -> str:
                 'remote_project_discover',
             ],
             'command_execution': ['remote_command_exec'],
+            'network_diagnostics': ['remote_ping', 'remote_traceroute', 'remote_port_check', 'remote_dns_lookup', 'remote_vpn_status', 'remote_iptables_summary', 'remote_netstat'],
             'materialization': ['remote_mkdir', 'remote_write_file', 'remote_project_fetch'],
             'composite_workflow': ['remote_investigate_project'],
         },
@@ -167,10 +170,15 @@ def remote_capabilities_overview(ctx: ToolContext) -> str:
         'next_actions': [
             'Register a remote host with ssh_target_register.' if target_count == 0 else 'Pick a target alias and bootstrap a session with ssh_session_bootstrap.',
             'Use remote_project_discover before fetch when the real project root is not yet known.',
+            'Use remote_xray_status when Xray may be spawned by x-ui.service instead of a standalone xray.service.',
             'Use remote_investigate_project when you want one compact operator verdict instead of manual tool stitching.',
         ],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def remote_operator_overview(ctx: ToolContext) -> str:
+    return remote_capabilities_overview(ctx)
 
 
 def get_tools() -> List[ToolEntry]:
@@ -181,5 +189,12 @@ def get_tools() -> List[ToolEntry]:
             {},
             [],
             remote_capabilities_overview,
-        )
+        ),
+        _tool_entry(
+            'remote_operator_overview',
+            'Backward-compatible alias for remote_capabilities_overview.',
+            {},
+            [],
+            remote_operator_overview,
+        ),
     ]

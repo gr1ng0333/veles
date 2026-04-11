@@ -48,6 +48,11 @@ _READ_ONLY_ALLOWLIST = {
     "which",
     "env",
     "printenv",
+    "ps",
+    "ss",
+    "netstat",
+    "systemctl",
+    "journalctl",
 }
 _GIT_READONLY_SUBCOMMANDS = {
     "status",
@@ -185,6 +190,17 @@ def _is_readonly_git(tokens: List[str]) -> bool:
     return len(tokens) >= 2 and tokens[1] in _GIT_READONLY_SUBCOMMANDS
 
 
+def _is_readonly_systemctl(tokens: List[str]) -> bool:
+    if len(tokens) < 2:
+        return False
+    return tokens[1] in {"status", "show", "list-units", "list-unit-files", "is-active", "is-enabled", "cat"}
+
+
+def _is_readonly_journalctl(tokens: List[str]) -> bool:
+    denied = {"--vacuum-size", "--vacuum-time", "--vacuum-files", "--rotate", "--flush", "--sync", "--relinquish-var"}
+    return not any(token in denied for token in tokens[1:])
+
+
 def _is_readonly_python(command: str) -> bool:
     stripped = command.strip()
     return any(stripped.startswith(f"python {prefix}") or stripped.startswith(f"python3 {prefix}") for prefix in _PYTHON_READONLY_PREFIXES)
@@ -204,6 +220,10 @@ def _enforce_policy(command: str, execution_mode: str) -> Tuple[List[str], str]:
             raise RemoteExecutionPolicyError("policy_deny", f"command '{binary}' is not allowed in read_only mode")
         if binary == "git" and not _is_readonly_git(tokens):
             raise RemoteExecutionPolicyError("policy_deny", "git subcommand is not allowed in read_only mode")
+        if binary == "systemctl" and not _is_readonly_systemctl(tokens):
+            raise RemoteExecutionPolicyError("policy_deny", "systemctl mutating subcommand is not allowed in read_only mode")
+        if binary == "journalctl" and not _is_readonly_journalctl(tokens):
+            raise RemoteExecutionPolicyError("policy_deny", "journalctl mutating flag is not allowed in read_only mode")
         if binary in {"python", "python3"} and not _is_readonly_python(command):
             raise RemoteExecutionPolicyError("policy_deny", "python is only allowed for simple read-only inspection snippets")
         if any(op in command for op in [">", ">>", "| sh", "| bash"]):

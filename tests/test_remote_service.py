@@ -8,6 +8,7 @@ from ouroboros.tools.remote_service import (
     _remote_service_list,
     _remote_service_logs,
     _remote_service_status,
+    _remote_xray_status,
     _system_health_command,
 )
 from ouroboros.tools.ssh_targets import _ssh_target_register
@@ -37,6 +38,7 @@ def test_remote_service_tools_registered():
         'remote_service_logs',
         'remote_service_list',
         'remote_server_health',
+        'remote_xray_status',
     }
     assert expected.issubset(names)
 
@@ -243,3 +245,28 @@ def test_system_health_command_shell_parses(tmp_path):
     result = subprocess.run(['sh', '-n', str(probe)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
+
+
+def test_remote_xray_status_detects_panel_managed_runtime(monkeypatch, tmp_path):
+    ctx = _ctx(tmp_path)
+    _ssh_target_register(ctx, alias="edge-box", host="203.0.113.20", user="root", auth_mode="password", password="secret", known_services=["x-ui.service"])
+
+    monkeypatch.setattr("ouroboros.tools.remote_service._bootstrap_session", lambda *args, **kwargs: {"status": "ok"})
+
+    def fake_run_remote_command(_ctx, alias, command, *, timeout):
+        assert alias == "edge-box"
+        if "systemctl show x-ui.service" in command:
+            return {"returncode": 0, "stdout": "Id=x-ui.service\nActiveState=active\nSubState=running\nMainPID=777\n", "stderr": ""}
+        if "systemctl show xray.service" in command:
+            return {"returncode": 1, "stdout": "", "stderr": "Unit xray.service could not be found."}
+        if "ps -eo pid,ppid,comm,args" in command:
+            return {"returncode": 0, "stdout": "777 1 x-ui /usr/local/x-ui/x-ui\n888 777 xray /usr/local/x-ui/bin/xray-linux-amd64 run -c /usr/local/x-ui/bin/config.json\n", "stderr": ""}
+        if "ss -ltnp" in command or "netstat -ltnp" in command:
+            return {"returncode": 0, "stdout": "LISTEN 0 4096 *:2053 *:* users:((\"xray\",pid=888,fd=11))\n", "stderr": ""}
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("ouroboros.tools.remote_service._run_remote_command", fake_run_remote_command)
+    payload = json.loads(_remote_xray_status(ctx, "edge-box"))
+    assert payload["status"] == "ok"
+    assert payload["managed_by"] == "x-ui.service"
+    assert payload["xray_process_present"] is True
