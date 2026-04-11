@@ -109,6 +109,8 @@ def test_normalize_target_record_accepts_registry_metadata():
         location='nl-ams',
         panel_type='3x-ui',
         panel_url='https://demo.example.com/panel/',
+        panel_username='admin',
+        panel_password='secret',
         tags=['vpn', 'eu-west', 'vpn'],
         status='warn',
         last_health_at='2026-04-11T13:00:00+00:00',
@@ -118,6 +120,8 @@ def test_normalize_target_record_accepts_registry_metadata():
     assert record['location'] == 'nl-ams'
     assert record['panel_type'] == '3x-ui'
     assert record['panel_url'] == 'https://demo.example.com/panel/'
+    assert record['panel_username'] == 'admin'
+    assert record['panel_password'] == 'secret'
     assert record['tags'] == ['vpn', 'eu-west']
     assert record['status'] == 'warn'
     assert record['legacy_aliases'] == ['demo-old', 'demo-legacy']
