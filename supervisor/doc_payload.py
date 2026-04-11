@@ -161,12 +161,27 @@ def document_to_text_payload(
         send_with_budget(chat_id, '⚠️ Не удалось извлечь текст из PDF. Установите pdfplumber или PyPDF2.')
         return None, None, False
 
-    raw_b64, detected_mime = tg.download_file_base64(file_id) if file_id else (None, '')
+    archive_extensions = {'zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz'}
+    is_archive = file_ext in archive_extensions
+    max_download_bytes = 100_000_000 if is_archive else 10_000_000
+    raw_b64, detected_mime = tg.download_file_base64(file_id, max_bytes=max_download_bytes) if file_id else (None, '')
     if raw_b64:
-        archive(raw_b64, detected_mime, 'binary')
+        meta = archive(raw_b64, detected_mime, 'archive' if is_archive else 'binary')
         if not has_caption:
             schedule_inbox_confirmation(chat_id, file_name, send_with_budget)
             return None, None, True
+        if is_archive:
+            relative_path = meta.get('relative_path', '') if isinstance(meta, dict) else ''
+            size_hint = int(meta.get('bytes') or 0) if isinstance(meta, dict) else 0
+            payload_lines = [caption or '', f'📦 Архив: {file_name}']
+            if relative_path:
+                payload_lines.append(f'Сохранён: {relative_path}')
+            if size_hint:
+                payload_lines.append(f'Размер: {size_hint} байт')
+            return "\n\n".join(line for line in payload_lines if line).strip(), None, True
+    if is_archive:
+        send_with_budget(chat_id, f'⚠️ Не удалось принять архив .{file_ext}: Telegram не отдал содержимое или файл превышает лимит {max_download_bytes // 1_000_000} MB.')
+        return None, None, True
     send_with_budget(chat_id, f'⚠️ Формат .{file_ext or "bin"} не поддерживается для немедленной обработки. Файл сохранён во входящий архив.')
     return None, None, True
 

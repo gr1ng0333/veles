@@ -64,3 +64,56 @@ def test_incoming_files_routing_archives_deferred_batches_and_immediate_captione
     assert inbox['count'] == 1
     assert inbox['items'][0]['filename'] == 'solution.py'
     assert inbox['items'][0]['metadata']['activation_mode'] == 'immediate'
+
+
+def test_incoming_zip_with_caption_is_archived_and_exposed_as_payload():
+    send_calls = []
+    captured_max_bytes = []
+
+    def send_budget(chat_id, text):
+        send_calls.append((chat_id, text))
+
+    def download_file_base64(file_id, max_bytes=10_000_000):
+        captured_max_bytes.append(max_bytes)
+        return ('UEsDBAoAAAAAAA==', 'application/zip')
+
+    tg = SimpleNamespace(download_file_base64=download_file_base64)
+    tmp = pathlib.Path(tempfile.mkdtemp())
+
+    payload, image_data, handled = DOCUMENT_TO_TEXT(
+        {'file_id': 'zip1', 'file_name': 'bank.zip', 'mime_type': 'application/zip'},
+        'импортируй архив', tg, 44, tmp, send_budget, 1004,
+    )
+
+    assert handled is True
+    assert image_data is None
+    assert '📦 Архив: bank.zip' in payload
+    assert 'Сохранён:' in payload
+    assert captured_max_bytes == [100_000_000]
+    assert send_calls == []
+
+    inbox = list_incoming_artifacts(tmp, limit=10, chat_id=44)
+    assert inbox['count'] == 1
+    assert inbox['items'][0]['filename'] == 'bank.zip'
+    assert inbox['items'][0]['metadata']['activation_mode'] == 'immediate'
+
+
+def test_incoming_zip_download_failure_reports_real_error():
+    send_calls = []
+    send_budget = lambda chat_id, text: send_calls.append((chat_id, text))
+    tg = SimpleNamespace(download_file_base64=lambda file_id, max_bytes=10_000_000: (None, ''))
+    tmp = pathlib.Path(tempfile.mkdtemp())
+
+    payload, image_data, handled = DOCUMENT_TO_TEXT(
+        {'file_id': 'zip2', 'file_name': 'broken.zip', 'mime_type': 'application/zip'},
+        'обработай архив', tg, 45, tmp, send_budget, 1005,
+    )
+
+    assert handled is True
+    assert payload is None
+    assert image_data is None
+    assert len(send_calls) == 1
+    assert 'Не удалось принять архив .zip' in send_calls[0][1]
+
+    inbox = list_incoming_artifacts(tmp, limit=10, chat_id=45)
+    assert inbox['count'] == 0
