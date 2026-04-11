@@ -8,6 +8,7 @@ from .db import (
     initialize_database,
     list_user_tables,
 )
+from .ingest import ArchiveImportError, import_archive
 
 __all__ = [
     'DEFAULT_SCHEMA_VERSION',
@@ -16,4 +17,6 @@ __all__ = [
     'get_schema_version',
     'initialize_database',
     'list_user_tables',
+    'ArchiveImportError',
+    'import_archive',
 ]
