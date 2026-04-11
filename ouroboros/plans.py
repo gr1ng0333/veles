@@ -102,6 +102,27 @@ def get_active_plan(drive_root: pathlib.Path) -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_draft_plan(drive_root: pathlib.Path) -> Optional[Dict[str, Any]]:
+    """Return the most recently created draft plan, or None.
+
+    Used to show pending plans in context even before approval,
+    so switching between models (e.g. Opus → Codex) doesn't lose the plan.
+    """
+    plans_dir = _plans_dir(drive_root)
+    candidates = []
+    for f in plans_dir.glob("*.json"):
+        try:
+            plan = json.loads(f.read_text(encoding="utf-8"))
+            if plan.get("status") == STATUS_DRAFT:
+                candidates.append(plan)
+        except Exception:
+            continue
+    if not candidates:
+        return None
+    # Return most recently created draft
+    return max(candidates, key=lambda p: p.get("created_at", ""))
+
+
 def get_plan(drive_root: pathlib.Path, plan_id: str) -> Optional[Dict[str, Any]]:
     """Load a specific plan by ID."""
     _require_exact_plan_id(plan_id)
@@ -215,6 +236,8 @@ def step_done(
     """
     Mark the current in_progress step as done.
     Automatically advances the next pending step to in_progress.
+    When the last step is marked done, auto-completes the plan
+    (eliminates a separate plan_complete call).
     Returns updated plan.
     """
     _require_exact_plan_id(plan_id)
@@ -245,6 +268,12 @@ def step_done(
         if step["status"] == STEP_PENDING:
             step["status"] = STEP_IN_PROGRESS
             break
+
+    # Auto-complete if no more actionable steps — saves an extra round
+    if not _plan_has_actionable_steps(plan):
+        plan["status"] = STATUS_COMPLETED
+        plan["completed_at"] = _utcnow_iso()
+        log.info("plan_auto_completed id=%s title=%s", plan_id, plan["title"])
 
     _save_plan(drive_root, plan)
     done_count = sum(1 for s in plan["steps"] if s["status"] == STEP_DONE)
@@ -308,11 +337,24 @@ def update_plan(
 
 
 def complete_plan(drive_root: pathlib.Path, plan_id: str, summary: str = "") -> Dict[str, Any]:
-    """Mark plan as completed. All steps should be done."""
+    """Mark plan as completed. All steps should be done.
+
+    Idempotent: if plan is already completed (e.g. auto-completed by step_done),
+    this just appends the summary to notes and returns without error.
+    """
     _require_exact_plan_id(plan_id)
     plan = _load_plan(drive_root, plan_id)
     if not plan:
         raise ValueError(f"Plan {plan_id} not found")
+
+    # Idempotent: already completed (e.g. auto-completed by step_done)
+    if plan["status"] == STATUS_COMPLETED:
+        if summary:
+            plan["notes"] = (plan.get("notes") or "") + f"\n\nCompletion summary: {summary}"
+            _save_plan(drive_root, plan)
+        log.info("plan_complete_idempotent id=%s (already completed)", plan_id)
+        return plan
+
     if plan["status"] != STATUS_ACTIVE:
         raise ValueError(f"Plan {plan_id} is '{plan['status']}', expected 'active'")
 
@@ -337,8 +379,14 @@ def complete_plan(drive_root: pathlib.Path, plan_id: str, summary: str = "") -> 
 
 
 def format_plan_for_context(plan: Dict[str, Any]) -> str:
-    """Format active plan as compact text for LLM system prompt context."""
-    lines = [f"## Active Plan: {plan['title']}"]
+    """Format active or draft plan as compact text for LLM system prompt context."""
+    status = plan.get("status", STATUS_DRAFT)
+
+    if status == STATUS_DRAFT:
+        lines = [f"## Draft Plan (awaiting approval): {plan['title']}"]
+    else:
+        lines = [f"## Active Plan: {plan['title']}"]
+
     if plan.get("notes"):
         # Only first 500 chars of notes in context
         notes_short = plan["notes"][:500]
@@ -365,20 +413,27 @@ def format_plan_for_context(plan: Dict[str, Any]) -> str:
 
     lines.append("")
 
-    # Current step details
-    current = None
-    for step in plan["steps"]:
-        if step["status"] == STEP_IN_PROGRESS:
-            current = step
-            break
-
-    if current:
-        lines.append(f">>> Current step: #{current['index']} — {current['title']}")
-        if current.get("description"):
-            lines.append(f"Description: {current['description']}")
+    if status == STATUS_DRAFT:
+        lines.append(
+            f">>> Plan is DRAFT — awaiting approval. "
+            f"Call plan_approve to start execution (plan_id is optional, auto-detects this draft). "
+            f"Plan ID: {plan['id']}"
+        )
     else:
-        done_count = sum(1 for s in plan["steps"] if s["status"] == STEP_DONE)
-        lines.append(f"All {done_count} steps completed. Call plan_complete to finalize.")
+        # Current step details
+        current = None
+        for step in plan["steps"]:
+            if step["status"] == STEP_IN_PROGRESS:
+                current = step
+                break
+
+        if current:
+            lines.append(f">>> Current step: #{current['index']} — {current['title']}")
+            if current.get("description"):
+                lines.append(f"Description: {current['description']}")
+        else:
+            done_count = sum(1 for s in plan["steps"] if s["status"] == STEP_DONE)
+            lines.append(f"All {done_count} steps completed. Call plan_complete to finalize.")
 
     return "\n".join(lines)
 
