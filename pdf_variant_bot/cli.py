@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from .answers_parser import parse_answers_for_source
 from .db import EXPECTED_TABLES, get_schema_version, initialize_database, list_user_tables
 from .ingest import import_archive
 from .tasks_parser import parse_tasks_for_source
@@ -25,10 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument('--notes', default='', help='Optional notes stored with the source set')
     import_parser.add_argument('--storage-root', type=Path, default=None, help='Optional directory for copied archives and extracted files')
 
-    parse_parser = subparsers.add_parser('parse-tasks', help='Parse one registered tasks PDF into task blocks, tasks, and page assets')
-    parse_parser.add_argument('db_path', type=Path, help='Path to SQLite database file')
-    parse_parser.add_argument('--source-file-id', required=True, type=int, help='source_files.id for a tasks_pdf record')
-    parse_parser.add_argument('--storage-root', type=Path, default=None, help='Optional directory overriding storage_root from source_files metadata')
+    parse_tasks_parser = subparsers.add_parser('parse-tasks', help='Parse one registered tasks PDF into task blocks, tasks, and page assets')
+    parse_tasks_parser.add_argument('db_path', type=Path, help='Path to SQLite database file')
+    parse_tasks_parser.add_argument('--source-file-id', required=True, type=int, help='source_files.id for a tasks_pdf record')
+    parse_tasks_parser.add_argument('--storage-root', type=Path, default=None, help='Optional directory overriding storage_root from source_files metadata')
+
+    parse_answers_parser = subparsers.add_parser('parse-answers', help='Parse one registered answers PDF and match answers to tasks by block/task number')
+    parse_answers_parser.add_argument('db_path', type=Path, help='Path to SQLite database file')
+    parse_answers_parser.add_argument('--source-file-id', required=True, type=int, help='source_files.id for an answers_pdf record')
+    parse_answers_parser.add_argument('--storage-root', type=Path, default=None, help='Optional directory overriding storage_root from source_files metadata')
     return parser
 
 
@@ -72,9 +78,16 @@ def cmd_parse_tasks(db_path: Path, *, source_file_id: int, storage_root: Path | 
     return 0
 
 
+def cmd_parse_answers(db_path: Path, *, source_file_id: int, storage_root: Path | None) -> int:
+    summary = parse_answers_for_source(db_path, source_file_id=source_file_id, storage_root=storage_root)
+    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
     if args.command == 'init-db':
         return cmd_init_db(args.db_path)
     if args.command == 'import-archive':
@@ -88,9 +101,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.command == 'parse-tasks':
         return cmd_parse_tasks(args.db_path, source_file_id=args.source_file_id, storage_root=args.storage_root)
+    if args.command == 'parse-answers':
+        return cmd_parse_answers(args.db_path, source_file_id=args.source_file_id, storage_root=args.storage_root)
     parser.error(f'Unknown command: {args.command}')
     return 2
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # pragma: no cover
     raise SystemExit(main())
