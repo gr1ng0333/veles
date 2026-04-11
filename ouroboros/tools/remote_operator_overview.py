@@ -70,6 +70,7 @@ def _registry_targets(ctx: ToolContext) -> List[Dict[str, Any]]:
         public = _public_target_view(record)
         items.append({
             'alias': public['alias'],
+            'legacy_aliases': public.get('legacy_aliases') or [],
             'label': public.get('label') or public['alias'],
             'host': public['host'],
             'port': public['port'],
@@ -80,6 +81,13 @@ def _registry_targets(ctx: ToolContext) -> List[Dict[str, Any]]:
             'known_services': public.get('known_services') or [],
             'known_ports': public.get('known_ports') or [],
             'known_tls_domains': public.get('known_tls_domains') or [],
+            'provider': public.get('provider') or '',
+            'location': public.get('location') or '',
+            'panel_type': public.get('panel_type') or '',
+            'panel_url': public.get('panel_url') or '',
+            'tags': public.get('tags') or [],
+            'status': public.get('status') or 'unknown',
+            'last_health_at': public.get('last_health_at') or '',
             'has_recommended_root': bool((public.get('default_remote_root') or '').strip() or (public.get('known_projects_paths') or [])),
         })
     return items

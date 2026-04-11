@@ -31,6 +31,7 @@ from ouroboros.tools.ssh_targets import (
     _ssh_target_get,
     _ssh_target_list,
     _ssh_target_register,
+    _ssh_target_update,
 )
 
 
@@ -52,6 +53,7 @@ def test_ssh_tools_registered():
     assert 'ssh_target_register' in names
     assert 'ssh_target_list' in names
     assert 'ssh_target_get' in names
+    assert 'ssh_target_update' in names
     assert 'ssh_session_bootstrap' in names
     assert 'ssh_target_ping' in names
 
@@ -94,6 +96,31 @@ def test_public_target_view_hides_password():
     public = _public_target_view(record)
     assert public['has_password'] is True
     assert 'password' not in public
+
+
+def test_normalize_target_record_accepts_registry_metadata():
+    record = _normalize_target_record(
+        alias='demo-node',
+        host='example.com',
+        user='root',
+        auth_mode='key',
+        ssh_key_path='~/.ssh/test_key',
+        provider='spacecore',
+        location='nl-ams',
+        panel_type='3x-ui',
+        panel_url='https://demo.example.com/panel/',
+        tags=['vpn', 'eu-west', 'vpn'],
+        status='warn',
+        last_health_at='2026-04-11T13:00:00+00:00',
+        legacy_aliases=['demo-old', 'demo-legacy'],
+    )
+    assert record['provider'] == 'spacecore'
+    assert record['location'] == 'nl-ams'
+    assert record['panel_type'] == '3x-ui'
+    assert record['panel_url'] == 'https://demo.example.com/panel/'
+    assert record['tags'] == ['vpn', 'eu-west']
+    assert record['status'] == 'warn'
+    assert record['legacy_aliases'] == ['demo-old', 'demo-legacy']
 
 
 def test_ssh_target_register_and_list_roundtrip(tmp_path):
@@ -216,3 +243,41 @@ def test_run_ssh_probe_password_mode_places_env_before_setsid(tmp_path, monkeypa
     assert captured['env']['VELES_SSH_PASSWORD'] == 'secret'
     assert captured['env']['SSH_ASKPASS'].endswith('state/ssh_askpass.sh')
 
+
+
+def test_ssh_target_update_preserves_existing_fields_and_allows_metadata_updates(tmp_path):
+    ctx = _ctx(tmp_path)
+    _ssh_target_register(
+        ctx,
+        alias='spacecore-94',
+        host='94.156.122.66',
+        user='root',
+        auth_mode='key',
+        ssh_key_path='~/.ssh/spacecore',
+        provider='spacecore',
+        panel_type='3x-ui',
+        tags=['vpn'],
+        legacy_aliases=['spacecore-vm'],
+    )
+
+    payload = json.loads(
+        _ssh_target_update(
+            ctx,
+            alias='spacecore-vm',
+            location='nl',
+            panel_url='https://397841.vm.spacecore.network/panel/',
+            status='ok',
+            last_health_at='2026-04-11T13:15:00+00:00',
+            tags=['vpn', 'fleet'],
+        )
+    )
+    target = payload['target']
+    assert target['alias'] == 'spacecore-94'
+    assert target['location'] == 'nl'
+    assert target['panel_url'] == 'https://397841.vm.spacecore.network/panel/'
+    assert target['status'] == 'ok'
+    assert target['tags'] == ['vpn', 'fleet']
+
+    fetched = json.loads(_ssh_target_get(ctx, 'spacecore-vm'))
+    assert fetched['target']['alias'] == 'spacecore-94'
+    assert fetched['target']['legacy_aliases'] == ['spacecore-vm']
