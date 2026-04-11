@@ -10,6 +10,7 @@ from .db import (
     list_user_tables,
 )
 from .ingest import ArchiveImportError, import_archive
+from .reporting import ReportingError, inspect_database, inspect_set, list_import_issues, validate_set
 from .tasks_parser import TaskParseError, parse_tasks_for_source, segment_task_blocks
 
 __all__ = [
@@ -17,14 +18,19 @@ __all__ = [
     'ArchiveImportError',
     'DEFAULT_SCHEMA_VERSION',
     'EXPECTED_TABLES',
+    'ReportingError',
     'TaskParseError',
     'connect_db',
     'get_schema_version',
     'import_archive',
     'initialize_database',
+    'inspect_database',
+    'inspect_set',
+    'list_import_issues',
     'list_user_tables',
     'parse_answers_for_source',
     'parse_tasks_for_source',
     'segment_answer_entries',
     'segment_task_blocks',
+    'validate_set',
 ]
