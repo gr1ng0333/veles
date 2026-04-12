@@ -306,6 +306,46 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     except Exception as e:
         log.warning("Failed to store task result in events: %s", e)
 
+    # For focused tasks: enqueue a review task for the main agent
+    if task_type == "focused" and task_id:
+        try:
+            running_task = (running_meta or {}).get("task") or {}
+            task_text_orig = str(running_task.get("text") or "")[:300]
+            result_text = str(evt.get("response_text") or "")[:800]
+            rounds_done = int(evt.get("total_rounds") or 0)
+            cost_done = float(evt.get("cost_usd") or 0.0)
+            review_prompt = (
+                f"""Focused worker `{task_id}` completed.
+"""
+                f"""Task: {task_text_orig}
+"""
+                f"""Rounds: {rounds_done} · Cost: ${cost_done:.3f}
+
+"""
+                f"""Result (first 800 chars):
+{result_text}
+
+"""
+                "Review the result: is the work done correctly? "
+                "Any issues or concerns? "
+                "Reply with a brief assessment and report to owner."
+            )
+            st_review = ctx.load_state()
+            owner_chat_id_review = int((st_review or {}).get("owner_chat_id") or 0)
+            if owner_chat_id_review:
+                review_task = {
+                    "id": uuid.uuid4().hex[:8],
+                    "type": "task",
+                    "chat_id": owner_chat_id_review,
+                    "text": review_prompt,
+                    "depth": 0,
+                    "_focused_review": True,
+                    "_focused_task_id": task_id,
+                }
+                ctx.enqueue_task(review_task)
+        except Exception:
+            log.debug("Failed to enqueue focused review task", exc_info=True)
+
     # Concise mandatory completion report for substantial tasks
     try:
         owner_chat_id = int((ctx.load_state() or {}).get("owner_chat_id") or 0)
@@ -744,6 +784,7 @@ def _handle_create_focused_worker(evt: Dict[str, Any], ctx: Any) -> None:
         "system_prompt": str(evt.get("system_prompt") or ""),
         "tool_whitelist": str(evt.get("tool_whitelist") or "FULL"),
         "project_context": str(evt.get("project_context") or ""),
+        "model": str(evt.get("model") or "codex/gpt-5.4"),
         "depth": 0,
     }
     ctx.enqueue_task(task)

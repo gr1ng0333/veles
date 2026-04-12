@@ -116,7 +116,7 @@ class FocusedAgent:
 
         # --- Build context ---
         requested_model = str(
-            task.get("model") or os.environ.get("OUROBOROS_MODEL") or ""
+            task.get("model") or "codex/gpt-5.4"
         ).strip()
         write_transport = model_transport(requested_model) if requested_model else None
 
