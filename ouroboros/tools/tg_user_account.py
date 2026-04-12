@@ -26,6 +26,7 @@ Requirements:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -41,6 +42,17 @@ _DEFAULT_TIMEOUT = 30
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _ensure_event_loop() -> None:
+    """Ensure current thread has an event loop (Python 3.10+ fix for ThreadPoolExecutor)."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("closed")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
 
 def _get_credentials() -> tuple[str, str, str]:
     """Return (api_id, api_hash, session_string). Raises if missing."""
@@ -127,6 +139,7 @@ def _tg_inbox_read(
         return json.dumps({"ok": False, "error": str(exc)})
 
     try:
+        _ensure_event_loop()
         client = _make_client(api_id, api_hash, session_string)
         with client:
             me = client.get_me()
@@ -197,6 +210,7 @@ def _tg_send_as_me(
         return json.dumps({"ok": False, "error": str(exc)})
 
     try:
+        _ensure_event_loop()
         client = _make_client(api_id, api_hash, session_string)
         with client:
             me = client.get_me()
@@ -231,6 +245,7 @@ def _tg_user_account_status(ctx: ToolContext) -> str:
         return json.dumps({"ok": False, "error": str(exc)})
 
     try:
+        _ensure_event_loop()
         client = _make_client(api_id, api_hash, session_string)
         with client:
             me = client.get_me()
