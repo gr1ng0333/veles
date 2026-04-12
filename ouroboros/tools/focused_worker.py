@@ -7,6 +7,7 @@ Usage:
         system_prompt="...",  # optional
         tools="CODE",         # preset: DEPLOY / CODE / FULL, or comma-separated names
         project_context="...", # optional background for the worker
+        model="codex/gpt-5.4", # optional model override (default: codex/gpt-5.4)
     )
 
 Returns: task_id for later get_task_result().
@@ -28,17 +29,21 @@ def _create_focused_worker(
     system_prompt: str = "",
     tools: str = "FULL",
     project_context: str = "",
+    model: str = "",
 ) -> str:
     """Schedule a focused worker task.
 
     - Minimal context (no identity/scratchpad/chat history)
     - Tool whitelist: DEPLOY / CODE / FULL or comma-separated list
     - Sends TG notification on completion (always)
-    - Uses current agent model profile
+    - Defaults to codex/gpt-5.4 unless model is explicitly overridden
     """
     task = (task or "").strip()
     if not task:
         return "⚠️ task is required — describe what the focused worker should do."
+
+    # Default model for focused workers is always Codex
+    resolved_model = (model or "").strip() or "codex/gpt-5.4"
 
     tid = uuid.uuid4().hex[:8]
     evt = {
@@ -48,6 +53,7 @@ def _create_focused_worker(
         "system_prompt": (system_prompt or "").strip(),
         "tool_whitelist": (tools or "FULL").strip(),
         "project_context": (project_context or "").strip(),
+        "model": resolved_model,
         "ts": utc_now_iso(),
     }
     ctx.pending_events.append(evt)
@@ -55,6 +61,7 @@ def _create_focused_worker(
     preset_info = tools.upper() if tools.upper() in ("DEPLOY", "CODE", "FULL") else f"custom ({tools})"
     return (
         f"Focused worker {tid} scheduled.\n"
+        f"Model: {resolved_model}\n"
         f"Tools: {preset_info}\n"
         f"Task: {task[:100]}\n"
         f"Result: available via get_task_result('{tid}') · TG notification on done."
@@ -72,6 +79,7 @@ def get_tools() -> List[ToolEntry]:
                     "Runs with minimal context (no identity/scratchpad/chat history), "
                     "a tool whitelist, and always sends a TG notification on completion. "
                     "Use for tasks on external repos, deploys, or isolated code work. "
+                    "Defaults to codex/gpt-5.4 unless overridden. "
                     "Returns task_id for get_task_result()."
                 ),
                 "parameters": {
@@ -101,6 +109,14 @@ def get_tools() -> List[ToolEntry]:
                             "description": (
                                 "Optional background: repo paths, constraints, style, "
                                 "anything the worker needs to know before starting."
+                            ),
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Model override for this worker. "
+                                "Default: codex/gpt-5.4. "
+                                "Example: 'copilot/claude-sonnet-4.6'."
                             ),
                         },
                     },
