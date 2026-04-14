@@ -484,6 +484,11 @@ def build_llm_messages(
     if skills_map_md.strip():
         static_text += "\n\n" + clip_text(skills_map_md, 3000)
 
+    # Telegram contour — always in Block 0 (presence memory)
+    tg_contour_md = _safe_read(env.repo_path("prompts/TELEGRAM_CONTOUR.md"), fallback="")
+    if tg_contour_md.strip():
+        static_text += "\n\n## Telegram Contour\n\n" + clip_text(tg_contour_md, 1500)
+
     if needs_full_context:
         readme_limit = 2000 if task_type == "evolution" else 180000
         static_text += "\n\n## README.md\n\n" + clip_text(readme_md, readme_limit)
