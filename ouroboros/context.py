@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import pathlib
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.utils import (
@@ -15,6 +16,48 @@ from ouroboros.utils import (
 from ouroboros.memory import Memory
 
 log = logging.getLogger(__name__)
+
+RECENT_LOG_FALLBACK_MAX_AGE = timedelta(hours=6)
+RECENT_REFLECTION_MAX_AGE = timedelta(days=14)
+
+
+def _parse_entry_time(entry: Dict[str, Any]) -> Optional[datetime]:
+    """Parse a JSONL timestamp into UTC datetime when possible."""
+    raw = str(entry.get("ts") or entry.get("timestamp") or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _filter_fresh_entries(
+    entries: List[Dict[str, Any]],
+    *,
+    max_age: timedelta,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """Keep entries recent enough to be shown as live context.
+
+    Entries without parseable timestamps are kept: old log formats should not
+    vanish silently. Timestamped entries older than max_age are excluded so a
+    stale tail cannot masquerade as "Recent progress" after a long quiet period.
+    """
+    if not entries:
+        return []
+    now = now or datetime.now(timezone.utc)
+    fresh: List[Dict[str, Any]] = []
+    for entry in entries:
+        ts = _parse_entry_time(entry)
+        if ts is None or now - ts <= max_age:
+            fresh.append(entry)
+    return fresh
 
 def _build_user_content(task: Dict[str, Any]) -> Any:
     """Build user message content. Images are auto-described via Codex VLM.
@@ -176,7 +219,11 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
     progress_entries = memory.read_jsonl_tail("progress.jsonl", 200)
     if task_id:
         filtered = [e for e in progress_entries if str(e.get("task_id", "")).strip() == task_id]
-        progress_entries = filtered if filtered else progress_entries[-5:]
+        progress_entries = filtered if filtered else _filter_fresh_entries(
+            progress_entries[-5:], max_age=RECENT_LOG_FALLBACK_MAX_AGE
+        )
+    else:
+        progress_entries = _filter_fresh_entries(progress_entries, max_age=RECENT_LOG_FALLBACK_MAX_AGE)
     progress_summary = memory.summarize_progress(progress_entries, limit=15)
     if progress_summary:
         sections.append("## Recent progress\n\n" + progress_summary)
@@ -184,7 +231,11 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
     tools_entries = memory.read_jsonl_tail("tools.jsonl", 200)
     if task_id:
         filtered = [e for e in tools_entries if str(e.get("task_id", "")).strip() == task_id]
-        tools_entries = filtered if filtered else tools_entries[-5:]
+        tools_entries = filtered if filtered else _filter_fresh_entries(
+            tools_entries[-5:], max_age=RECENT_LOG_FALLBACK_MAX_AGE
+        )
+    else:
+        tools_entries = _filter_fresh_entries(tools_entries, max_age=RECENT_LOG_FALLBACK_MAX_AGE)
     tools_summary = memory.summarize_tools(tools_entries)
     if tools_summary:
         sections.append("## Recent tools\n\n" + tools_summary)
@@ -192,20 +243,31 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
     events_entries = memory.read_jsonl_tail("events.jsonl", 200)
     if task_id:
         filtered = [e for e in events_entries if str(e.get("task_id", "")).strip() == task_id]
-        events_entries = filtered if filtered else events_entries[-5:]
+        events_entries = filtered if filtered else _filter_fresh_entries(
+            events_entries[-5:], max_age=RECENT_LOG_FALLBACK_MAX_AGE
+        )
+    else:
+        events_entries = _filter_fresh_entries(events_entries, max_age=RECENT_LOG_FALLBACK_MAX_AGE)
     events_summary = memory.summarize_events(events_entries)
     if events_summary:
         sections.append("## Recent events\n\n" + events_summary)
 
     supervisor_summary = memory.summarize_supervisor(
-        memory.read_jsonl_tail("supervisor.jsonl", 200))
+        _filter_fresh_entries(
+            memory.read_jsonl_tail("supervisor.jsonl", 200),
+            max_age=RECENT_LOG_FALLBACK_MAX_AGE,
+        )
+    )
     if supervisor_summary:
         sections.append("## Supervisor\n\n" + supervisor_summary)
 
     # Execution reflections — process memory from previous tasks
     try:
         from ouroboros.reflection import format_recent_reflections
-        reflections_entries = memory.read_jsonl_tail("task_reflections.jsonl", 20)
+        reflections_entries = _filter_fresh_entries(
+            memory.read_jsonl_tail("task_reflections.jsonl", 20),
+            max_age=RECENT_REFLECTION_MAX_AGE,
+        )
         reflections_text = format_recent_reflections(reflections_entries, limit=10)
         if reflections_text:
             sections.append("## Execution reflections\n\n" + reflections_text)
