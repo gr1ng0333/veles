@@ -106,7 +106,7 @@ def test_mode_summary_text_for_codex_includes_mode_details(monkeypatch) -> None:
 
     summary = mode_summary_text()
     assert "Mode: codex" in summary
-    assert "Main: codex/gpt-5.4 → codex → gpt-5.4" in summary
+    assert "Main: codex/gpt-5.5 → codex → gpt-5.5" in summary
     assert "Rounds limit: 200" in summary
     assert "Tools: on" in summary
     assert "Execution: loop" in summary
@@ -201,7 +201,7 @@ def test_sync_mode_env_from_state_overrides_stale_env() -> None:
         mode = sync_mode_env_from_state()
 
         assert mode.key == "codex"
-        assert os.environ["OUROBOROS_MODEL"] == MODEL_MODES["codex"].model
+        assert os.environ["OUROBOROS_MODEL"] == os.environ["OUROBOROS_MODEL_CODE"]
         assert os.environ["OUROBOROS_MAX_ROUNDS"] == str(MODEL_MODES["codex"].max_rounds)
         assert os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] == "1"
     finally:
@@ -261,3 +261,19 @@ def test_copilot_modes_are_capped_at_30_rounds() -> None:
     assert MODEL_MODES["haiku"].max_rounds == 30
     assert MODEL_MODES["sonnet"].max_rounds == 30
     assert MODEL_MODES["opus"].max_rounds == 30
+
+
+def test_runtime_policy_codex_prefers_code_model_override(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_MODEL", "codex/gpt-5.4")
+    monkeypatch.setenv("OUROBOROS_MODEL_CODE", "codex/gpt-5.5")
+    policy = get_runtime_policy({"active_model_mode": "codex"})
+    assert policy.main_model == "codex/gpt-5.5"
+
+
+def test_sync_mode_env_from_state_preserves_codex_code_override(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_MODEL", "codex/gpt-5.4")
+    monkeypatch.setenv("OUROBOROS_MODEL_CODE", "codex/gpt-5.5")
+    mode = sync_mode_env_from_state({"active_model_mode": "codex"})
+    assert mode.key == "codex"
+    assert os.environ["OUROBOROS_MODEL"] == "codex/gpt-5.5"
+

@@ -145,7 +145,7 @@ def persist_active_mode(mode_key: str) -> ModelMode:
 
 def apply_mode_env(mode: Optional[ModelMode] = None) -> ModelMode:
     active = mode or get_active_mode()
-    os.environ["OUROBOROS_MODEL"] = active.model
+    os.environ["OUROBOROS_MODEL"] = _resolve_mode_main_model(active)
     os.environ["OUROBOROS_MAX_ROUNDS"] = str(active.max_rounds)
     os.environ["OUROBOROS_MODEL_TOOLS_ENABLED"] = "1" if active.tools_enabled else "0"
     os.environ.setdefault("OUROBOROS_MODEL_LIGHT", DEFAULT_AUX_LIGHT_MODEL)
@@ -207,9 +207,13 @@ def get_background_reasoning_effort() -> str:
 
 
 def _resolve_mode_main_model(mode: ModelMode) -> str:
-    env_model = os.environ.get("OUROBOROS_MODEL", "").strip()
-    if mode.key == "codex" and env_model:
-        return env_model
+    if mode.key == "codex":
+        code_model = os.environ.get("OUROBOROS_MODEL_CODE", "").strip()
+        if code_model:
+            return code_model
+        env_model = os.environ.get("OUROBOROS_MODEL", "").strip()
+        if env_model:
+            return env_model
     return mode.model
 
 
