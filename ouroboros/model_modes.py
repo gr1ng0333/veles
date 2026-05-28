@@ -206,12 +206,19 @@ def get_background_reasoning_effort() -> str:
     return os.environ.get("OUROBOROS_BG_REASONING_EFFORT", "").strip().lower() or "medium"
 
 
+def _resolve_mode_main_model(mode: ModelMode) -> str:
+    env_model = os.environ.get("OUROBOROS_MODEL", "").strip()
+    if mode.key == "codex" and env_model:
+        return env_model
+    return mode.model
+
+
 def get_runtime_policy(st: Optional[Dict[str, Any]] = None) -> ModeRuntimePolicy:
     mode = get_active_mode(st)
     effort = get_codex_reasoning_effort(st)
     return ModeRuntimePolicy(
         mode_key=mode.key,
-        main_model=mode.model,
+        main_model=_resolve_mode_main_model(mode),
         max_rounds=mode.max_rounds,
         tools_enabled=mode.tools_enabled,
         intended_use=mode.intended_use,
