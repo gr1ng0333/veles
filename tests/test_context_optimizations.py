@@ -92,10 +92,24 @@ class TestTaskScopedFiltering:
         assert "tool_call: 1" in combined
         assert "error: 1" in combined
 
-    def test_recent_events_fallback_when_empty(self, tmp_path):
-        """If no events match task_id, show last N without filter."""
+    def test_recent_events_fallback_when_fresh(self, tmp_path, monkeypatch):
+        """If no events match task_id, show fresh global fallback entries."""
         env = _make_env(tmp_path)
         mem = _make_memory(env._drive_root)
+
+        class _FixedDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                from datetime import datetime, timezone
+                return datetime(2026, 3, 20, 13, 0, 0, tzinfo=timezone.utc)
+
+            @classmethod
+            def fromisoformat(cls, value):
+                from datetime import datetime
+                return datetime.fromisoformat(value)
+
+        import ouroboros.context as context
+        monkeypatch.setattr(context, "datetime", _FixedDateTime)
 
         events = [
             {"ts": "2026-03-20T12:00:00Z", "type": "tool_call", "task_id": "task-A", "text": "event A1"},
@@ -108,12 +122,43 @@ class TestTaskScopedFiltering:
         _write_jsonl(env._drive_root / "logs" / "tools.jsonl", [])
         _write_jsonl(env._drive_root / "logs" / "supervisor.jsonl", [])
 
-        # task-X has no matching events, so fallback should show recent
         sections = _build_recent_sections(mem, env, task_id="task-X")
         events_text = [s for s in sections if "Recent events" in s]
 
-        # Fallback: should still have events from task-A
-        assert events_text, "Expected fallback Recent events section"
+        assert events_text, "Expected fresh fallback Recent events section"
+
+    def test_recent_events_ignores_stale_fallback(self, tmp_path, monkeypatch):
+        """Old global fallback entries should not masquerade as Recent events."""
+        env = _make_env(tmp_path)
+        mem = _make_memory(env._drive_root)
+
+        class _FixedDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                from datetime import datetime, timezone
+                return datetime(2026, 5, 28, 21, 0, 0, tzinfo=timezone.utc)
+
+            @classmethod
+            def fromisoformat(cls, value):
+                from datetime import datetime
+                return datetime.fromisoformat(value)
+
+        import ouroboros.context as context
+        monkeypatch.setattr(context, "datetime", _FixedDateTime)
+
+        events = [
+            {"ts": "2026-03-20T12:00:00Z", "type": "tool_call", "task_id": "task-A", "text": "stale event"},
+        ]
+        _write_jsonl(env._drive_root / "logs" / "events.jsonl", events)
+        _write_jsonl(env._drive_root / "logs" / "chat.jsonl", [])
+        _write_jsonl(env._drive_root / "logs" / "progress.jsonl", [])
+        _write_jsonl(env._drive_root / "logs" / "tools.jsonl", [])
+        _write_jsonl(env._drive_root / "logs" / "supervisor.jsonl", [])
+
+        sections = _build_recent_sections(mem, env, task_id="task-X")
+        events_text = [s for s in sections if "Recent events" in s]
+
+        assert not events_text
 
     def test_recent_progress_filtered_by_task_id(self, tmp_path):
         """Recent progress should only show entries matching current task_id."""
