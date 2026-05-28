@@ -1,18 +1,21 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.3.16-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.3.17-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.3.16 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.3.17 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Release notes
+### v7.3.17
+- 7.3.17 — fixed codex env resync so `sync_mode_env_from_state()` no longer overwrites `OUROBOROS_MODEL` back to `codex/gpt-5.4`; active codex tasks now honor `OUROBOROS_MODEL_CODE` / `.env` overrides after restart
+
 ### v7.3.16
 - 7.3.16 — fixed codex mode runtime model selection: `get_runtime_policy()` now respects `OUROBOROS_MODEL` overrides for the active codex mode, so post-restart runtime logs match the configured model slug (for example `codex/gpt-5.5`)
 
