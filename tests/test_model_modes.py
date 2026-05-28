@@ -74,6 +74,19 @@ def test_runtime_policy_uses_active_mode_registry(monkeypatch) -> None:
     assert policy.background_reasoning_effort == "medium"
 
 
+def test_runtime_policy_codex_prefers_env_model_override(monkeypatch) -> None:
+    monkeypatch.setenv("OUROBOROS_MODEL", "codex/gpt-5.5")
+    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", "codex/gpt-5.5-mini")
+    monkeypatch.delenv("OUROBOROS_MODEL_BACKGROUND", raising=False)
+    monkeypatch.delenv("CODEX_CONSCIOUSNESS_ACCESS", raising=False)
+    monkeypatch.delenv("CODEX_CONSCIOUSNESS_REFRESH", raising=False)
+    policy = get_runtime_policy({"active_model_mode": "codex"})
+    assert policy.mode_key == "codex"
+    assert policy.main_model == "codex/gpt-5.5"
+    assert policy.aux_light_model == "codex/gpt-5.5-mini"
+    assert policy.background_model == "codex/gpt-5.5-mini"
+
+
 def test_mode_summary_text_for_codex_includes_mode_details(monkeypatch) -> None:
     from ouroboros import model_modes as mm
 
