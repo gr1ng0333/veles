@@ -8,6 +8,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 from typing import Optional
 
 from google.colab import userdata  # type: ignore
@@ -56,15 +57,35 @@ assert GITHUB_REPO, "GITHUB_REPO not set. Add it to your config cell (see README
 BOOT_BRANCH = str(os.environ.get("OUROBOROS_BOOT_BRANCH", "ouroboros"))
 
 REPO_DIR = pathlib.Path("/content/ouroboros_repo").resolve()
-REMOTE_URL = f"https://{GITHUB_TOKEN}:x-oauth-basic@github.com/{GITHUB_USER}/{GITHUB_REPO}.git"
+REMOTE_URL = f"https://github.com/{GITHUB_USER}/{GITHUB_REPO}.git"
+
+
+def git_env() -> dict[str, str]:
+    """Authenticate git without putting tokens into remote URLs or argv."""
+    askpass = pathlib.Path(tempfile.gettempdir()) / "veles_git_askpass.py"
+    askpass.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "prompt = sys.argv[1].lower() if len(sys.argv) > 1 else ''\n"
+        "print('x-access-token' if 'username' in prompt else os.environ['GITHUB_TOKEN'])\n",
+        encoding="utf-8",
+    )
+    askpass.chmod(0o700)
+    env = os.environ.copy()
+    env["GIT_ASKPASS"] = str(askpass)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+GIT_ENV = git_env()
 
 if not (REPO_DIR / ".git").exists():
     subprocess.run(["rm", "-rf", str(REPO_DIR)], check=False)
-    subprocess.run(["git", "clone", REMOTE_URL, str(REPO_DIR)], check=True)
+    subprocess.run(["git", "clone", REMOTE_URL, str(REPO_DIR)], check=True, env=GIT_ENV)
 else:
     subprocess.run(["git", "remote", "set-url", "origin", REMOTE_URL], cwd=str(REPO_DIR), check=True)
 
-subprocess.run(["git", "fetch", "origin"], cwd=str(REPO_DIR), check=True)
+subprocess.run(["git", "fetch", "origin"], cwd=str(REPO_DIR), check=True, env=GIT_ENV)
 
 # Check if BOOT_BRANCH exists on the fork's remote.
 # New forks (from the main-only public repo) won't have it yet.

@@ -151,7 +151,7 @@ if not CHAT_LOG_PATH.exists():
 # 3) Git constants
 BRANCH_DEV = "veles"
 BRANCH_STABLE = "veles-stable"
-REMOTE_URL = f"https://{GITHUB_TOKEN}:x-oauth-basic@github.com/{GITHUB_USER}/{GITHUB_REPO}.git"
+REMOTE_URL = f"https://github.com/{GITHUB_USER}/{GITHUB_REPO}.git"
 # 4) Initialize supervisor modules
 from supervisor.state import (
     init as state_init, load_state, save_state, append_jsonl,
