@@ -36,6 +36,38 @@ BRANCH_STABLE: str = "ouroboros-stable"
 MAX_RESCUE_SNAPSHOTS: int = 20
 
 
+def _git_auth_env() -> Dict[str, str]:
+    """Authenticate GitHub HTTPS without embedding tokens in remote URLs."""
+    env = os.environ.copy()
+    token = env.get("GITHUB_TOKEN", "").strip()
+    if not token:
+        return env
+    askpass = pathlib.Path(tempfile.gettempdir()) / "veles_git_askpass.py"
+    askpass.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "prompt = sys.argv[1].lower() if len(sys.argv) > 1 else ''\n"
+        "print('x-access-token' if 'username' in prompt else os.environ['GITHUB_TOKEN'])\n",
+        encoding="utf-8",
+    )
+    askpass.chmod(0o700)
+    env["GIT_ASKPASS"] = str(askpass)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def git_run(cmd: List[str], *, cwd: Optional[pathlib.Path] = None, check: bool = True,
+            capture_output: bool = False, text: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd or REPO_DIR),
+        check=check,
+        capture_output=capture_output,
+        text=text,
+        env=_git_auth_env(),
+    )
+
+
 def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, remote_url: str,
          branch_dev: str = "ouroboros", branch_stable: str = "ouroboros-stable") -> None:
     global REPO_DIR, DRIVE_ROOT, REMOTE_URL, BRANCH_DEV, BRANCH_STABLE
@@ -63,21 +95,19 @@ def _cleanup_old_rescue_snapshots(limit: int = MAX_RESCUE_SNAPSHOTS) -> None:
 
 
 def git_capture(cmd: List[str]) -> Tuple[int, str, str]:
-    r = subprocess.run(cmd, cwd=str(REPO_DIR), capture_output=True, text=True)
+    r = git_run(cmd, capture_output=True, check=False)
     return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
 
 
 def ensure_repo_present() -> None:
     if not (REPO_DIR / ".git").exists():
         subprocess.run(["rm", "-rf", str(REPO_DIR)], check=False)
-        subprocess.run(["git", "clone", REMOTE_URL, str(REPO_DIR)], check=True)
+        git_run(["git", "clone", REMOTE_URL, str(REPO_DIR)])
     else:
-        subprocess.run(["git", "remote", "set-url", "origin", REMOTE_URL],
-                        cwd=str(REPO_DIR), check=True)
-    subprocess.run(["git", "config", "user.name", "Veles"], cwd=str(REPO_DIR), check=True)
-    subprocess.run(["git", "config", "user.email", "veles@users.noreply.github.com"],
-                    cwd=str(REPO_DIR), check=True)
-    subprocess.run(["git", "fetch", "origin"], cwd=str(REPO_DIR), check=True)
+        git_run(["git", "remote", "set-url", "origin", REMOTE_URL])
+    git_run(["git", "config", "user.name", "Veles"])
+    git_run(["git", "config", "user.email", "veles@users.noreply.github.com"])
+    git_run(["git", "fetch", "origin"])
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +348,7 @@ def _push_copilot_rescue_ref(task_id: str, reason: str = '') -> Tuple[bool, str]
         commit_proc = subprocess.run(['git', 'commit', '-q', '-m', msg], cwd=str(tmp_path), capture_output=True, text=True)
         if commit_proc.returncode != 0:
             return False, f'git commit failed: {(commit_proc.stderr or commit_proc.stdout).strip()}'
-        push_proc = subprocess.run(['git', 'push', origin_url, f'HEAD:{ref}', '--force'], cwd=str(tmp_path), capture_output=True, text=True)
+        push_proc = git_run(['git', 'push', origin_url, f'HEAD:{ref}', '--force'], cwd=tmp_path, check=False, capture_output=True)
         if push_proc.returncode != 0:
             return False, f'push failed: {(push_proc.stderr or push_proc.stdout).strip()}'
 
