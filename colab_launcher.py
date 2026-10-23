@@ -196,6 +196,7 @@ workers_init(
     branch_dev=BRANCH_DEV, branch_stable=BRANCH_STABLE,
 )
 from supervisor.events import dispatch_event
+from supervisor.child_watch import ChildWatch
 from supervisor.audio_stt import transcribe_telegram_audio, AudioTranscriptionError
 from supervisor.codex_bootstrap import prewarm_codex_accounts
 from supervisor.restart_observability import arm_manual_terminal_restart_handoff
@@ -626,6 +627,31 @@ try:
     log.info("🧠 Background consciousness auto-started (default: always on)")
 except Exception as e:
     log.warning("consciousness auto-start failed: %s", e)
+_child_watch = ChildWatch(DRIVE_ROOT)
+
+
+def _poll_child_jobs() -> None:
+    """Wake Veles with a child_report task when an ocbot job it delegated ends."""
+    try:
+        owner_chat_id = load_state().get("owner_chat_id")
+        tasks, cursor, notice = _child_watch.poll(owner_chat_id)
+        for task in tasks:
+            enqueue_task(task)
+            append_jsonl(DRIVE_ROOT / "logs" / "events.jsonl", {
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "type": "child_report_enqueued", "task_id": task["id"],
+                "child_job_id": task["child_job_id"], "seq": task["child_event_seq"],
+            })
+        if tasks:
+            persist_queue_snapshot(reason="child_watch")
+        if cursor is not None:
+            _child_watch.commit(cursor)
+        if notice and owner_chat_id:
+            send_with_budget(int(owner_chat_id), notice)
+    except Exception:
+        log.warning("child_watch poll failed", exc_info=True)
+
+
 while True:
     loop_started_ts = time.time()
     rotate_chat_log_if_needed(DRIVE_ROOT)
@@ -639,6 +665,7 @@ while True:
             break
         dispatch_event(evt, _event_ctx)
     enforce_task_timeouts()
+    _poll_child_jobs()
     enqueue_evolution_task_if_needed()
     assign_tasks()
     persist_queue_snapshot(reason="main_loop")

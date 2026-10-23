@@ -19,17 +19,15 @@ class XuiPanelError(RuntimeError):
 def _tool_entry(name: str, description: str, properties: Dict[str, Any], required: List[str], handler, is_code_tool: bool = False) -> ToolEntry:
     return ToolEntry(
         name=name,
+        # The registry wraps schemas as {"type": "function", "function": schema}.
         schema={
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                    "additionalProperties": False,
-                },
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
             },
         },
         handler=handler,

@@ -10,6 +10,7 @@ This map is always in context. Skill files are loaded on demand only.
 | `copilot-tgbot` | `prompts/skills/copilot-tgbot.md` | Working on copilot-telegram-bot project: bot.py, storage.py, web.py, billing trick, SQLite schema |
 | `ouro-fitness-bot` | `prompts/skills/ouro-fitness-bot.md` | Working on ouro-fitness-bot: FatSecret, daemon, calisthenics program, deploy on server |
 | `proxy-deploy-bot` | `prompts/skills/proxy-deploy-bot.md` | Working on proxy-deploy-bot: deployer pipeline, 3x-ui provider, diagnostics, SNI, Gemini integration, templates |
+| `child-ocbot` | `prompts/skills/child-ocbot.md` | Delegating coding tasks to the child agent ocbot, `[child_report]` tasks, child_* tools, supervising its jobs |
 
 ## Protocol
 

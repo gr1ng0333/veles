@@ -255,6 +255,11 @@ EXPECTED_TOOLS = [
     "rag_index", "rag_query", "rag_list", "rag_delete",
     # Telegram user account (on-demand, firewall-protected)
     "tg_inbox_read", "tg_send_as_me", "tg_user_account_status",
+    # Existing tools that were added without updating this contract
+    "create_focused_worker", "fleet_health", "ssh_target_update", "xui_panel_status",
+    # Child agent ocbot (job API, spec 8)
+    "child_delegate", "child_jobs", "child_status", "child_report", "child_diff",
+    "child_followup", "child_stop", "child_accept", "child_reject",
 ]
 
 
