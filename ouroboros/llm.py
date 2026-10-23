@@ -204,11 +204,11 @@ class LLMClient:
         actual_model = transport_model_name(model)
         validate_transport_model(model)
 
-        # Codex proxy: explicit OAuth-backed transport
+        # Codex: OAuth proxy or Claudexor daemon, chosen by VELES_CODEX_TRANSPORT
         if transport == "codex":
-            from ouroboros.codex_proxy import call_codex
-            return call_codex(messages, tools=tools, model=actual_model,
-                              reasoning_effort=reasoning_effort)
+            from ouroboros.claudexor_transport import call_codex_selected
+            return call_codex_selected(messages, tools=tools, model=actual_model,
+                                       reasoning_effort=reasoning_effort)
 
         # Consciousness Codex: separate account tokens
         if transport == "codex-consciousness":
