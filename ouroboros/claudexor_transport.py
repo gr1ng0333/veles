@@ -109,11 +109,51 @@ def _request(base: str, token: str, method: str, path: str, *, body: Any = None,
     return json.loads(payload) if payload else None
 
 
+def _prepare_tool_call(call: Dict[str, Any]) -> Dict[str, Any]:
+    function = call.get("function") or {}
+    arguments = function.get("arguments")
+    if not isinstance(arguments, str):
+        arguments = json.dumps(arguments if arguments is not None else {}, ensure_ascii=False)
+    return {"id": str(call.get("id") or ""), "type": "function",
+            "function": {"name": str(function.get("name") or ""), "arguments": arguments}}
+
+
+def _prepare_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Send copy in the daemon's strict ModelTool shape.
+
+    Veles schemas carry a legacy top-level "name", and a tool may be wrapped twice
+    ({"function": {"type": "function", "function": {...}}}); the daemon rejects both.
+    """
+    prepared: List[Dict[str, Any]] = []
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        while isinstance(function, dict) and isinstance(function.get("function"), dict):
+            function = function["function"]
+        name = str((function or {}).get("name") or "").strip()
+        parameters = (function or {}).get("parameters")
+        if not name or not isinstance(parameters, dict):
+            log.warning("Claudexor transport skips malformed tool schema: %r", name or tool)
+            continue
+        clean: Dict[str, Any] = {"name": name, "parameters": copy.deepcopy(parameters)}
+        if isinstance(function.get("description"), str):
+            clean["description"] = function["description"]
+        if isinstance(function.get("strict"), bool):
+            clean["strict"] = function["strict"]
+        prepared.append({"type": "function", "function": clean})
+    return prepared
+
+
 def _prepare_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Send copy in canonical chat shape: only standard keys, no cache markers."""
     prepared: List[Dict[str, Any]] = []
     for message in messages:
         clean = {key: copy.deepcopy(message[key]) for key in _MESSAGE_KEYS if key in message}
+        if clean.get("tool_calls"):
+            clean["tool_calls"] = [_prepare_tool_call(call) for call in clean["tool_calls"]]
+        else:
+            clean.pop("tool_calls", None)
+        if clean.get("name") is None:
+            clean.pop("name", None)
         content = clean.get("content")
         if isinstance(content, list):
             for block in content:
@@ -128,7 +168,9 @@ def _prepare_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _build_request(messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
                    model: str, reasoning_effort: str) -> Dict[str, Any]:
     profile = os.environ.get("VELES_CLAUDEXOR_PROFILE", "").strip()
-    options: Dict[str, Any] = {}
+    # A stable key lets Codex reuse the cached prompt prefix across calls;
+    # without it the daemon mints a fresh key per operation.
+    options: Dict[str, Any] = {"cacheKey": os.environ.get("VELES_CLAUDEXOR_CACHE_KEY", "").strip() or "veles"}
     effort = str(reasoning_effort or "").strip().lower()
     if effort in _ALLOWED_EFFORTS:
         options["reasoningEffort"] = effort
@@ -137,7 +179,7 @@ def _build_request(messages: List[Dict[str, Any]], tools: Optional[List[Dict[str
         "model": model,
         "account": {"mode": "pin", "profileId": profile} if profile else {"mode": "auto"},
         "messages": _prepare_messages(messages),
-        "tools": copy.deepcopy(tools or []),
+        "tools": _prepare_tools(tools),
         "toolChoice": "auto",
         "options": options,
     }

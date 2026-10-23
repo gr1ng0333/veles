@@ -132,7 +132,7 @@ def test_call_returns_chat_message_and_usage(daemon):
     sent = json.loads(fake.uploaded)
     assert sent["source"] == "codex" and sent["model"] == "gpt-6.1-sol"
     assert sent["account"] == {"mode": "auto"}
-    assert sent["options"] == {"reasoningEffort": "high"}
+    assert sent["options"] == {"reasoningEffort": "high", "cacheKey": "veles"}
     assert sent["tools"] == tools
     assert fake.acked
 
@@ -164,6 +164,32 @@ def test_prepare_messages_strips_host_metadata():
     assert "reasoning" not in prepared[2]
     assert prepared[3] == {"role": "tool", "tool_call_id": "c1", "content": "ok"}
     assert "cache_control" in messages[0]["content"][0]  # caller's history untouched
+
+
+def test_prepare_tools_matches_strict_daemon_shape():
+    params = {"type": "object", "properties": {}}
+    tools = [
+        {"name": "legacy", "type": "function",
+         "function": {"name": "legacy", "description": "d", "parameters": params}},
+        {"type": "function", "function": {"type": "function",
+                                          "function": {"name": "wrapped", "parameters": params}}},
+        {"type": "function", "function": {"name": "", "parameters": params}},
+        {"type": "function", "function": {"name": "no_params"}},
+    ]
+    assert cx._prepare_tools(tools) == [
+        {"type": "function", "function": {"name": "legacy", "parameters": params, "description": "d"}},
+        {"type": "function", "function": {"name": "wrapped", "parameters": params}},
+    ]
+
+
+def test_prepare_messages_normalizes_tool_calls():
+    messages = [{"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "index": 0, "function": {"name": "f", "arguments": {"a": 1}}}]},
+        {"role": "assistant", "content": "x", "tool_calls": [], "name": None}]
+    prepared = cx._prepare_messages(messages)
+    assert prepared[0]["tool_calls"] == [
+        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": '{"a": 1}'}}]
+    assert prepared[1] == {"role": "assistant", "content": "x"}
 
 
 def test_unreachable_daemon_falls_back_to_proxy(tmp_path, monkeypatch):
