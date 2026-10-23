@@ -231,6 +231,22 @@ def test_followup_refused_after_owner_stop(tmp_path, ocbot):
     assert "REPORT.md" in child_jobs._child_report(c, job["job_id"])
 
 
+def test_report_distinguishes_not_run_from_not_set(tmp_path, ocbot, monkeypatch):
+    repo = make_repo(tmp_path)
+    c = ctx(tmp_path)
+    child_jobs._child_delegate(c, str(repo), "x", verify_cmd="python3 -m unittest")
+    job = next(iter(ocbot.jobs.values()))
+
+    def report_without_verify(*a, **kw):
+        return {"job": job, "report": "", "handoff": "", "verify": {}, "diff_stat": "", "commits": ""}
+
+    monkeypatch.setattr(child_jobs.child_api, "request", lambda m, p, **kw: report_without_verify())
+    out = child_jobs._child_report(c, job["job_id"])
+    assert "python3 -m unittest → ещё не запускалась" in out and "не задана" not in out
+    job["verify_cmd"] = ""
+    assert "Проверка ocbot: не задана" in child_jobs._child_report(c, job["job_id"])
+
+
 def test_api_errors_are_text_not_exceptions(tmp_path, ocbot, monkeypatch):
     monkeypatch.setenv("VELES_CHILD_TOKEN_FILE", str(tmp_path / "missing"))
     assert child_jobs._child_jobs(ctx(tmp_path)).startswith("⚠️")

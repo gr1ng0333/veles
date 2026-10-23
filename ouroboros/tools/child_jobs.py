@@ -154,6 +154,13 @@ def _child_report(ctx: ToolContext, job_id: str) -> str:
     except Exception as exc:
         return _err(exc)
     verify = data.get("verify") or {}
+    command = verify.get("cmd") or data["job"].get("verify_cmd") or ""
+    if not command:
+        verify_line = "Проверка ocbot: не задана"
+    elif "exit" not in verify:
+        verify_line = f"Проверка ocbot: {command} → ещё не запускалась (задача не дошла до проверки)"
+    else:
+        verify_line = f"Проверка ocbot: {command} → exit {verify['exit']}"
     lines = [
         _summary_line(data["job"]),
         "",
@@ -161,7 +168,7 @@ def _child_report(ctx: ToolContext, job_id: str) -> str:
         "",
         "HANDOFF.md:\n" + ((data.get("handoff") or "—")[:1500]),
         "",
-        f"Проверка ocbot: {verify.get('cmd') or 'не задана'} → exit {verify.get('exit', '—')}",
+        verify_line,
         (verify.get("tail") or "")[-1500:],
         "",
         "Коммиты:\n" + (data.get("commits") or "—"),
