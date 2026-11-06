@@ -208,9 +208,9 @@ prewarm_codex_accounts(DRIVE_ROOT)
 # ----------------------------
 # 6) Start workers
 # ----------------------------
+restored_pending = restore_pending_from_snapshot()
 kill_workers()
 spawn_workers(MAX_WORKERS)
-restored_pending = restore_pending_from_snapshot()
 _snapshot_resume = snapshot_interrupted_work_info()
 _st_resume = load_state()
 if _snapshot_resume.get("has_interrupted_work"):

@@ -279,7 +279,7 @@ class TestRestorePendingFromSnapshot:
         assert "evo01" in ids
         assert "rev01" in ids
 
-    def test_stale_snapshot_not_restored(self, tmp_path, monkeypatch):
+    def test_stale_snapshot_restored_after_long_outage(self, tmp_path, monkeypatch):
         _setup_workers_module(tmp_path)
         monkeypatch.setattr(queue_mod, "QUEUE_SNAPSHOT_PATH", tmp_path / "state" / "queue_snapshot.json")
 
@@ -295,5 +295,7 @@ class TestRestorePendingFromSnapshot:
 
         restored = queue_mod.restore_pending_from_snapshot()
 
-        assert restored == 0
-        assert len(workers.PENDING) == 0
+        assert restored == 1
+        assert len(workers.PENDING) == 1
+        assert workers.PENDING[0]["id"] == "old"
+        workers.PENDING.clear()

@@ -683,7 +683,7 @@ class TestQueueSnapshotInterruptedWork:
         assert info["pending_count"] == 1
         assert info["running_count"] == 1
 
-    def test_ignores_stale_snapshot(self, tmp_drive, monkeypatch):
+    def test_keeps_stale_snapshot_unless_explicit_age_limit(self, tmp_drive, monkeypatch):
         from supervisor import queue as q
         monkeypatch.setattr(q, "QUEUE_SNAPSHOT_PATH", tmp_drive / "state" / "queue_snapshot.json")
         snapshot = {
@@ -694,7 +694,8 @@ class TestQueueSnapshotInterruptedWork:
         (tmp_drive / "state" / "queue_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
 
         info = q.snapshot_interrupted_work_info()
-        assert info["has_interrupted_work"] is False
+        assert info["has_interrupted_work"] is True
+        assert q.snapshot_interrupted_work_info(max_age_sec=900)["has_interrupted_work"] is False
 
 
 class TestAutoResumeHelpers:

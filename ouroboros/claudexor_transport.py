@@ -251,6 +251,7 @@ def _to_chat_message(result: Dict[str, Any], operation_id: str) -> Dict[str, Any
         msg["tool_calls"] = message["tool_calls"]
     if result.get("outcome") == "incomplete":
         log.warning("Claudexor operation %s returned an incomplete response", operation_id)
+        msg["_execution_incomplete"] = True
     return msg
 
 

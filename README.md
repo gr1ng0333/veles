@@ -1,18 +1,21 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.3.24-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.3.25-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.3.24 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.3.25 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
 ## Release notes
+### v7.3.25
+- P0: failures and forced interruptions propagate consistently to task results, events, metrics and reflection; incomplete Claudexor responses and recorded tool errors cannot become successful tasks. Durable private checkpoints resume saved transcripts at safe boundaries without replaying completed tools. Unknown in-flight outcomes require verification; queue snapshots survive long outages and direct chat is recovered too. Chat memory reads both historical role and direction fields, preserves full new messages and marks unverified legacy summaries.
+
 ### v7.3.24
 - 7.3.24 — rolled back the ocbot supervision integration (child tools, watcher and skill) because the free OpenCode quota is insufficient. Kept the Claudexor transport and tool-schema fixes from v7.3.21/22. Existing memory, task history and the standalone ocbot project are preserved.
 

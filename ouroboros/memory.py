@@ -14,6 +14,7 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from ouroboros.utils import utc_now_iso, read_text, write_text, append_jsonl, short
+from ouroboros.chat_records import chat_direction
 
 log = logging.getLogger(__name__)
 
@@ -112,20 +113,20 @@ class Memory:
             # Identify recent outgoing messages to keep untruncated
             outgoing_indices = [
                 i for i, e in enumerate(entries)
-                if str(e.get("direction", "")).lower() in ("out", "outgoing")
+                if chat_direction(e) == "out"
             ]
             recent_outgoing = set(outgoing_indices[-RECENT_FULL_REPLIES:])
 
             lines = []
             for i, e in enumerate(entries):
-                dir_raw = str(e.get("direction", "")).lower()
+                dir_raw = chat_direction(e)
                 ts = str(e.get("ts", ""))[:16]
                 raw_text = str(e.get("text", ""))
                 if dir_raw == "system":
                     entry_type = str(e.get("type", "")).strip() or "system"
                     lines.append(f"📋 [{ts}] [{entry_type}] {raw_text}")
                     continue
-                direction = "→" if dir_raw in ("out", "outgoing") else "←"
+                direction = {"out": "→", "in": "←"}.get(dir_raw, "?")
                 if dir_raw in ("out", "outgoing"):
                     text = raw_text if i in recent_outgoing else short(raw_text, 800)
                 else:
@@ -170,12 +171,12 @@ class Memory:
         # Identify recent outgoing messages to keep untruncated
         outgoing_indices = [
             i for i, e in enumerate(recent)
-            if str(e.get("direction", "")).lower() in ("out", "outgoing")
+            if chat_direction(e) == "out"
         ]
         recent_outgoing = set(outgoing_indices[-RECENT_FULL_REPLIES:])
         lines = []
         for i, e in enumerate(recent):
-            dir_raw = str(e.get("direction", "")).lower()
+            dir_raw = chat_direction(e)
             ts_full = e.get("ts", "")
             ts_hhmm = ts_full[11:16] if len(ts_full) >= 16 else ""
             raw_text = str(e.get("text", ""))
@@ -183,7 +184,7 @@ class Memory:
                 entry_type = str(e.get("type", "")).strip() or "system"
                 lines.append(f"📋 {ts_hhmm} [{entry_type}] {raw_text}")
                 continue
-            direction = "→" if dir_raw in ("out", "outgoing") else "←"
+            direction = {"out": "→", "in": "←"}.get(dir_raw, "?")
             if dir_raw in ("out", "outgoing"):
                 text = raw_text if i in recent_outgoing else short(raw_text, 800)
             else:

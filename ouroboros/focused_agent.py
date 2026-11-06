@@ -33,6 +33,7 @@ from ouroboros.tools import ToolRegistry
 from ouroboros.tools.registry import ToolContext, FOCUSED_TOOL_PRESETS
 from ouroboros.focused_context import build_focused_messages
 from ouroboros.loop import run_llm_loop
+from ouroboros.task_execution import TaskCheckpoint, outcome, set_outcome, validate_completion, completion_text
 
 
 def _resolve_whitelist(tools_spec: Optional[str]) -> Optional[List[str]]:
@@ -99,6 +100,9 @@ class FocusedAgent:
                 pass
 
     def handle_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+        checkpoint = TaskCheckpoint(self.drive_root, task)
+        recovery_problem = checkpoint.recovery_problem()
+        checkpoint.begin()
         sync_mode_env_from_state()
         start_time = time.time()
         self._pending_events = []
@@ -132,16 +136,11 @@ class FocusedAgent:
             event_queue=self._event_queue,
         )
         self.tools.set_context(ctx)
+        ctx.checkpoint = checkpoint
+        if checkpoint.data.get("phase") != "finished" and not recovery_problem:
+            self._pending_events.extend(checkpoint.data.get("pending_events", []))
 
         # Build minimal focused messages (no identity/scratchpad/chat history)
-        messages = build_focused_messages(
-            task=task,
-            system_prompt=str(task.get("system_prompt") or "You are a focused autonomous agent. Complete the given task efficiently and report results."),
-            project_context=str(task.get("project_context") or ""),
-            repo_dir=self.repo_dir,
-            drive_root=self.drive_root,
-        )
-
         # Budget
         budget_remaining = None
         try:
@@ -155,28 +154,45 @@ class FocusedAgent:
             pass
 
         # --- LLM loop ---
-        usage: Dict[str, Any] = {}
-        llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
+        usage: Dict[str, Any] = checkpoint.data.get("loop", {}).get("accumulated_usage", {})
+        llm_trace: Dict[str, Any] = checkpoint.data.get("loop", {}).get(
+            "llm_trace", {"assistant_notes": [], "tool_calls": []})
         text = ""
 
         initial_effort = os.environ.get("OUROBOROS_REASONING_EFFORT", "").strip().lower() or "high"
 
         try:
-            text, usage, llm_trace = run_llm_loop(
-                messages=messages,
-                tools=self.tools,
-                llm=self.llm,
-                drive_logs=drive_logs,
-                emit_progress=self._emit_progress,
-                incoming_messages=queue.Queue(),
-                task_type="focused",
-                task_id=task_id,
-                budget_remaining_usd=budget_remaining,
-                event_queue=self._event_queue,
-                initial_effort=initial_effort,
-                drive_root=self.drive_root,
-            )
+            if checkpoint.data.get("phase") == "finished" and not recovery_problem:
+                saved = checkpoint.data["result"]
+                text, usage, llm_trace = saved["text"], saved["usage"], saved["trace"]
+            elif recovery_problem:
+                set_outcome(usage, "interrupted", recovery_problem)
+                text = "⚠️ Задача прервана; исход последнего действия неизвестен. Нужна проверка, автоматического повтора нет."
+            else:
+                messages = checkpoint.data.get("messages") or build_focused_messages(
+                    task=task,
+                    system_prompt=str(task.get("system_prompt") or "You are a focused autonomous agent. Complete the given task efficiently and report results."),
+                    project_context=str(task.get("project_context") or ""),
+                    repo_dir=self.repo_dir, drive_root=self.drive_root,
+                )
+                text, usage, llm_trace = run_llm_loop(
+                    messages=messages,
+                    tools=self.tools,
+                    llm=self.llm,
+                    drive_logs=drive_logs,
+                    emit_progress=self._emit_progress,
+                    incoming_messages=queue.Queue(),
+                    task_type="focused",
+                    task_id=task_id,
+                    budget_remaining_usd=budget_remaining,
+                    event_queue=self._event_queue,
+                    initial_effort=initial_effort,
+                    drive_root=self.drive_root,
+                )
         except Exception as e:
+            usage = checkpoint.data.get("loop", {}).get("accumulated_usage", usage)
+            llm_trace = checkpoint.data.get("loop", {}).get("llm_trace", llm_trace)
+            set_outcome(usage, "failed", f"runtime_error:{type(e).__name__}")
             tb = traceback.format_exc()
             append_jsonl(drive_logs / "events.jsonl", {
                 "ts": utc_now_iso(), "type": "focused_task_error",
@@ -186,7 +202,13 @@ class FocusedAgent:
             text = f"⚠️ Error: {type(e).__name__}: {e}"
 
         if not isinstance(text, str) or not text.strip():
+            set_outcome(usage, "failed", "empty_response")
             text = "⚠️ Model returned an empty response."
+
+        validate_completion(usage, llm_trace)
+        text = completion_text(text, usage)
+        execution = outcome(usage)
+        checkpoint.finish(text, usage, llm_trace, self._pending_events)
 
         runtime_sec = time.time() - start_time
         cost_usd = float(usage.get("cost_usd") or 0.0)
@@ -196,7 +218,7 @@ class FocusedAgent:
         if self._current_chat_id:
             task_desc = str(task.get("text") or "")[:100]
             summary = (
-                f"✅ Focused task `{task_id}` done in {int(runtime_sec)}s "
+                f"{'✅' if execution['ok'] else '⚠️'} Focused task `{task_id}` {execution['status']} in {int(runtime_sec)}s "
                 f"· {rounds} rounds · ${cost_usd:.3f}\n\n"
                 f"**Task:** {task_desc}\n\n"
                 f"**Result:**\n{text[:1500]}"
@@ -217,7 +239,8 @@ class FocusedAgent:
             result_file = results_dir / f"{task_id}.json"
             result_data = {
                 "task_id": task_id,
-                "status": "completed",
+                "status": execution["status"],
+                "reason": execution["reason"],
                 "result": text,
                 "cost_usd": cost_usd,
                 "rounds": rounds,
@@ -235,7 +258,7 @@ class FocusedAgent:
             "type": "task_done",
             "task_id": task_id,
             "task_type": "focused",
-            "ok": True,
+            **execution,
             "total_rounds": rounds,
             "cost_usd": cost_usd,
             "response_len": len(text),

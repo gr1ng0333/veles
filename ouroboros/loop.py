@@ -479,6 +479,8 @@ def _check_budget_limits(
     budget_pct = task_cost / budget_remaining_usd if budget_remaining_usd > 0 else 1.0
 
     if budget_pct > 0.5:
+        from ouroboros.task_execution import set_outcome
+        set_outcome(accumulated_usage, "interrupted", "budget_limit")
         # Hard stop — protect the budget
         finish_reason = f"Task spent ${task_cost:.3f} (>50% of remaining ${budget_remaining_usd:.2f}). Budget exhausted."
         messages.append({"role": "system", "content": f"[BUDGET LIMIT] {finish_reason} Give your final response now."})
@@ -656,6 +658,8 @@ def _finalize_with_summary(
     tool_schemas: Optional[List[Dict[str, Any]]] = None,
     interaction_id: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    from ouroboros.task_execution import set_outcome
+    set_outcome(accumulated_usage, "interrupted", reason)
     messages.append({"role": "system", "content": f"[FORCED_FINALIZE] {reason}"})
     try:
         final_msg, _ = _call_llm_with_retry(

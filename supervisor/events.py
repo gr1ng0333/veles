@@ -22,8 +22,10 @@ from ouroboros.artifacts import save_artifact
 log = logging.getLogger(__name__)
 
 
-def _format_done_summary(task_id: str, task_type: str, runtime_sec: float, rounds: int, cost_usd: float) -> str:
-    return f"✅ Done {task_id} ({task_type or 'task'}) in {int(max(0.0, runtime_sec))}s · rounds {int(max(0, rounds))} · cost ${max(0.0, cost_usd):.2f}"
+def _format_done_summary(task_id: str, task_type: str, runtime_sec: float, rounds: int, cost_usd: float,
+                         status: str = "completed") -> str:
+    label = "✅ Done" if status == "completed" else f"⚠️ {status}"
+    return f"{label} {task_id} ({task_type or 'task'}) in {int(max(0.0, runtime_sec))}s · rounds {int(max(0, rounds))} · cost ${max(0.0, cost_usd):.2f}"
 
 
 def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
@@ -284,6 +286,9 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     if wid in ctx.WORKERS and ctx.WORKERS[wid].busy_task_id == task_id:
         ctx.WORKERS[wid].busy_task_id = None
     ctx.persist_queue_snapshot(reason="task_done")
+    if task_id:
+        from ouroboros.task_execution import settle_execution
+        settle_execution(ctx.DRIVE_ROOT, str(task_id))
 
     # Store task result for subtask retrieval
     try:
@@ -295,7 +300,8 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         if not result_file.exists():
             result_data = {
                 "task_id": task_id,
-                "status": "completed",
+                "status": evt.get("status") or ("completed" if evt.get("ok") else "failed"),
+                "reason": str(evt.get("reason") or ""),
                 "result": "",
                 "cost_usd": float(evt.get("cost_usd", 0)),
                 "ts": evt.get("ts", ""),
@@ -315,7 +321,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             rounds_done = int(evt.get("total_rounds") or 0)
             cost_done = float(evt.get("cost_usd") or 0.0)
             review_prompt = (
-                f"""Focused worker `{task_id}` completed.
+                f"""Focused worker `{task_id}` {evt.get('status') or ('completed' if evt.get('ok') else 'failed')}.
 """
                 f"""Task: {task_text_orig}
 """
@@ -359,7 +365,8 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         if owner_chat_id and should_report and task_id:
             ctx.send_with_budget(
                 owner_chat_id,
-                _format_done_summary(str(task_id), task_type, runtime_sec, rounds, cost_usd),
+                _format_done_summary(str(task_id), task_type, runtime_sec, rounds, cost_usd,
+                                     evt.get("status") or ("completed" if evt.get("ok") else "failed")),
                 progress=True,
             )
     except Exception:

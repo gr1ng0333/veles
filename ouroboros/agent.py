@@ -368,12 +368,15 @@ class OuroborosAgent:
         self._emit_typing_start()
 
         # --- Build context (delegated to context.py) ---
-        messages, cap_info = build_llm_messages(
-            env=self.env,
-            memory=self.memory,
-            task=task,
-            review_context_builder=self._build_review_context,
-        )
+        checkpoint = getattr(self, "_execution", None)
+        if checkpoint and (checkpoint.data.get("messages") or checkpoint.recovery_problem()
+                           or checkpoint.data.get("phase") == "finished"):
+            messages, cap_info = checkpoint.data.get("messages", []), {}
+        else:
+            messages, cap_info = build_llm_messages(
+                env=self.env, memory=self.memory, task=task,
+                review_context_builder=self._build_review_context,
+            )
 
         if cap_info.get("trimmed_sections"):
             try:
@@ -401,6 +404,11 @@ class OuroborosAgent:
         return ctx, messages, cap_info
 
     def handle_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+        from ouroboros.task_execution import TaskCheckpoint, set_outcome, validate_completion, completion_text
+        checkpoint = TaskCheckpoint(self.env.drive_root, task)
+        recovery_problem = checkpoint.recovery_problem()
+        checkpoint.begin()
+        self._execution = checkpoint
         sync_mode_env_from_state()
         self._busy = True
         start_time = time.time()
@@ -418,18 +426,11 @@ class OuroborosAgent:
 
         # For direct chat: obtain the persistent executor bound to this chat_id
         persistent_executor = None
-        if is_direct and chat_id:
-            from ouroboros.tools.browser_runtime import BrowserSessionManager
-            _, persistent_executor = BrowserSessionManager.get_or_create(chat_id)
-
         try:
-            # --- Prepare task context ---
-            ctx, messages, cap_info = self._prepare_task_context(task)
-            budget_remaining = cap_info.get("budget_remaining")
-
-            # --- LLM loop (delegated to loop.py) ---
-            usage: Dict[str, Any] = {}
-            llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
+            ctx = None
+            usage: Dict[str, Any] = checkpoint.data.get("loop", {}).get("accumulated_usage", {})
+            llm_trace: Dict[str, Any] = checkpoint.data.get("loop", {}).get(
+                "llm_trace", {"assistant_notes": [], "tool_calls": []})
 
             # Set initial reasoning effort based on task type
             task_type_str = str(task.get("type") or "").lower()
@@ -441,22 +442,42 @@ class OuroborosAgent:
                 initial_effort = os.environ.get("OUROBOROS_REASONING_EFFORT", "").strip().lower() or "high"
 
             try:
-                text, usage, llm_trace = run_llm_loop(
-                    messages=messages,
-                    tools=self.tools,
-                    llm=self.llm,
-                    drive_logs=drive_logs,
-                    emit_progress=self._emit_progress,
-                    incoming_messages=self._incoming_messages,
-                    task_type=task_type_str,
-                    task_id=str(task.get("id") or ""),
-                    budget_remaining_usd=budget_remaining,
-                    event_queue=self._event_queue,
-                    initial_effort=initial_effort,
-                    drive_root=self.env.drive_root,
-                    persistent_executor=persistent_executor,
-                )
+                if is_direct and chat_id:
+                    from ouroboros.tools.browser_runtime import BrowserSessionManager
+                    _, persistent_executor = BrowserSessionManager.get_or_create(chat_id)
+                ctx, messages, cap_info = self._prepare_task_context(task)
+                ctx.checkpoint = checkpoint
+                if checkpoint.data.get("phase") != "finished" and not recovery_problem:
+                    self._pending_events.extend(checkpoint.data.get("pending_events", []))
+                budget_remaining = cap_info.get("budget_remaining")
+                if checkpoint.data.get("phase") == "finished" and not recovery_problem:
+                    saved = checkpoint.data["result"]
+                    text, usage, llm_trace = saved["text"], saved["usage"], saved["trace"]
+                elif recovery_problem:
+                    set_outcome(usage, "interrupted", recovery_problem)
+                    text = ("⚠️ Задача прервана. Исход последнего действия неизвестен; "
+                            "автоматический повтор отключён. Нужна проверка результата "
+                            "перед продолжением. Задача: " + str(task.get("id")))
+                else:
+                    text, usage, llm_trace = run_llm_loop(
+                        messages=messages,
+                        tools=self.tools,
+                        llm=self.llm,
+                        drive_logs=drive_logs,
+                        emit_progress=self._emit_progress,
+                        incoming_messages=self._incoming_messages,
+                        task_type=task_type_str,
+                        task_id=str(task.get("id") or ""),
+                        budget_remaining_usd=budget_remaining,
+                        event_queue=self._event_queue,
+                        initial_effort=initial_effort,
+                        drive_root=self.env.drive_root,
+                        persistent_executor=persistent_executor,
+                    )
             except Exception as e:
+                usage = checkpoint.data.get("loop", {}).get("accumulated_usage", usage)
+                llm_trace = checkpoint.data.get("loop", {}).get("llm_trace", llm_trace)
+                set_outcome(usage, "failed", f"runtime_error:{type(e).__name__}")
                 tb = traceback.format_exc()
                 append_jsonl(drive_logs / "events.jsonl", {
                     "ts": utc_now_iso(), "type": "task_error",
@@ -467,9 +488,13 @@ class OuroborosAgent:
 
             # Empty response guard
             if not isinstance(text, str) or not text.strip():
+                set_outcome(usage, "failed", "empty_response")
                 text = "⚠️ Model returned an empty response. Try rephrasing your request."
 
+            validate_completion(usage, llm_trace)
+            text = completion_text(text, usage)
             # Emit events for supervisor
+            checkpoint.finish(text, usage, llm_trace, self._pending_events)
             self._emit_task_results(task, text, usage, llm_trace, start_time, drive_logs, ctx)
 
             # Execution reflection — auto-learning from task errors (non-blocking daemon thread)
@@ -481,7 +506,7 @@ class OuroborosAgent:
                     if isinstance(tc, dict) and tc.get("is_error")
                 )
                 task_eval = {
-                    "ok": True,
+                    "ok": usage.get("execution_status", "completed") == "completed",
                     "tool_calls": len(llm_trace.get("tool_calls", [])),
                     "tool_errors": n_tool_errors,
                 }
@@ -600,6 +625,8 @@ class OuroborosAgent:
         ctx: Any = None,
     ) -> None:
         """Emit all end-of-task events to supervisor."""
+        from ouroboros.task_execution import outcome
+        execution = outcome(usage)
         # NOTE: per-round llm_usage events are already emitted in loop.py
         # (_emit_llm_usage_event). Do NOT emit an aggregate llm_usage here —
         # that would double-count in update_budget_from_usage.
@@ -653,7 +680,7 @@ class OuroborosAgent:
                             if isinstance(tc, dict) and tc.get("is_error"))
         try:
             append_jsonl(drive_logs / "events.jsonl", {
-                "ts": utc_now_iso(), "type": "task_eval", "ok": True,
+                "ts": utc_now_iso(), "type": "task_eval", **execution,
                 "task_id": task.get("id"), "task_type": task.get("type"),
                 "duration_sec": duration_sec,
                 "tool_calls": n_tool_calls,
@@ -668,6 +695,7 @@ class OuroborosAgent:
         self._pending_events.append({
             "type": "task_metrics",
             "task_id": task.get("id"), "task_type": task.get("type"),
+            **execution,
             "duration_sec": duration_sec,
             "tool_calls": n_tool_calls, "tool_errors": n_tool_errors,
             "cost_usd": round(float(usage.get("cost") or usage.get("shadow_cost") or 0), 6),
@@ -687,7 +715,7 @@ class OuroborosAgent:
             "type": "task_done",
             "task_id": task.get("id"),
             "task_type": task.get("type"),
-            "ok": True,
+            **execution,
             "response_len": len(text),
             "response_text": sanitize_owner_facing_text(text or "")[:1000],
             "cost_usd": effective_cost,
@@ -706,7 +734,7 @@ class OuroborosAgent:
             "type": "task_done",
             "task_id": task.get("id"),
             "task_type": task.get("type"),
-            "ok": True,
+            **execution,
             "response_len": len(text),
             "cost_usd": effective_cost,
             "total_rounds": int(usage.get("rounds") or 0),
@@ -721,7 +749,8 @@ class OuroborosAgent:
             result_data = {
                 "task_id": task.get("id"),
                 "parent_task_id": task.get("parent_task_id"),
-                "status": "completed",
+                "status": execution["status"],
+                "reason": execution["reason"],
                 "result": text[:4000] if text else "",  # Truncate to avoid huge files
                 "cost_usd": effective_cost,
                 "total_rounds": int(usage.get("rounds") or 0),

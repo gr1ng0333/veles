@@ -21,6 +21,7 @@ from collections import Counter
 from typing import Any, Dict, List, Tuple
 
 from ouroboros.tools.registry import ToolEntry, ToolContext
+from ouroboros.chat_records import chat_direction
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def _load_chat(drive_root: pathlib.Path, max_messages: int = 3000) -> List[_Chun
             if len(text) < 20:
                 continue
             date = (msg.get("ts") or "")[:10]
-            direction = msg.get("direction", "?")
+            direction = chat_direction(msg)
             src = f"chat/{direction}"
             chunks.extend(_split_into_chunks(text, src, date))
         except Exception:

@@ -640,9 +640,12 @@ def ensure_workers_healthy() -> None:
                     _att = int(task.get("_attempt") or 1)
                     if _att <= QUEUE_MAX_RETRIES:
                         retried = dict(task)
+                        retried["_resume_execution"] = True
                         retried["_attempt"] = _att + 1
                         queue.enqueue_task(retried, front=True)
                     else:
+                        from ouroboros.task_execution import stop_execution
+                        stop_execution(DRIVE_ROOT, task, "interrupted", "worker_crash_retries_exhausted")
                         st = load_state()
                         if st.get("owner_chat_id"):
                             send_with_budget(

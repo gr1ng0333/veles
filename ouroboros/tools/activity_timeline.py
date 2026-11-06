@@ -29,6 +29,7 @@ from datetime import datetime, timezone as dt_timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.tools.registry import ToolEntry, ToolContext
+from ouroboros.chat_records import chat_direction
 
 log = logging.getLogger(__name__)
 
@@ -231,7 +232,7 @@ def _normalise_chat(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     dt = _parse_ts(ts_str)
     if dt is None:
         return None
-    direction = rec.get("direction", "?")
+    direction = chat_direction(rec)
     text = str(rec.get("text", ""))
     if not text:
         return None

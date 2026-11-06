@@ -31,6 +31,7 @@ from ouroboros.loop_fallback import call_llm_with_fallback as _call_llm_with_fal
 from ouroboros.model_modes import execution_style_for_active_mode, get_runtime_diagnostics, max_rounds_for_active_mode, tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import append_jsonl, utc_now_iso
+from ouroboros.task_execution import set_outcome
 from ouroboros.antistagnation import (
     build_forced_finalize_reason,
     detect_context_overflow,
@@ -90,6 +91,7 @@ def _maybe_handle_hard_round_limit(
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     if round_idx <= max_rounds:
         return None
+    set_outcome(accumulated_usage, "interrupted", "round_limit")
     finish_reason = f"⚠️ Task exceeded MAX_ROUNDS ({max_rounds}). Consider decomposing into subtasks via schedule_task."
 
     # For Copilot: do NOT call LLM again — the thread is likely exhausted
@@ -350,13 +352,18 @@ def _run_one_shot_mode(
         interaction_id=interaction_id,
     )
     if msg is None:
+        set_outcome(accumulated_usage, "failed", "model_unavailable")
         return (
             "⚠️ Failed to get a response from the model after retries/fallback. Try rephrasing your request.",
             accumulated_usage,
             llm_trace,
         )
     tool_calls = msg.get("tool_calls") or []
+    if msg.get("_execution_incomplete"):
+        set_outcome(accumulated_usage, "interrupted", "provider_incomplete")
+        return "⚠️ Provider returned an incomplete response; task is interrupted.", accumulated_usage, llm_trace
     if tool_calls:
+        set_outcome(accumulated_usage, "failed", "tools_blocked_in_one_shot")
         llm_trace["assistant_notes"].append(
             "Mode policy blocked tool-calling in one-shot mode; returning assistant text only."
         )
@@ -613,6 +620,10 @@ def _process_llm_response_or_continue(
     stateful_executor,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     round_idx = state["round_idx"]
+    if msg.get("_execution_incomplete"):
+        set_outcome(state["accumulated_usage"], "interrupted", "provider_incomplete")
+        return ("⚠️ Provider returned an incomplete response; task is interrupted.",
+                state["accumulated_usage"], state["llm_trace"])
     round_completion_tokens = int(state["accumulated_usage"].get("_last_round_completion_tokens") or 0)
     round_prompt_tokens = int(state["accumulated_usage"].get("_last_round_prompt_tokens") or 0)
     state["recent_completion_tokens"].append(round_completion_tokens)
@@ -691,12 +702,17 @@ def _process_llm_response_or_continue(
     tool_calls = msg.get("tool_calls") or []
     content = msg.get("content")
     if not tool_calls:
+        if not isinstance(content, str) or not content.strip():
+            set_outcome(state["accumulated_usage"], "failed", "empty_response")
         final_text, final_usage, final_trace, state["recent_progress"], state["no_progress_rounds"] = _handle_no_tool_call_finalize(
             content, state["llm_trace"], state["accumulated_usage"], state["recent_progress"]
         )
         return final_text, final_usage, final_trace
 
     _append_assistant_with_tool_calls(messages, content, tool_calls, emit_progress, state["llm_trace"])
+    checkpoint = getattr(tools._ctx, "checkpoint", None)
+    if checkpoint:
+        checkpoint.save("tools_inflight", state, messages, tools._ctx, set())
     _, tool_progress = _handle_tool_calls(
         tool_calls,
         tools,
@@ -797,6 +813,9 @@ def _run_single_round(
     force_user_initiator = _consume_force_user_initiator(state)
     if force_user_initiator:
         state["accumulated_usage"]["_force_user_initiator"] = True
+    checkpoint = getattr(tools._ctx, "checkpoint", None)
+    if checkpoint:
+        checkpoint.save("model_inflight", state, messages, tools._ctx, owner_msg_seen)
     msg = _call_llm_with_fallback(
         llm=llm,
         messages=messages,
@@ -814,12 +833,15 @@ def _run_single_round(
         interaction_id=state.get("interaction_id"),
     )
     if msg is None:
+        set_outcome(state["accumulated_usage"], "failed", "model_unavailable")
         return (
             "⚠️ Failed to get a response from the model after retries/fallback. Try rephrasing your request.",
             state["accumulated_usage"],
             state["llm_trace"],
         )
 
+    if checkpoint:
+        checkpoint.save("response_ready", state, messages, tools._ctx, owner_msg_seen, response=msg)
     return _process_llm_response_or_continue(
         state=state,
         msg=msg,
@@ -851,6 +873,12 @@ def run_llm_loop_impl(
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Core LLM-with-tools loop runtime implementation."""
     active_model = llm.default_model()
+    checkpoint = getattr(tools._ctx, "checkpoint", None)
+    saved = checkpoint.data if checkpoint and checkpoint.data.get("phase") in ("ready", "response_ready") else None
+    if saved:
+        messages[:] = saved["messages"]
+        for name, value in saved.get("tool_context", {}).items():
+            setattr(tools._ctx, name, value)
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
     max_rounds, anti, round_idx, no_progress_rounds, recent_progress, stagnation_check_injected, task_round_warn_emitted = _init_antistagnation_state()
@@ -858,8 +886,10 @@ def run_llm_loop_impl(
     from ouroboros.tools import tool_discovery as _td
 
     _td.set_registry(tools)
-    tool_schemas = tools.schemas(core_only=True)
-    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, messages)
+    tool_schemas = saved["loop"]["tool_schemas"] if saved else tools.schemas(core_only=True)
+    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, [] if saved else messages)
+    if saved:
+        _enabled_extra_tools.update(t.get("function", {}).get("name") for t in tool_schemas)
     if not tools_enabled_for_active_mode():
         tool_schemas = []
     tools._ctx.event_queue = event_queue
@@ -901,7 +931,10 @@ def run_llm_loop_impl(
     # do NOT shut it down when this task ends — it survives across messages.
     owns_executor = persistent_executor is None
     stateful_executor = persistent_executor or _StatefulToolExecutor()
-    owner_msg_seen: set = set()
+    owner_msg_seen: set = set(saved.get("owner_msg_seen", [])) if saved else set()
+    if saved:
+        state.update({k: v for k, v in saved["loop"].items() if k not in ("anti", "tool_schemas")})
+        llm_trace, accumulated_usage = state["llm_trace"], state["accumulated_usage"]
 
     append_jsonl(drive_logs / "events.jsonl", {
         "ts": utc_now_iso(),
@@ -926,6 +959,8 @@ def run_llm_loop_impl(
 
     try:
         if state["execution_style"] == "one_shot":
+            if checkpoint:
+                checkpoint.save("model_inflight", state, messages, tools._ctx, owner_msg_seen)
             return _run_one_shot_mode(
                 messages=messages,
                 llm=llm,
@@ -941,7 +976,18 @@ def run_llm_loop_impl(
                 tool_schemas=[],
                 interaction_id=state.get("interaction_id"),
             )
+        if saved and saved.get("phase") == "response_ready":
+            result = _process_llm_response_or_continue(
+                state=state, msg=saved["response"], messages=messages, tools=tools, llm=llm,
+                drive_logs=drive_logs, emit_progress=emit_progress, task_type=task_type,
+                task_id=task_id, budget_remaining_usd=budget_remaining_usd,
+                event_queue=event_queue, stateful_executor=stateful_executor,
+            )
+            if result is not None:
+                return result
         while True:
+            if checkpoint:
+                checkpoint.save("ready", state, messages, tools._ctx, owner_msg_seen)
             result = _run_single_round(
                 state=state,
                 messages=messages,

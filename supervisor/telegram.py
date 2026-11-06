@@ -440,8 +440,9 @@ def send_with_budget(chat_id: int, text: str, *, force: bool = False,
             {
                 "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "role": "out",
+                "direction": "out",
                 "chat_id": chat_id,
-                "text": text[:1000],
+                "text": text,
             },
         )
         st["last_outgoing_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -459,8 +460,9 @@ def log_chat(direction: str, chat_id: int, user_id: int, text: str) -> None:
         {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "role": direction,
+            "direction": direction,
             "chat_id": chat_id,
             "user_id": user_id,
-            "text": (text or "")[:1000],
+            "text": text or "",
         },
     )

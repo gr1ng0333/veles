@@ -143,10 +143,7 @@ def persist_queue_snapshot(reason: str = "") -> None:
             "attempt": t.get("_attempt"), "queued_at": t.get("queued_at"),
             "queue_seq": t.get("_queue_seq"),
             "task": {
-                "id": t.get("id"), "type": t.get("type"), "chat_id": t.get("chat_id"),
-                "text": t.get("text"), "priority": t.get("priority"),
-                "_attempt": t.get("_attempt"), "review_reason": t.get("review_reason"),
-                "review_source_task_id": t.get("review_source_task_id"),
+                **t,
             },
         })
     running_rows = []
@@ -189,7 +186,7 @@ def parse_iso_to_ts(iso_ts: str) -> Optional[float]:
 
 
 
-def snapshot_interrupted_work_info(max_age_sec: int = 900) -> Dict[str, Any]:
+def snapshot_interrupted_work_info(max_age_sec: Optional[int] = None) -> Dict[str, Any]:
     """Inspect queue snapshot for evidence of interrupted work after restart."""
     info: Dict[str, Any] = {
         "has_interrupted_work": False,
@@ -208,7 +205,7 @@ def snapshot_interrupted_work_info(max_age_sec: int = 900) -> Dict[str, Any]:
         ts_unix = parse_iso_to_ts(ts)
         if ts_unix is None:
             return info
-        if (time.time() - ts_unix) > max_age_sec:
+        if max_age_sec is not None and (time.time() - ts_unix) > max_age_sec:
             return info
         pending_rows = snap.get("pending") or []
         running_rows = snap.get("running") or []
@@ -227,30 +224,33 @@ def snapshot_interrupted_work_info(max_age_sec: int = 900) -> Dict[str, Any]:
         log.warning("Failed to inspect queue snapshot for interrupted work", exc_info=True)
         return info
 
-def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
+def restore_pending_from_snapshot(max_age_sec: Optional[int] = None) -> int:
     """Restore PENDING queue from snapshot file (both pending AND running tasks)."""
     if PENDING:
         return 0
     try:
-        if not QUEUE_SNAPSHOT_PATH.exists():
-            return 0
-        snap = json.loads(QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        from ouroboros.task_execution import recoverable_tasks
+        snap = json.loads(QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8")) if QUEUE_SNAPSHOT_PATH.exists() else {}
         if not isinstance(snap, dict):
             return 0
         ts = str(snap.get("ts") or "")
         ts_unix = parse_iso_to_ts(ts)
-        if ts_unix is None:
+        if snap and ts_unix is None:
             return 0
-        if (time.time() - ts_unix) > max_age_sec:
+        if max_age_sec is not None and ts_unix is not None and (time.time() - ts_unix) > max_age_sec:
             return 0
         restored = 0
+        seen = set()
         for row in (snap.get("pending") or []):
             task = row.get("task") if isinstance(row, dict) else None
             if not isinstance(task, dict):
                 continue
             if not task.get("id") or not task.get("chat_id"):
                 continue
+            if str(task["id"]) in seen:
+                continue
             enqueue_task(task)
+            seen.add(str(task["id"]))
             restored += 1
         # Also restore RUNNING tasks as PENDING — workers are dead after restart
         for row in (snap.get("running") or []):
@@ -259,8 +259,16 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
                 continue
             if not task.get("id") or not task.get("chat_id"):
                 continue
-            enqueue_task(task, front=True)
+            if str(task["id"]) in seen:
+                continue
+            enqueue_task({**task, "_resume_execution": True}, front=True)
+            seen.add(str(task["id"]))
             restored += 1
+        for task in recoverable_tasks(DRIVE_ROOT):
+            if str(task["id"]) not in seen:
+                enqueue_task(task, front=True)
+                seen.add(str(task["id"]))
+                restored += 1
         if restored > 0:
             st = load_state()
             st["resume_needed"] = True
@@ -288,10 +296,12 @@ def cancel_task_by_id(task_id: str) -> bool:
     """Cancel a task by ID (from PENDING or RUNNING)."""
     # Import here to avoid circular dependency during module load
     from supervisor import workers
+    from ouroboros.task_execution import stop_execution
 
     with _queue_lock:
         for i, t in enumerate(list(PENDING)):
             if t["id"] == task_id:
+                stop_execution(DRIVE_ROOT, t, "cancelled", "owner_cancelled")
                 PENDING.pop(i)
                 persist_queue_snapshot(reason="cancel_pending")
                 return True
@@ -299,10 +309,11 @@ def cancel_task_by_id(task_id: str) -> bool:
         # For RUNNING tasks, need to terminate worker
         for w in workers.WORKERS.values():
             if w.busy_task_id == task_id:
-                RUNNING.pop(task_id, None)
+                meta = RUNNING.pop(task_id, None) or {}
                 if w.proc.is_alive():
                     w.proc.terminate()
                 w.proc.join(timeout=5)
+                stop_execution(DRIVE_ROOT, meta.get("task") or {"id": task_id}, "cancelled", "owner_cancelled")
                 workers.respawn_worker(w.wid)
                 persist_queue_snapshot(reason="cancel_running")
                 return True
@@ -383,14 +394,16 @@ def enforce_task_timeouts() -> None:
         new_attempt = attempt
         if attempt <= QUEUE_MAX_RETRIES and isinstance(task, dict):
             retried = dict(task)
-            retried["original_task_id"] = task_id
-            retried["id"] = uuid.uuid4().hex[:8]
+            retried["_resume_execution"] = True
             retried["_attempt"] = attempt + 1
             retried["timeout_retry_from"] = task_id
             retried["timeout_retry_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
             enqueue_task(retried, front=True)
             requeued = True
             new_attempt = attempt + 1
+        elif task.get("id"):
+            from ouroboros.task_execution import stop_execution
+            stop_execution(DRIVE_ROOT, task, "interrupted", "timeout_retries_exhausted")
 
         append_jsonl(
             DRIVE_ROOT / "logs" / "supervisor.jsonl",
