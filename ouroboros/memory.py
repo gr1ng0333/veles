@@ -14,7 +14,7 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from ouroboros.utils import utc_now_iso, read_text, short
-from ouroboros.chat_records import chat_direction
+from ouroboros.chat_records import chat_direction, in_chat
 from ouroboros.memory_publication import initialize_memory, journal_path, publish_memory_file
 
 log = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ class Memory:
         if not path.exists():
             return []
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = path.read_bytes().splitlines()
             entries = []
             for line in reversed(lines):
                 if len(entries) >= max_entries:
@@ -152,12 +152,11 @@ class Memory:
                     continue
                 if not isinstance(entry, dict):
                     continue
-                if chat_id is not None and entry.get("chat_id") is not None:
-                    if str(entry["chat_id"]) != str(chat_id):
-                        continue
+                if not in_chat(entry, chat_id):
+                    continue
                 entries.append(entry)
             return entries[::-1]
-        except (OSError, UnicodeError):
+        except OSError:
             log.warning(f"Failed to read JSONL tail from {log_name}", exc_info=True)
             return []
 

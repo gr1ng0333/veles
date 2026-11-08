@@ -8,3 +8,6 @@ ddddocr
 Pillow
 SpeechRecognition
 yt-dlp
+numpy>=1.24
+onnxruntime>=1.17
+tokenizers>=0.20,<1

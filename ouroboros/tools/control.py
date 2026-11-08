@@ -85,9 +85,18 @@ def _request_review(ctx: ToolContext, reason: str) -> str:
     return f"Review requested: {reason}"
 
 
-def _chat_history(ctx: ToolContext, count: int = 100, offset: int = 0, search: str = "") -> str:
+def _chat_history(
+    ctx: ToolContext, count: int = 100, offset: int = 0, search: str = "",
+    message_id: str = "", text_offset: int = 0,
+) -> str:
     from ouroboros.memory import Memory
     mem = Memory(drive_root=ctx.drive_root)
+    if message_id:
+        from ouroboros.chat_records import owner_chat_id, read_chat_message
+        chat_id = ctx.current_chat_id or owner_chat_id(ctx.drive_root)
+        if chat_id is None:
+            return "⚠️ No chat is available for this message lookup."
+        return read_chat_message(mem.logs_path("chat.jsonl"), chat_id, message_id, text_offset)
     return mem.chat_history(count=count, offset=offset, search=search)
 
 
@@ -272,11 +281,13 @@ def get_tools() -> List[ToolEntry]:
         }, _request_review),
         ToolEntry("chat_history", {
             "name": "chat_history",
-            "description": "Retrieve messages from chat history. Supports search.",
+            "description": "Search exact text, or open a semantic search hit by message_id with nearby messages.",
             "parameters": {"type": "object", "properties": {
                 "count": {"type": "integer", "default": 100, "description": "Number of messages (from latest)"},
                 "offset": {"type": "integer", "default": 0, "description": "Skip N from end (pagination)"},
                 "search": {"type": "string", "default": "", "description": "Text filter"},
+                "message_id": {"type": "string", "description": "Stable ID returned by memory_search scope=chat."},
+                "text_offset": {"type": "integer", "minimum": 0, "description": "Next character offset of the original message."},
             }, "required": []},
         }, _chat_history),
         ToolEntry("update_scratchpad", {

@@ -363,6 +363,9 @@ When past decisions or infrastructure details matter, look up the relevant topic
 with `knowledge_read` or find it with `memory_search`. Discover `knowledge_list`
 if you need the catalog. Use `veles-reference` for archive and diagnostics workflows.
 
+For a past conversation outside the recent chat, use `memory_search(query, scope="chat")`.
+Verify important details with `chat_history(message_id=…)` before attributing them to the owner.
+
 **After a task:** Call `knowledge_write` to record:
 - What worked (recipe)
 - What didn't work (pitfalls)

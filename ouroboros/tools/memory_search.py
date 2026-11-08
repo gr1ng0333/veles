@@ -1,8 +1,9 @@
-"""Memory search — TF-IDF search across all Veles memory sources.
+"""Memory search — local semantic chat search and lexical search of all sources.
 
 Searches: chat.jsonl, knowledge/*.md, identity.md, scratchpad.md,
           task_reflections.jsonl, dialogue_blocks.json, notes.jsonl.
-No external dependencies — pure Python TF-IDF + cosine-like scoring.
+scope="chat" uses local embeddings over the most recent 1000 chat records.
+scope="all" uses the existing TF-IDF search over chat and other memory sources.
 
 Usage:
     memory_search(query="3x-ui webBasePath")
@@ -21,7 +22,8 @@ from collections import Counter
 from typing import Any, Dict, List, Tuple
 
 from ouroboros.tools.registry import ToolEntry, ToolContext
-from ouroboros.chat_records import chat_direction
+from ouroboros.chat_records import chat_direction, owner_chat_id
+from ouroboros.tools.notes import read_active_notes
 
 log = logging.getLogger(__name__)
 
@@ -198,25 +200,15 @@ def _load_notes(drive_root: pathlib.Path) -> List[_Chunk]:
     to the text so they participate in token scoring.
     Deleted notes are skipped.
     """
-    notes_file = drive_root / "memory" / "notes.jsonl"
-    if not notes_file.exists():
-        return []
     try:
-        with notes_file.open("r", encoding="utf-8") as f:
-            lines = f.readlines()
+        notes = read_active_notes(drive_root / "memory" / "notes.jsonl")
     except Exception as exc:
         log.warning("memory_search: cannot read notes.jsonl: %s", exc)
         return []
 
     chunks: List[_Chunk] = []
-    for raw in lines:
-        raw = raw.strip()
-        if not raw:
-            continue
+    for note in notes:
         try:
-            note = json.loads(raw)
-            if note.get("deleted", False):
-                continue
             text = (note.get("text") or "").strip()
             if not text:
                 continue
@@ -351,12 +343,25 @@ def _run_search(
 
 # ── Public tool ───────────────────────────────────────────────────────────────
 
-def _memory_search(ctx: ToolContext, query: str, top_k: int = 5) -> str:
+def _memory_search(ctx: ToolContext, query: str, top_k: int = 5, scope: str = "all") -> str:
     """Search across all memory sources and return top-K relevant fragments."""
     query = (query or "").strip()
     if not query:
         return "⚠️ memory_search: query must be non-empty."
     top_k = max(1, min(20, int(top_k)))
+    if scope == "chat":
+        chat_id = ctx.current_chat_id or owner_chat_id(ctx.drive_root)
+        if chat_id is None:
+            return "⚠️ No chat is available for semantic search."
+        try:
+            from ouroboros.chat_search import search_chat
+            return search_chat(ctx.drive_root, chat_id, query, top_k)
+        except Exception as exc:
+            log.warning("Local chat search unavailable (%s)", type(exc).__name__)
+            return ("⚠️ Semantic chat search is unavailable. "
+                    "Use chat_history(search=…) for exact text or scope=all for lexical recall.")
+    if scope != "all":
+        return "⚠️ memory_search: scope must be 'chat' or 'all'."
 
     results = _run_search(query, ctx.drive_root, top_k)
     if not results:
@@ -378,7 +383,9 @@ def get_tools() -> List[ToolEntry]:
     schema = {
         "name": "memory_search",
         "description": (
-            "TF-IDF search across all Veles memory: recent chat history, "
+            "Use scope=chat for local semantic search of the last 1000 chat records, even with different wording. "
+            "Include any known project or technical topic in the query. Open a match with chat_history(message_id=…). "
+            "Scope=all is TF-IDF search across Veles memory: recent chat history, "
             "task reflections (evolution history, error patterns), "
             "consolidated dialogue blocks (historical episodes), "
             "personal notes (saved via note_add — includes tags and source URLs), "
@@ -399,8 +406,14 @@ def get_tools() -> List[ToolEntry]:
                     "description": "Number of results to return (default 5, max 20)",
                     "default": 5,
                 },
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "chat"],
+                    "description": "Use chat for semantic dialogue recall (up to 8 hits), all for lexical search across memory.",
+                    "default": "all",
+                },
             },
             "required": ["query"],
         },
     }
-    return [ToolEntry("memory_search", schema, lambda ctx, **kw: _memory_search(ctx, **kw))]
+    return [ToolEntry("memory_search", schema, _memory_search, timeout_sec=60)]

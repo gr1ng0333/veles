@@ -46,25 +46,31 @@ def _notes_path() -> pathlib.Path:
 
 
 def _load_notes() -> List[Dict[str, Any]]:
-    """Load all non-deleted notes from the JSONL file."""
-    path = _notes_path()
+    return read_active_notes(_notes_path())
+
+
+def read_active_notes(path: pathlib.Path) -> List[Dict[str, Any]]:
+    """Fold append-only note revisions and tombstones into the current view."""
     if not path.exists():
         return []
-    notes = []
+    notes: Dict[str | int, Dict[str, Any]] = {}
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                note = json.loads(line)
-                if not note.get("deleted", False):
-                    notes.append(note)
-            except json.JSONDecodeError:
-                continue
+        with path.open("r", encoding="utf-8") as file:
+            for index, line in enumerate(file):
+                try:
+                    note = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(note, dict):
+                    continue
+                key = str(note["id"]) if note.get("id") else index
+                if note.get("deleted", False):
+                    notes.pop(key, None)
+                else:
+                    notes[key] = note
     except OSError:
         pass
-    return notes
+    return list(notes.values())
 
 
 def _append_note(note: Dict[str, Any]) -> None:

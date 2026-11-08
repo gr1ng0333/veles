@@ -632,6 +632,20 @@ def test_load_notes_empty_file(tmp_path):
     assert chunks == []
 
 
+def test_deleted_note_stays_deleted_in_memory_search(tmp_path, monkeypatch):
+    from ouroboros.tools import notes
+
+    path = tmp_path / "memory/notes.jsonl"
+    path.parent.mkdir()
+    original = {"id": "n1", "text": "Retired infrastructure instruction", "timestamp": "2026-04-04"}
+    path.write_text(json.dumps(original) + "\n", encoding="utf-8")
+    monkeypatch.setattr(notes, "_notes_path", lambda: path)
+    assert _load_notes(tmp_path)
+    assert "deleted" in notes._note_delete(None, "n1")
+    assert not _load_notes(tmp_path)
+    assert not notes._load_notes()
+
+
 def test_load_notes_missing_file(tmp_path):
     """Missing notes.jsonl returns empty list without error."""
     chunks = _load_notes(tmp_path)

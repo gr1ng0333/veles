@@ -1,18 +1,44 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.3.27-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.3.28-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.3.27 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.3.28 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
+## Семантический поиск по диалогу
+
+`memory_search(query, scope="chat")` ищет по смыслу в последней тысяче записей
+чата. Открыть оригинал и соседние реплики можно через `chat_history(message_id=…)`.
+Старые записи за пределами окна остаются доступны по точному тексту через
+`chat_history(search=…)`. `memory_search(scope="all")` ищет по словам во всех
+обычных источниках памяти, включая заметки и базу знаний.
+
+Перед первой выкладкой установите зависимости и подготовьте модель и индекс
+из каталога Велеса:
+
+```sh
+venv/bin/python -m pip install -r requirements.txt
+venv/bin/python -m ouroboros.chat_search --drive-root /opt/veles-data
+```
+
+Команда скачивает и проверяет публичные веса модели и локально индексирует
+существующий чат владельца. Можно указать `--chat-id` явно. После подготовки
+поиск выполняется на CPU. Векторы лежат в восстанавливаемом SQLite-кэше под
+`state/chat-search/`. Новые сообщения индексируются по мере поиска. Если
+накопилось много новых данных, выдача явно сообщает о частичном индексе до
+следующего обновления.
+
 ## Release notes
+### v7.3.28
+- Local semantic recall over the last 1000 chat records, with stable source IDs and exact paginated reads. Deleted notes stay out of both note tools and memory search.
+
 ### v7.3.27
 - Ordinary tasks share a compact start with full identity and scratchpad, the current plan, and at least 32 complete recent chat messages when available. Skills and additional tools are loaded on demand and survive task recovery.
 
