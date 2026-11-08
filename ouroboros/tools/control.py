@@ -37,7 +37,9 @@ def _request_restart(ctx: ToolContext, reason: str) -> str:
     except Exception:
         log.debug("Failed to read VERSION file or git ref for restart verification", exc_info=True)
         pass
-    ctx.pending_events.append({"type": "restart_request", "reason": reason, "ts": utc_now_iso()})
+    ctx.pending_events.append({
+        "type": "restart_request", "reason": reason, "ts": utc_now_iso(), "task_id": ctx.task_id,
+    })
     ctx.last_push_succeeded = False
     return f"Restart requested: {reason}"
 

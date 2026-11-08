@@ -65,6 +65,13 @@ def test_evaluate_restart_policy_allows_hard_restart_for_interrupted_work():
 
 def test_restart_request_runs_simple_flow_without_advisor(tmp_path, monkeypatch):
     from supervisor.events import _handle_restart_request
+    from ouroboros.task_execution import TaskCheckpoint, outcome, recoverable_tasks
+
+    task = {"id": "direct", "chat_id": 123, "_is_direct_chat": True}
+    request = {"type": "restart_request", "ts": "2026-11-08T21:58:30+00:00", "reason": "manual restart test"}
+    cp = TaskCheckpoint(tmp_path, task)
+    cp.begin()
+    cp.finish("Original result", {"execution_status": "failed", "execution_reason": "tool_error"}, {}, [request])
 
     logs = []
     sent = []
@@ -89,7 +96,7 @@ def test_restart_request_runs_simple_flow_without_advisor(tmp_path, monkeypatch)
     )
 
     try:
-        _handle_restart_request({"reason": "manual restart test"}, ctx)
+        _handle_restart_request(request, ctx)
     except SystemExit:
         pass
 
@@ -97,6 +104,34 @@ def test_restart_request_runs_simple_flow_without_advisor(tmp_path, monkeypatch)
     assert any("Restart requested by agent" in msg for msg in sent)
     assert killed == [True]
     assert persisted and persisted[-1].get("reason") == "pre_restart_exit"
+    restored, = recoverable_tasks(tmp_path)
+    checkpoint = TaskCheckpoint(tmp_path, restored)
+    assert checkpoint.recovery_problem() == ""
+    assert checkpoint.data["pending_events"] == []
+    assert checkpoint.data["result"]["text"] == "Original result"
+    assert outcome(checkpoint.data["result"]["usage"])["reason"] == "tool_error"
+
+
+def test_restart_receipt_leaves_other_unconfirmed_control_events(tmp_path):
+    from ouroboros.task_execution import TaskCheckpoint
+    from supervisor.restart_flow import _acknowledge_restart_request
+
+    request = {"type": "restart_request", "task_id": "intended", "ts": "now", "reason": "upgrade"}
+    schedule = {"type": "schedule_task", "task_id": "child"}
+    task = {"id": "intended", "chat_id": 123}
+    checkpoint = TaskCheckpoint(tmp_path, task)
+    checkpoint.begin()
+    checkpoint.finish("Original result", {}, {}, [schedule, request])
+    other = TaskCheckpoint(tmp_path, {**task, "id": "other"})
+    other.begin()
+    other.finish("Other result", {}, {}, [{**request, "task_id": "other"}])
+
+    _acknowledge_restart_request(tmp_path, request)
+    _acknowledge_restart_request(tmp_path, request)
+    recovered = TaskCheckpoint(tmp_path, {**task, "_resume_execution": True})
+    assert recovered.data["pending_events"] == [schedule]
+    assert recovered.recovery_problem() == "recovery_unknown_outcome:event_delivery"
+    assert TaskCheckpoint(tmp_path, {"id": "other"}).data["pending_events"] == [{**request, "task_id": "other"}]
 
 
 def test_events_restart_entrypoint_delegates_to_live_restart_flow(monkeypatch):
