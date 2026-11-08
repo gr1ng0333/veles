@@ -229,7 +229,7 @@ def restore_pending_from_snapshot(max_age_sec: Optional[int] = None) -> int:
     if PENDING:
         return 0
     try:
-        from ouroboros.task_execution import recoverable_tasks
+        from ouroboros.task_execution import execution_settled, recoverable_tasks
         snap = json.loads(QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8")) if QUEUE_SNAPSHOT_PATH.exists() else {}
         if not isinstance(snap, dict):
             return 0
@@ -247,7 +247,7 @@ def restore_pending_from_snapshot(max_age_sec: Optional[int] = None) -> int:
                 continue
             if not task.get("id") or not task.get("chat_id"):
                 continue
-            if str(task["id"]) in seen:
+            if str(task["id"]) in seen or execution_settled(DRIVE_ROOT, str(task["id"])):
                 continue
             enqueue_task(task)
             seen.add(str(task["id"]))
@@ -259,7 +259,7 @@ def restore_pending_from_snapshot(max_age_sec: Optional[int] = None) -> int:
                 continue
             if not task.get("id") or not task.get("chat_id"):
                 continue
-            if str(task["id"]) in seen:
+            if str(task["id"]) in seen or execution_settled(DRIVE_ROOT, str(task["id"])):
                 continue
             enqueue_task({**task, "_resume_execution": True}, front=True)
             seen.add(str(task["id"]))

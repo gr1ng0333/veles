@@ -285,11 +285,6 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         ctx.RUNNING.pop(str(task_id), None)
     if wid in ctx.WORKERS and ctx.WORKERS[wid].busy_task_id == task_id:
         ctx.WORKERS[wid].busy_task_id = None
-    ctx.persist_queue_snapshot(reason="task_done")
-    if task_id:
-        from ouroboros.task_execution import settle_execution
-        settle_execution(ctx.DRIVE_ROOT, str(task_id))
-
     # Store task result for subtask retrieval
     try:
         from pathlib import Path
@@ -311,6 +306,11 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             os.rename(tmp_file, result_file)
     except Exception as e:
         log.warning("Failed to store task result in events: %s", e)
+
+    if task_id:
+        from ouroboros.task_execution import settle_execution
+        settle_execution(ctx.DRIVE_ROOT, str(task_id))
+    ctx.persist_queue_snapshot(reason="task_done")
 
     # For focused tasks: enqueue a review task for the main agent
     if task_type == "focused" and task_id:

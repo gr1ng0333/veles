@@ -390,6 +390,13 @@ def _find_tool_name_for_result(tool_msg: dict, messages: list) -> str:
                 return tc.get("function", {}).get("name", "")
     return ""
 
+def _with_saved_output_ref(content: str, summary: str) -> str:
+    for line in content.split("\n", 4)[:4]:
+        if line.startswith('Saved output: drive_read(path="logs/shell-output/'):
+            return summary if line in summary else f"{summary}\n{line}"
+    return summary
+
+
 def _compact_tool_result(msg: dict, content: str) -> dict:
     """
     Compact a single tool result message.
@@ -411,7 +418,7 @@ def _compact_tool_result(msg: dict, content: str) -> dict:
         char_count = len(content)
         summary = f"{first_line}... ({char_count} chars)" if char_count > 80 else content[:200]
 
-    return {**msg, "content": summary}
+    return {**msg, "content": _with_saved_output_ref(content, summary)}
 
 def _compact_assistant_msg(msg: dict) -> dict:
     """
@@ -617,7 +624,8 @@ def compact_tool_history_llm(messages: list, keep_recent: int = 6) -> list:
             result.append(msg)
             continue
         if i in idx_to_summary:
-            result.append({**msg, "content": idx_to_summary[i]})
+            summary = _with_saved_output_ref(str(msg.get("content") or ""), idx_to_summary[i])
+            result.append({**msg, "content": summary})
             continue
         if msg.get("role") == "tool" and i > 0:
             parent_round = None

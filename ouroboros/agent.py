@@ -393,7 +393,7 @@ class OuroborosAgent:
         return ctx, messages, cap_info
 
     def handle_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
-        from ouroboros.task_execution import TaskCheckpoint, set_outcome, validate_completion, completion_text
+        from ouroboros.task_execution import TaskCheckpoint, set_outcome, validate_completion, completion_text, order_task_events
         checkpoint = TaskCheckpoint(self.env.drive_root, task)
         recovery_problem = checkpoint.recovery_problem()
         checkpoint.begin()
@@ -556,7 +556,7 @@ class OuroborosAgent:
             except Exception:
                 log.debug("Dialogue consolidation setup failed (non-critical)", exc_info=True)
 
-            return list(self._pending_events)
+            return order_task_events(self._pending_events)
 
         finally:
             if 'ctx' in locals() and getattr(ctx, 'write_transport', None) == 'copilot' and getattr(ctx, 'write_attempted', False) and not getattr(ctx, 'last_push_succeeded', False) and not getattr(ctx, 'rescue_pushed', False):

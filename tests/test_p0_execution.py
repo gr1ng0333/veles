@@ -170,6 +170,36 @@ def test_unknown_control_event_delivery_is_not_replayed(tmp_path, monkeypatch):
     loop.assert_not_called()
 
 
+def test_restart_request_is_delivered_after_task_done(tmp_path, monkeypatch):
+    a, mod = make_agent(tmp_path, monkeypatch)
+    def run(**kwargs):
+        a._pending_events.append({"type": "restart_request", "reason": "test"})
+        return "Update checked", {}, {}
+    monkeypatch.setattr(mod, "run_llm_loop", run)
+    events = a.handle_task(TASK)
+    kinds = [event["type"] for event in events]
+    assert kinds[-1] == "restart_request" and kinds.index("task_done") < kinds.index("restart_request")
+    assert TaskCheckpoint(tmp_path, TASK).data["phase"] == "finished"
+
+
+def test_stale_running_snapshot_cannot_revive_settled_task(tmp_path, monkeypatch):
+    from supervisor import queue as q
+    cp = TaskCheckpoint(tmp_path, TASK)
+    cp.begin()
+    cp.finish("done", {}, {}, [{"type": "restart_request"}])
+    settle_execution(tmp_path, TASK["id"])
+    snapshot = tmp_path / "state/queue_snapshot.json"
+    snapshot.write_text(json.dumps({
+        "ts": "2026-11-08T21:24:41+00:00", "running": [{"task": TASK}],
+        "pending": [{"task": TASK}],
+    }), encoding="utf-8")
+    monkeypatch.setattr(q, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(q, "QUEUE_SNAPSHOT_PATH", snapshot)
+    monkeypatch.setattr(q, "PENDING", [])
+    assert q.restore_pending_from_snapshot() == 0
+    assert q.PENDING == [] and TaskCheckpoint(tmp_path, TASK).data["delivery_settled"]
+
+
 @pytest.mark.parametrize("mode", ["exception", "empty", "tool_error", "limit", "success"])
 def test_focused_worker_propagates_same_outcomes(tmp_path, monkeypatch, mode):
     from ouroboros import focused_agent as mod

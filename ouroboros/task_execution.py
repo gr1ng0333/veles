@@ -136,6 +136,20 @@ def recoverable_tasks(root: pathlib.Path) -> list[dict]:
     return tasks
 
 
+def execution_settled(root: pathlib.Path, task_id: str) -> bool:
+    """A settled checkpoint outranks an older queue snapshot."""
+    try:
+        row = TaskCheckpoint(root, {"id": task_id}).data
+    except (OSError, ValueError):
+        return False
+    return row.get("phase") == "finished" and row.get("delivery_settled") is True
+
+
+def order_task_events(events: list[dict]) -> list[dict]:
+    """Send results and task_done before an event that replaces the supervisor."""
+    return sorted(events, key=lambda event: event.get("type") == "restart_request")
+
+
 def stop_execution(root: pathlib.Path, task: dict, status: str, reason: str) -> None:
     checkpoint = TaskCheckpoint(root, task)
     usage = dict(checkpoint.data.get("loop", {}).get("accumulated_usage", {}))

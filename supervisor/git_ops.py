@@ -107,7 +107,7 @@ def ensure_repo_present() -> None:
         git_run(["git", "remote", "set-url", "origin", REMOTE_URL])
     git_run(["git", "config", "user.name", "Veles"])
     git_run(["git", "config", "user.email", "veles@users.noreply.github.com"])
-    git_run(["git", "fetch", "origin"])
+    git_run(["git", "fetch", "--no-tags", "origin"])
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +384,7 @@ def ensure_copilot_rescue_ref_if_needed(*, task_id: str, reason: str = '') -> Tu
 
 def checkout_and_reset(branch: str, reason: str = "unspecified",
                        unsynced_policy: str = "ignore") -> Tuple[bool, str]:
-    rc, _, err = git_capture(["git", "fetch", "origin"])
+    rc, _, err = git_capture(["git", "fetch", "--no-tags", "origin"])
     if rc != 0:
         msg = f"git fetch failed: {err or 'unknown error'}"
         append_jsonl(

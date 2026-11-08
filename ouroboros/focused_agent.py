@@ -33,7 +33,7 @@ from ouroboros.tools import ToolRegistry
 from ouroboros.tools.registry import ToolContext, FOCUSED_TOOL_PRESETS
 from ouroboros.focused_context import build_focused_messages
 from ouroboros.loop import run_llm_loop
-from ouroboros.task_execution import TaskCheckpoint, outcome, set_outcome, validate_completion, completion_text
+from ouroboros.task_execution import TaskCheckpoint, outcome, set_outcome, validate_completion, completion_text, order_task_events
 
 
 def _resolve_whitelist(tools_spec: Optional[str]) -> Optional[List[str]]:
@@ -266,4 +266,4 @@ class FocusedAgent:
             "ts": utc_now_iso(),
         })
 
-        return list(self._pending_events)
+        return order_task_events(self._pending_events)

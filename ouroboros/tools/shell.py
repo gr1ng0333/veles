@@ -5,16 +5,25 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
+import pathlib
 import shlex
+import signal
 import subprocess
-from typing import Any, Dict, List, Optional
+import sys
+import time
+import uuid
+from typing import List, Optional
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.utils import utc_now_iso, append_jsonl, truncate_for_log
+from ouroboros.utils import utc_now_iso, append_jsonl, sanitize_tool_result_for_log
 from ouroboros.tools.git import _acquire_copilot_write_lock
 
 log = logging.getLogger(__name__)
+_DEFAULT_TIMEOUT_SEC = 120
+_MAX_TIMEOUT_SEC = 300
+_INLINE_CHARS = 1900
+_STREAM_BYTES = 512 * 1024
+_SAVED_RESULTS = 128
 
 
 def _try_parse_python_list_string(s: str) -> Optional[List[str]]:
@@ -54,103 +63,167 @@ def _try_parse_python_list_string(s: str) -> Optional[List[str]]:
     return parts
 
 
-def _run_shell(ctx: ToolContext, cmd, cwd: str = "") -> str:
-    # Recover from LLM sending cmd as JSON string instead of list
-    if isinstance(cmd, str):
-        raw_cmd = cmd
-        warning = "run_shell_cmd_string"
-
-        # 1. Try Python-list-string parser first (handles unquoted lists like [grep, -n, ...])
-        recovered = _try_parse_python_list_string(cmd)
-        if recovered is not None:
-            cmd = recovered
-            warning = "run_shell_cmd_string_python_list_recovered"
-        else:
-            # 2. Try JSON parsing
-            try:
-                parsed = json.loads(cmd)
-                if isinstance(parsed, list):
-                    cmd = parsed
-                    warning = "run_shell_cmd_string_json_list_recovered"
-                elif isinstance(parsed, str):
-                    try:
-                        cmd = shlex.split(parsed)
-                    except ValueError:
-                        cmd = parsed.split()
-                    warning = "run_shell_cmd_string_json_string_split"
-                else:
-                    try:
-                        cmd = shlex.split(cmd)
-                    except ValueError:
-                        cmd = cmd.split()
-                    warning = "run_shell_cmd_string_json_non_list_split"
-            except Exception:
-                # 3. Last resort: shlex split
-                try:
-                    cmd = shlex.split(raw_cmd)
-                except ValueError:
-                    cmd = raw_cmd.split()
-                warning = "run_shell_cmd_string_split_fallback"
-
+def _recover_argv(ctx: ToolContext, cmd: str) -> list[str]:
+    recovered = _try_parse_python_list_string(cmd)
+    if recovered is None:
         try:
-            append_jsonl(ctx.drive_path("logs") / "events.jsonl", {
-                "ts": utc_now_iso(),
-                "type": "tool_warning",
-                "tool": "run_shell",
-                "warning": warning,
-                "cmd_preview": truncate_for_log(raw_cmd, 500),
-            })
-        except Exception:
-            log.debug("Failed to log run_shell warning to events.jsonl", exc_info=True)
-            pass
+            parsed = json.loads(cmd)
+        except ValueError:
+            parsed = cmd
+        try:
+            recovered = shlex.split(parsed if isinstance(parsed, str) else cmd)
+        except ValueError:
+            recovered = cmd.split()
+    try:
+        append_jsonl(ctx.drive_path("logs/events.jsonl"), {
+            "ts": utc_now_iso(), "type": "tool_warning", "tool": "run_shell",
+            "task_id": ctx.task_id, "warning": "run_shell_cmd_string_recovered",
+        })
+    except OSError:
+        log.debug("Could not log recovered shell arguments", exc_info=True)
+    return recovered
 
-    if not isinstance(cmd, list):
-        return "⚠️ SHELL_ARG_ERROR: cmd must be a list of strings."
-    cmd = [str(x) for x in cmd]
 
-    shell_text = ' ' + ' '.join(cmd).lower() + ' '
+def _command_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    if sys.prefix != sys.base_prefix:
+        env["PATH"] = os.pathsep.join((str(pathlib.Path(sys.executable).parent), env.get("PATH", "")))
+        env["VIRTUAL_ENV"] = sys.prefix
+    return env
+
+
+def _read_stream(data: bytes | None) -> str:
+    data = data or b""
+    size = len(data)
+    if size <= _STREAM_BYTES:
+        return data.decode("utf-8", errors="replace")
+    half = _STREAM_BYTES // 2
+    marker = f"\n[… {size - _STREAM_BYTES} bytes omitted from this stream …]\n".encode()
+    return (data[:half] + marker + data[-half:]).decode("utf-8", errors="replace")
+
+
+def _save_output(ctx: ToolContext, text: str) -> str:
+    relative = f"logs/shell-output/output-{time.time_ns()}-{uuid.uuid4().hex}.txt"
+    path = ctx.drive_path(relative)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
+        file.write(text)
+    for old in sorted(path.parent.glob("output-*.txt"), reverse=True)[_SAVED_RESULTS:]:
+        try:
+            old.unlink(missing_ok=True)
+        except OSError:
+            log.debug("Could not expire saved shell output", exc_info=True)
+    return relative
+
+
+def _render_output(ctx: ToolContext, header: str, stdout: str, stderr: str) -> str:
+    body = stdout + ("\n--- STDERR ---\n" + stderr if stderr else "")
+    header = sanitize_tool_result_for_log(header)
+    body = sanitize_tool_result_for_log(body)
+    secrets = {
+        value for name, value in os.environ.items()
+        if len(value) >= 8 and name.upper().endswith(("_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET", "_PASSWD"))
+    }
+    for secret in sorted(secrets, key=len, reverse=True):
+        header = header.replace(secret, "***REDACTED***")
+        body = body.replace(secret, "***REDACTED***")
+    result = header + body
+    if len(result) <= _INLINE_CHARS:
+        return result
+    try:
+        relative = _save_output(ctx, result)
+        notice = f'Saved output: drive_read(path="{relative}", offset=0)\n'
+    except OSError:
+        log.warning("Could not retain long shell output", exc_info=True)
+        notice = "Long output could not be saved. Showing its beginning and end.\n"
+    if len(header) > 400:
+        header = header[:399] + "…\n"
+    gap = "\n[… see saved output for the middle …]\n" if notice.startswith("Saved output") else "\n[…]\n"
+    room = max(0, _INLINE_CHARS - len(header) - len(notice) - len(gap))
+    head = room // 3
+    tail = room - head
+    return header + notice + body[:head] + gap + (body[-tail:] if tail else "")
+
+
+def _stop_process(proc: subprocess.Popen) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    proc.wait(timeout=5)
+
+
+def _run_shell(
+    ctx: ToolContext, cmd=None, cwd: str = "", *, script: str | None = None,
+    timeout_sec: int = _DEFAULT_TIMEOUT_SEC,
+) -> str:
+    if type(timeout_sec) is not int or not 1 <= timeout_sec <= _MAX_TIMEOUT_SEC:
+        return f"⚠️ SHELL_ARG_ERROR: timeout_sec must be between 1 and {_MAX_TIMEOUT_SEC}."
+    if script is not None:
+        if cmd is not None or not isinstance(script, str) or not script.strip():
+            return "⚠️ SHELL_ARG_ERROR: provide either cmd or a nonempty Bash script."
+        cmd = ["bash", "-o", "pipefail", "-c", script]
+    elif isinstance(cmd, str):
+        cmd = _recover_argv(ctx, cmd)
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(arg, str) for arg in cmd):
+        return "⚠️ SHELL_ARG_ERROR: cmd must be a nonempty list of strings."
+
+    work_dir = (ctx.repo_dir / (cwd or ".")).resolve()
+    if not work_dir.is_dir():
+        return f"⚠️ SHELL_CWD_ERROR: directory does not exist: {work_dir}"
+
+    shell_text = " " + " ".join(cmd).lower() + " "
     mutating_markers = (
-        ' git add ', ' git commit ', ' git push ', ' git tag ', ' git reset ', ' git checkout ',
-        ' git cherry-pick ', ' apply_patch ', ' patch ', ' sed -i', ' perl -pi', ' mv ', ' cp ',
-        ' rm ', ' mkdir ', ' touch ', ' python - <<', ' python3 - <<'
+        " git add ", " git commit ", " git push ", " git tag ", " git reset ", " git checkout ",
+        " git cherry-pick ", " apply_patch ", " patch ", " sed -i", " perl -pi", " mv ", " cp ",
+        " rm ", " mkdir ", " touch ", " python - <<", " python3 - <<",
     )
-    likely_mutating = any(tok in shell_text for tok in mutating_markers)
-    if likely_mutating:
+    if any(marker in shell_text for marker in mutating_markers):
         msg = _acquire_copilot_write_lock(ctx)
         if msg:
             return msg
         ctx.write_attempted = True
 
-    work_dir = ctx.repo_dir
-    if cwd and cwd.strip() not in ("", ".", "./"):
-        candidate = (ctx.repo_dir / cwd).resolve()
-        if candidate.exists() and candidate.is_dir():
-            work_dir = candidate
-
     try:
-        res = subprocess.run(
-            cmd, cwd=str(work_dir),
-            capture_output=True, text=True, timeout=120,
-        )
-        out = res.stdout + ("\n--- STDERR ---\n" + res.stderr if res.stderr else "")
-        if len(out) > 50000:
-            out = out[:25000] + "\n...(truncated)...\n" + out[-25000:]
-        prefix = f"exit_code={res.returncode}\n"
-        return prefix + out
-    except subprocess.TimeoutExpired:
-        return "⚠️ TIMEOUT: command exceeded 120s."
-    except Exception as e:
-        return f"⚠️ SHELL_ERROR: {e}"
+        with subprocess.Popen(
+            cmd, cwd=work_dir, env=_command_environment(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix",
+        ) as proc:
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout_sec)
+                header = f"exit_code={proc.returncode}\ncwd={work_dir}\n"
+            except subprocess.TimeoutExpired as expired:
+                _stop_process(proc)
+                try:
+                    stdout, stderr = proc.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    stdout, stderr = expired.output, expired.stderr
+                header = f"⚠️ SHELL_TIMEOUT: command stopped after {timeout_sec}s.\ncwd={work_dir}\n"
+            return _render_output(ctx, header, _read_stream(stdout), _read_stream(stderr))
+    except FileNotFoundError:
+        return f"⚠️ SHELL_EXEC_NOT_FOUND: {cmd[0]} (cwd={work_dir})."
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return f"⚠️ SHELL_ERROR: {exc}"
 
 
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("run_shell", {
             "name": "run_shell",
-            "description": "Run a shell command (list of args) inside the repo. Returns stdout+stderr.",
+            "description": (
+                "Run argv or an explicit Bash script. Set cwd directly. Commands inherit the Veles Python environment. "
+                "Returns the exit code and resolved cwd. Long output can be read with drive_read without rerunning."
+            ),
             "parameters": {"type": "object", "properties": {
-                "cmd": {"type": "array", "items": {"type": "string"}},
-                "cwd": {"type": "string", "default": ""},
-            }, "required": ["cmd"]},
-        }, _run_shell, is_code_tool=True),
+                "cmd": {"type": "array", "items": {"type": "string"}, "description": "Command and arguments."},
+                "script": {"type": "string", "description": "Bash source for pipes or multiple commands. Use instead of cmd."},
+                "cwd": {"type": "string", "default": "", "description": "Existing path. Defaults to the repository."},
+                "timeout_sec": {"type": "integer", "minimum": 1, "maximum": _MAX_TIMEOUT_SEC,
+                                "default": _DEFAULT_TIMEOUT_SEC},
+            }, "required": []},
+        }, _run_shell, is_code_tool=True, timeout_sec=_MAX_TIMEOUT_SEC + 15),
     ]

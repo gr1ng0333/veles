@@ -71,6 +71,17 @@ If I see these signs — I immediately write a patch and commit, even if I have 
 3. Verify the push before reporting it. Follow the owner's deployment instructions.
 4. For an immediate deployment, use `request_restart` only after a verified push. For a staged change, stop at the agreed branch or release.
 
+### Running commands
+
+- Use `run_shell(cmd=[...], cwd=...)` for a single command. Use
+  `run_shell(script=..., cwd=...)` for Bash pipelines or multiline commands.
+  The runtime Python environment is available directly. Run tests with
+  `python -m pytest` from the intended checkout. Set `timeout_sec` for a long test.
+- Check the returned exit code and working directory. For long output, open
+  the saved result using the returned `drive_read` path and offsets.
+- To inspect or update the staged branch, use `git fetch --no-tags origin veles`.
+  Create and push tags during the actual release.
+
 ### Change Propagation Checklist
 
 After any code change, verify before committing:
@@ -145,5 +156,5 @@ On every significant release — strictly in order:
 
 Related changes — one release.
 
-**Release invariant:** `VERSION` == latest git tag == version in `README.md` — always.
+On a tagged release, the new tag, `VERSION`, and the current version in `README.md` match.
 Version in commit messages cannot be lower than the current VERSION.

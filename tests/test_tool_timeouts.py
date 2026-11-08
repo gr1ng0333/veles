@@ -53,14 +53,8 @@ def test_medium_tools_are_30s():
         assert TOOL_TIMEOUT_OVERRIDES[tool] == 30, f"{tool} should be 30s"
 
 
-def test_slow_tools_are_60s():
-    """Heavier execution tools should have 60s timeout.
-
-    run_shell is intentionally 60s (raised from 30s) — shell commands can
-    include compilation, test runs, or network calls.
-    Browser tools stay at 60s for page load + JS execution time.
-    """
-    slow = ["run_shell", "browse_page", "browser_action", "analyze_screenshot"]
+def test_browser_tools_are_60s():
+    slow = ["browse_page", "browser_action", "analyze_screenshot"]
     for tool in slow:
         assert TOOL_TIMEOUT_OVERRIDES[tool] == 60, f"{tool} should be 60s"
 
