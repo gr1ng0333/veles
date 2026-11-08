@@ -9,12 +9,17 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
+from ouroboros.memory_publication import MemoryWriteRefused, publish_memory_file
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import utc_now_iso, write_text, run_cmd
 
 log = logging.getLogger(__name__)
 
 MAX_SUBTASK_DEPTH = 3
+_MEMORY_REVISION_ARG = {
+    "type": "string",
+    "description": "Required for an existing file. Use the SHA-256 revision returned by drive_read.",
+}
 
 
 def _request_restart(ctx: ToolContext, reason: str) -> str:
@@ -86,18 +91,15 @@ def _chat_history(ctx: ToolContext, count: int = 100, offset: int = 0, search: s
     return mem.chat_history(count=count, offset=offset, search=search)
 
 
-def _update_scratchpad(ctx: ToolContext, content: str) -> str:
+def _update_scratchpad(ctx: ToolContext, content: str, expected_revision: str | None = None) -> str:
     """LLM-driven scratchpad update (Constitution P3: LLM-first)."""
     from ouroboros.memory import Memory
     mem = Memory(drive_root=ctx.drive_root)
-    mem.ensure_files()
-    mem.save_scratchpad(content)
-    mem.append_journal({
-        "ts": utc_now_iso(),
-        "content_preview": content[:500],
-        "content_len": len(content),
-    })
-    return f"OK: scratchpad updated ({len(content)} chars)"
+    try:
+        revision = mem.save_scratchpad(content, expected_revision, task_id=ctx.task_id)
+    except MemoryWriteRefused as e:
+        return f"⚠️ {e}"
+    return f"OK: scratchpad updated ({len(content)} chars). revision={revision}"
 
 
 def _send_owner_message(ctx: ToolContext, text: str, reason: str = "") -> str:
@@ -129,12 +131,23 @@ def _send_owner_message(ctx: ToolContext, text: str, reason: str = "") -> str:
     return "OK: message queued for delivery."
 
 
-def _update_identity(ctx: ToolContext, content: str) -> str:
+def _update_identity(ctx: ToolContext, content: str, expected_revision: str | None = None) -> str:
     """Update identity manifest (who you are, who you want to become)."""
-    path = ctx.drive_root / "memory" / "identity.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return f"OK: identity updated ({len(content)} chars)"
+    if not isinstance(content, str) or len(content.strip()) < 50:
+        return "⚠️ Identity needs at least 50 non-padding characters."
+    try:
+        revision, old_length = publish_memory_file(
+            ctx.drive_path("memory/identity.md"), content, expected_revision, task_id=ctx.task_id,
+        )
+    except MemoryWriteRefused as e:
+        return f"⚠️ {e}"
+    result = f"OK: identity updated ({len(content)} chars). revision={revision}"
+    if old_length >= 400 and len(content) < old_length / 2:
+        result += (
+            f"\n⚠️ SELF_OVERWRITE_NOTICE: identity shrank from {old_length} to {len(content)} characters. "
+            "Review the change. The previous text is in memory/identity_journal.jsonl."
+        )
+    return result
 
 
 def _toggle_evolution(ctx: ToolContext, enabled: bool) -> str:
@@ -268,10 +281,11 @@ def get_tools() -> List[ToolEntry]:
         }, _chat_history),
         ToolEntry("update_scratchpad", {
             "name": "update_scratchpad",
-            "description": "Update your working memory. Write freely — any format you find useful. "
-                           "This persists across sessions and is read at every task start.",
+            "description": "Replace your working memory. Read memory/scratchpad.md with drive_read first "
+                           "and pass its revision. The journal retains the previous text.",
             "parameters": {"type": "object", "properties": {
                 "content": {"type": "string", "description": "Full scratchpad content"},
+                "expected_revision": _MEMORY_REVISION_ARG,
             }, "required": ["content"]},
         }, _update_scratchpad),
         ToolEntry("send_owner_message", {
@@ -286,10 +300,11 @@ def get_tools() -> List[ToolEntry]:
         }, _send_owner_message),
         ToolEntry("update_identity", {
             "name": "update_identity",
-            "description": "Update your identity manifest (who you are, who you want to become). "
-                           "Persists across sessions. Obligation to yourself (Principle 1: Continuity).",
+            "description": "Revise your persistent identity manifest after reflection. Read memory/identity.md "
+                           "with drive_read first and pass its revision. Preserve continuity.",
             "parameters": {"type": "object", "properties": {
                 "content": {"type": "string", "description": "Full identity content"},
+                "expected_revision": _MEMORY_REVISION_ARG,
             }, "required": ["content"]},
         }, _update_identity),
         ToolEntry("toggle_evolution", {

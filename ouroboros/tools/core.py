@@ -12,9 +12,11 @@ import pathlib
 import tempfile
 import uuid
 from functools import partial
+from hashlib import sha256
 from typing import Any, Dict, List, Tuple
 
 from ouroboros.artifacts import list_incoming_artifacts, save_artifact
+from ouroboros.memory_publication import protected_memory_tool
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import read_text, safe_relpath, utc_now_iso
 
@@ -44,12 +46,37 @@ def _read_from(ctx: ToolContext, path: str, which: str) -> str:
     return read_text(getattr(ctx, which)(path))
 
 
+def _drive_read(ctx: ToolContext, path: str, offset: int = 0, revision: str | None = None) -> str:
+    target = ctx.drive_path(path)
+    if not protected_memory_tool(ctx.drive_root, target):
+        if offset or revision is not None:
+            return "⚠️ Revision-bound paging is available for identity, scratchpad and their journals."
+        return read_text(target)
+
+    raw = target.read_bytes()
+    current = sha256(raw).hexdigest()
+    if revision is not None and revision != current:
+        return "⚠️ Revision conflict. Start reading again at offset 0."
+    if offset and revision is None:
+        return "⚠️ Pass the revision from the first page when continuing the read."
+    text = raw.decode("utf-8")
+    if type(offset) is not int or not 0 <= offset <= len(text):
+        return f"⚠️ Offset must be between 0 and {len(text)} characters."
+    # Keep the page and its continuation metadata within Codex's tool result cap.
+    end = min(offset + 2000, len(text))
+    next_offset = end if end < len(text) else "end"
+    return f"revision={current}\nchars={len(text)} offset={offset} next_offset={next_offset}\n\n{text[offset:end]}"
+
+
 def _list_from(ctx: ToolContext, dir: str = ".", max_entries: int = 500, root_attr: str = "repo_dir") -> str:
     return json.dumps(_list_dir(getattr(ctx, root_attr), dir, max_entries), ensure_ascii=False, indent=2)
 
 
 def _drive_write(ctx: ToolContext, path: str, content: str, mode: str = "overwrite") -> str:
     p = ctx.drive_path(path)
+    tool = protected_memory_tool(ctx.drive_root, p)
+    if tool:
+        return f"⚠️ Protected memory. Use drive_read and {tool}. Its history is written automatically."
     p.parent.mkdir(parents=True, exist_ok=True)
     if mode == "overwrite":
         p.write_text(content, encoding="utf-8")
@@ -448,9 +475,14 @@ def get_tools() -> List[ToolEntry]:
         }, partial(_list_from, root_attr="repo_dir")),
         ToolEntry("drive_read", {
             "name": "drive_read",
-            "description": "Read a UTF-8 text file from Google Drive (relative to MyDrive/Ouroboros/).",
-            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        }, partial(_read_from, which="drive_path")),
+            "description": "Read a UTF-8 file from the data directory. Identity, scratchpad and their journals "
+                           "return a revision and a page. Follow next_offset with the same revision until end.",
+            "parameters": {"type": "object", "properties": {
+                "path": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Memory page offset in characters."},
+                "revision": {"type": "string", "description": "Revision returned by the first memory page."},
+            }, "required": ["path"]},
+        }, _drive_read),
         ToolEntry("drive_list", {
             "name": "drive_list",
             "description": "List files under a Drive directory.",
@@ -461,7 +493,7 @@ def get_tools() -> List[ToolEntry]:
         }, partial(_list_from, root_attr="drive_root")),
         ToolEntry("drive_write", {
             "name": "drive_write",
-            "description": "Write a UTF-8 text file on Google Drive.",
+            "description": "Write a UTF-8 file in the data directory. Use the dedicated update tools for identity and scratchpad.",
             "parameters": {"type": "object", "properties": {
                 "path": {"type": "string"},
                 "content": {"type": "string"},

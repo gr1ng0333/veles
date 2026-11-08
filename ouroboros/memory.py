@@ -13,8 +13,9 @@ import pathlib
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
-from ouroboros.utils import utc_now_iso, read_text, write_text, append_jsonl, short
+from ouroboros.utils import utc_now_iso, read_text, short
 from ouroboros.chat_records import chat_direction
+from ouroboros.memory_publication import initialize_memory, journal_path, publish_memory_file
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class Memory:
         return self._memory_path("identity.md")
 
     def journal_path(self) -> pathlib.Path:
-        return self._memory_path("scratchpad_journal.jsonl")
+        return journal_path(self.scratchpad_path())
 
     def logs_path(self, name: str) -> pathlib.Path:
         return (self.drive_root / "logs" / name).resolve()
@@ -51,31 +52,24 @@ class Memory:
 
     def load_scratchpad(self) -> str:
         p = self.scratchpad_path()
-        if p.exists():
-            return read_text(p)
-        default = self._default_scratchpad()
-        write_text(p, default)
-        return default
+        initialize_memory(p, self._default_scratchpad())
+        return read_text(p)
 
-    def save_scratchpad(self, content: str) -> None:
-        write_text(self.scratchpad_path(), content)
+    def save_scratchpad(
+        self, content: str, expected_revision: str | None = None, *, task_id: str | None = None,
+    ) -> str:
+        revision, _ = publish_memory_file(self.scratchpad_path(), content, expected_revision, task_id=task_id)
+        return revision
 
     def load_identity(self) -> str:
         p = self.identity_path()
-        if p.exists():
-            return read_text(p)
-        default = self._default_identity()
-        write_text(p, default)
-        return default
+        initialize_memory(p, self._default_identity())
+        return read_text(p)
 
     def ensure_files(self) -> None:
         """Create memory files if they don't exist."""
-        if not self.scratchpad_path().exists():
-            write_text(self.scratchpad_path(), self._default_scratchpad())
-        if not self.identity_path().exists():
-            write_text(self.identity_path(), self._default_identity())
-        if not self.journal_path().exists():
-            write_text(self.journal_path(), "")
+        initialize_memory(self.scratchpad_path(), self._default_scratchpad())
+        initialize_memory(self.identity_path(), self._default_identity())
 
     # --- Chat history ---
 
@@ -250,9 +244,6 @@ class Memory:
                 return f"{e['type']}: {e.get('ts', '')} branch={branch} sha={sha}"
         return ""
 
-    def append_journal(self, entry: Dict[str, Any]) -> None:
-        append_jsonl(self.journal_path(), entry)
-
     # --- Defaults ---
 
     def _default_scratchpad(self) -> str:
@@ -265,5 +256,5 @@ class Memory:
             "I can write anything here: how I see myself, how I want to communicate,\n"
             "what matters to me, what I have understood about myself.\n\n"
             "This file is read at every dialogue and influences my responses.\n"
-            "I update it when I feel the need, via drive_write.\n"
+            "I update it when I feel the need, via update_identity.\n"
         )
