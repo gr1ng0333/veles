@@ -375,18 +375,7 @@ class OuroborosAgent:
         else:
             messages, cap_info = build_llm_messages(
                 env=self.env, memory=self.memory, task=task,
-                review_context_builder=self._build_review_context,
             )
-
-        if cap_info.get("trimmed_sections"):
-            try:
-                append_jsonl(drive_logs / "events.jsonl", {
-                    "ts": utc_now_iso(), "type": "context_soft_cap_trim",
-                    "task_id": task.get("id"), **cap_info,
-                })
-            except Exception:
-                log.warning("Failed to log context soft cap trim event", exc_info=True)
-                pass
 
         # Read budget remaining for cost guard
         budget_remaining = None
@@ -605,14 +594,6 @@ class OuroborosAgent:
             if heartbeat_stop is not None:
                 heartbeat_stop.set()
             self._current_task_type = None
-            # Skills are task-scoped: reset active_skills on every task completion
-            try:
-                from supervisor.state import load_state, save_state
-                _st = load_state()
-                _st["active_skills"] = []
-                save_state(_st)
-            except Exception:
-                log.debug("Failed to reset active_skills on task_done", exc_info=True)
 
     # =====================================================================
     # Task result emission
@@ -762,42 +743,6 @@ class OuroborosAgent:
             os.rename(tmp_file, result_file)
         except Exception as e:
             log.warning("Failed to store task result: %s", e)
-
-    # =====================================================================
-    # Review context builder
-    # =====================================================================
-
-    def _build_review_context(self) -> str:
-        """Collect code snapshot + complexity metrics for review tasks."""
-        try:
-            from ouroboros.review import collect_sections, compute_complexity_metrics, format_metrics
-            sections, stats = collect_sections(self.env.repo_dir, self.env.drive_root)
-            metrics = compute_complexity_metrics(sections)
-
-            parts = [
-                "## Code Review Context\n",
-                format_metrics(metrics),
-                f"\nFiles: {stats['files']}, chars: {stats['chars']}\n",
-                "\nUse repo_read to inspect specific files. "
-                "Use run_shell for tests. Key files below:\n",
-            ]
-
-            total_chars = 0
-            max_chars = 80_000
-            files_added = 0
-            for path, content in sections:
-                if total_chars >= max_chars:
-                    parts.append(f"\n... ({len(sections) - files_added} more files, use repo_read)")
-                    break
-                preview = content[:2000] if len(content) > 2000 else content
-                file_block = f"\n### {path}\n```\n{preview}\n```\n"
-                total_chars += len(file_block)
-                parts.append(file_block)
-                files_added += 1
-
-            return "\n".join(parts)
-        except Exception as e:
-            return f"## Code Review Context\n\n(Failed to collect: {e})\nUse repo_read and repo_list to inspect code."
 
     # =====================================================================
     # Event emission helpers

@@ -1,62 +1,64 @@
-"""Tool discovery meta-tools — lets the agent see and enable non-core tools."""
+"""Discover callable tools and attach their schemas for the current task."""
 
 from __future__ import annotations
-import logging
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from ouroboros.tools.registry import ToolContext, ToolEntry
+from typing import List
 
-if TYPE_CHECKING:
-    from ouroboros.tools.registry import ToolRegistry
-
-log = logging.getLogger(__name__)
-
-# Module-level registry reference — set by set_registry() after ToolRegistry is created.
-# loop.py also overrides these handlers with closures that have access to per-loop state
-# (e.g. the _enabled_extra_tools set); the module-level ref serves as a fallback for
-# any context where the tool is called without going through run_llm_loop.
-_registry: Optional["ToolRegistry"] = None
+from ouroboros.tools.registry import ToolContext, ToolEntry, ToolRegistry
 
 
-def set_registry(reg: "ToolRegistry") -> None:
-    global _registry
-    _registry = reg
+def _list_available_tools(ctx: ToolContext, query: str = "", offset: int = 0) -> str:
+    return "⚠️ Tool discovery is available in an active tool loop."
 
 
-def _list_available_tools(ctx: ToolContext, **kwargs) -> str:
-    if _registry is None:
-        return "Tool discovery not available in this context."
-    non_core = _registry.list_non_core_tools()
-    # Exclude the meta-tools themselves from the listing
-    non_core = [t for t in non_core if t["name"] not in ("list_available_tools", "enable_tools")]
-    if not non_core:
-        return "All tools are already in your active set."
-    lines = [f"**{len(non_core)} additional tools available** (use `enable_tools` to activate):\n"]
-    for t in non_core:
-        lines.append(f"- **{t['name']}**: {t['description'][:120]}")
-    return "\n".join(lines)
+def _enable_tools(ctx: ToolContext, tools: str) -> str:
+    return "⚠️ Tool loading is available in an active tool loop."
 
 
-def _enable_tools(ctx: ToolContext, tools: str = "", **kwargs) -> str:
-    if _registry is None:
-        return "Tool enablement not available in this context."
-    names = [n.strip() for n in tools.split(",") if n.strip()]
-    if not names:
-        return "No tools specified."
-    found = []
-    not_found = []
-    for name in names:
-        schema = _registry.get_schema_by_name(name)
-        if schema:
-            found.append(f"{name}: {schema['function'].get('description', '')[:100]}")
-        else:
-            not_found.append(name)
-    parts = []
-    if found:
-        parts.append("✅ Tools are registered and callable:\n" + "\n".join(f"  - {s}" for s in found))
-    if not_found:
-        parts.append(f"❌ Not found: {', '.join(not_found)}")
-    return "\n".join(parts)
+def bind_tool_discovery(registry: ToolRegistry, resident: list) -> None:
+    def list_tools(ctx: ToolContext, query: str = "", offset: int = 0) -> str:
+        if not isinstance(query, str) or type(offset) is not int or offset < 0:
+            return "⚠️ Provide a text query and a nonnegative offset."
+        search = query.strip().casefold()
+        loaded = {schema["name"] if "name" in schema else schema["function"]["name"] for schema in resident}
+        matches = []
+        for schema in sorted(registry.schemas(), key=lambda row: row["name"]):
+            name = schema["name"]
+            description = " ".join(str(schema["function"].get("description", "")).split())
+            if search in f"{name} {description}".casefold():
+                state = "loaded" if name in loaded else "available"
+                matches.append(f"- {name} [{state}]: {description[:100]}")
+        if not matches:
+            return "No callable tools match. Try another query or omit it to browse."
+        page = matches[offset:offset + 10]
+        next_offset = offset + len(page)
+        footer = f"\nNext page: offset={next_offset} with the same query." if next_offset < len(matches) else ""
+        return (f"{len(matches)} callable tools match. Use enable_tools for available schemas.\n"
+                + "\n".join(page) + footer)
+
+    def enable_tools(ctx: ToolContext, tools: str) -> str:
+        allowed = {schema["name"]: schema for schema in registry.schemas()}
+        loaded = {schema["name"] if "name" in schema else schema["function"]["name"] for schema in resident}
+        enabled, already, missing = [], [], []
+        for name in dict.fromkeys(item.strip() for item in tools.split(",") if item.strip()):
+            if name not in allowed:
+                missing.append(name)
+            elif name in loaded:
+                already.append(name)
+            else:
+                resident.append(allowed[name])
+                enabled.append(name)
+        parts = []
+        if enabled:
+            parts.append("✅ Available from the next request: " + ", ".join(enabled))
+        if already:
+            parts.append("Already loaded: " + ", ".join(already))
+        if missing:
+            parts.append("⚠️ Unavailable for this task: " + ", ".join(missing))
+        return "\n".join(parts) if parts else "⚠️ Provide one or more tool names."
+
+    registry.override_handler("list_available_tools", list_tools)
+    registry.override_handler("enable_tools", enable_tools)
 
 
 def get_tools() -> List[ToolEntry]:
@@ -66,13 +68,15 @@ def get_tools() -> List[ToolEntry]:
             schema={
                 "name": "list_available_tools",
                 "description": (
-                    "List all additional tools not currently in your active tool set. "
-                    "Returns name + description for each. Use this to discover tools "
-                    "you might need for specific tasks."
+                    "Find tools callable in this task, including schemas that are not loaded yet. "
+                    "Search by name or purpose, or browse with an empty query."
                 ),
                 "parameters": {
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "query": {"type": "string", "description": "Optional name or purpose to search for."},
+                        "offset": {"type": "integer", "minimum": 0, "description": "Offset for the next page."},
+                    },
                     "required": [],
                 },
             },

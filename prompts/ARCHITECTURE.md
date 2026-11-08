@@ -108,22 +108,18 @@ voice transcription (`audio_stt.py`).
 
 ## Context Assembly
 
-Three-block structure for optimal prompt caching:
+Ordinary task types use the same three blocks.
 
-**Block 0 — Static (cached 1h):**
-Language rule → SYSTEM.md → BIBLE.md → ARCHITECTURE.md → CHECKLISTS.md
-(+ README.md for evolution/review tasks only)
+- Block 0 contains SYSTEM.md, BIBLE.md, the language rule and the skill catalog.
+- Block 1 contains full identity, scratchpad and the current plan, when present.
+- Block 2 contains runtime facts, health invariants and recent chat. The last 32
+  records are included in full. The older part of the tail uses a text budget
+  and includes up to 100 records in total.
 
-**Block 1 — Semi-stable (cached, ephemeral):**
-Scratchpad → Identity → Active plan → Dialogue history (consolidated) →
-Knowledge base index → Pattern register
-
-**Block 2 — Dynamic (uncached):**
-Drive state → Runtime context (git, budget, timestamps) → Health invariants →
-Recent chat/progress/tools/events/supervisor → Execution reflections →
-Review context (review tasks) → Language reminder
-
-Soft cap: 200,000 tokens. Prunable: recent chat, progress, tools, events, supervisor.
+The model can discover and enable more tools and load relevant skills at any round.
+The task checkpoint preserves the tool schemas and the loaded skill text. Reference
+docs, long-term memory and task logs are read on demand. Focused worker allowlists
+still define the tools available to those workers.
 
 ---
 
@@ -131,9 +127,9 @@ Soft cap: 200,000 tokens. Prunable: recent chat, progress, tools, events, superv
 
 | Store | File | Purpose |
 |-------|------|---------|
-| Recent chat | chat.jsonl | Last 100 messages, outgoing clipped except last 3 |
+| Recent chat | chat.jsonl | Recent chat with explicit speaker labels |
 | Dialogue history | dialogue_blocks.json | Auto-consolidated every ~100 msgs (consolidator.py) |
-| Execution reflections | task_reflections.jsonl | Last 10 in context, post-task error analysis |
+| Execution reflections | task_reflections.jsonl | Post-task error analysis, queried on demand |
 | Pattern register | knowledge/patterns.md | Recurring error patterns extracted from reflections |
 | Scratchpad | scratchpad.md | Working notes, persists across sessions |
 | Identity | identity.md | Self-identity manifest (grows, not rewritten — P7) |

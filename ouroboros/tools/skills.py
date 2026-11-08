@@ -1,76 +1,79 @@
-"""Skills system — dynamic context loading by domain.
-
-skill_load(name) writes the skill name to active_skills in state.json.
-context.py Block 1 then picks up active_skills and injects the
-corresponding prompts/skills/{name}.md file into the next LLM round.
-
-Skills are task-scoped: active_skills is reset to [] on every task_done.
-"""
-
+"""Load local instruction snapshots into the current task's context."""
 from __future__ import annotations
 
-import json
 import logging
-import os
-import pathlib
+import re
 from typing import List
 
-from ouroboros.tools.registry import ToolEntry, ToolContext
+from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
-
-# Relative to repo_dir
 _SKILLS_DIR = "prompts/skills"
+_SKILL_HEADER = "## Task skill: "
+
+
+def _skill_blocks(messages: list) -> dict[str, str]:
+    system = next((message for message in messages if message.get("role") == "system"), {})
+    blocks = system.get("content")
+    if not isinstance(blocks, list):
+        return {}
+    skills = {}
+    for block in blocks:
+        text = block.get("text", "") if isinstance(block, dict) else ""
+        if isinstance(text, str) and text.startswith(_SKILL_HEADER):
+            heading, separator, body = text.partition("\n\n")
+            if separator:
+                skills[heading[len(_SKILL_HEADER):]] = body
+    return skills
+
+
+def restore_task_skills(ctx: ToolContext, messages: list) -> None:
+    # The checkpoint has the original bytes even if the file has since changed.
+    ctx.active_skills = _skill_blocks(messages)
+
+
+def attach_task_skills(ctx: ToolContext, messages: list) -> None:
+    if not ctx.active_skills:
+        return
+    attached = _skill_blocks(messages)
+    extra = [
+        {"type": "text", "text": f"{_SKILL_HEADER}{name}\n\n{body}"}
+        for name, body in ctx.active_skills.items() if name not in attached
+    ]
+    if not extra:
+        return
+    system = next((message for message in messages if message.get("role") == "system"), None)
+    if system is None:
+        messages.insert(0, {"role": "system", "content": extra})
+        return
+    content = system.get("content", "")
+    blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
+    system["content"] = [*blocks, *extra]
 
 
 def _skill_load(ctx: ToolContext, name: str) -> str:
-    """Load a skill into active context for this task."""
-    if not name or not isinstance(name, str):
+    if not isinstance(name, str) or not name.strip():
         return "⚠️ skill_load: name must be a non-empty string."
-
-    # Sanitize: only alphanumeric, dash, underscore
-    import re
-    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$', name.strip()):
-        return f"⚠️ skill_load: invalid name '{name}'. Use alphanumeric, dash, underscore only."
-
     name = name.strip()
-
-    # Check that the skill file exists
-    skill_path = ctx.repo_dir / _SKILLS_DIR / f"{name}.md"
-    if not skill_path.exists():
-        # List available skills so the agent can pick the right one
-        available = _list_skills(ctx)
-        return (
-            f"⚠️ skill_load: skill '{name}' not found at {skill_path}.\n"
-            f"Available skills:\n{available}"
-        )
-
-    # Update state.json: add name to active_skills (dedup)
-    state_path = ctx.drive_root / "state" / "state.json"
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", name):
+        return "⚠️ skill_load: invalid skill name."
+    if name in ctx.active_skills:
+        return f"✅ Skill '{name}' is already attached to this task."
+    root = (ctx.repo_dir / _SKILLS_DIR).resolve()
+    skill_path = (root / f"{name}.md").resolve()
+    if skill_path.parent != root:
+        return "⚠️ skill_load: skill path is outside the local skill directory."
     try:
-        from supervisor.state import load_state, save_state
-        st = load_state()
-        current: List[str] = list(st.get("active_skills") or [])
-        if name not in current:
-            current.append(name)
-        st["active_skills"] = current
-        save_state(st)
-    except Exception as e:
-        log.warning("skill_load: failed to update state: %s", e, exc_info=True)
-        return f"⚠️ skill_load: failed to update state: {e}"
-
-    # Return preview of the skill header (first 3 non-empty lines)
-    try:
-        text = skill_path.read_text(encoding="utf-8")
-        preview_lines = [l for l in text.splitlines() if l.strip()][:3]
-        preview = "\n".join(preview_lines)
-    except Exception:
-        preview = "(could not read preview)"
-
-    return (
-        f"✅ Skill '{name}' loaded. It will appear in context from the next round.\n\n"
-        f"Preview:\n{preview}"
-    )
+        body = skill_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return f"⚠️ skill_load: skill '{name}' not found. Use skill_list or the skill map."
+    except (OSError, UnicodeError):
+        log.warning("Could not read skill %s", name, exc_info=True)
+        return f"⚠️ skill_load: skill '{name}' could not be read."
+    if not body.strip():
+        return f"⚠️ skill_load: skill '{name}' is empty."
+    ctx.active_skills[name] = body
+    return f"✅ Skill '{name}' loaded. Its full instructions join the next request for this task."
 
 
 def _skill_list(ctx: ToolContext) -> str:
@@ -116,20 +119,15 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("skill_load", {
             "name": "skill_load",
             "description": (
-                "Load a skill (domain-specific context block) for the current task. "
-                "The skill file from prompts/skills/{name}.md will be injected into "
-                "the LLM context starting from the NEXT round. "
-                "Skills are task-scoped: automatically cleared on task completion. "
-                "Call this in the first round when the task touches a known domain "
-                "(e.g. '3xui', 'ssh-servers', 'vpn'). "
-                "Check the skills map in the system prompt to know what's available."
+                "Select a skill from the map based on the work at hand. Its full text is attached "
+                "from the next request through the end of this task. Call when it becomes relevant."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Skill name (alphanumeric, dash, underscore). E.g. '3xui', 'ssh-servers', 'vpn'",
+                        "description": "Exact skill name from the map or skill_list.",
                     },
                 },
                 "required": ["name"],

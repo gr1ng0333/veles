@@ -133,32 +133,39 @@ class Memory:
 
     # --- JSONL tail reading ---
 
-    def read_jsonl_tail(self, log_name: str, max_entries: int = 100) -> List[Dict[str, Any]]:
-        """Read the last max_entries records from a JSONL file."""
+    def read_jsonl_tail(
+        self, log_name: str, max_entries: int = 100, *, chat_id: int | str | None = None,
+    ) -> List[Dict[str, Any]]:
+        """Read recent records, optionally scoped to a chat. Legacy rows may lack a chat ID."""
         path = self.logs_path(log_name)
         if not path.exists():
             return []
         try:
-            lines = path.read_text(encoding="utf-8").strip().split("\n")
-            tail = lines[-max_entries:] if max_entries < len(lines) else lines
+            lines = path.read_text(encoding="utf-8").splitlines()
             entries = []
-            for line in tail:
-                line = line.strip()
-                if not line:
-                    continue
+            for line in reversed(lines):
+                if len(entries) >= max_entries:
+                    break
                 try:
-                    entries.append(json.loads(line))
-                except Exception:
-                    log.debug(f"Failed to parse JSON line in read_jsonl_tail: {line[:100]}", exc_info=True)
+                    entry = json.loads(line)
+                except ValueError:
                     continue
-            return entries
-        except Exception:
+                if not isinstance(entry, dict):
+                    continue
+                if chat_id is not None and entry.get("chat_id") is not None:
+                    if str(entry["chat_id"]) != str(chat_id):
+                        continue
+                entries.append(entry)
+            return entries[::-1]
+        except (OSError, UnicodeError):
             log.warning(f"Failed to read JSONL tail from {log_name}", exc_info=True)
             return []
 
     # --- Log summarization ---
 
-    def summarize_chat(self, entries: List[Dict[str, Any]]) -> str:
+    def summarize_chat(
+        self, entries: List[Dict[str, Any]], *, max_chars: int | None = None, full_messages: int = 0,
+    ) -> str:
         if not entries:
             return ""
         recent = entries[-100:]
@@ -171,19 +178,27 @@ class Memory:
         lines = []
         for i, e in enumerate(recent):
             dir_raw = chat_direction(e)
-            ts_full = e.get("ts", "")
-            ts_hhmm = ts_full[11:16] if len(ts_full) >= 16 else ""
+            timestamp = str(e.get("ts") or "")[:16].replace("T", " ")
             raw_text = str(e.get("text", ""))
             if dir_raw == "system":
                 entry_type = str(e.get("type", "")).strip() or "system"
-                lines.append(f"📋 {ts_hhmm} [{entry_type}] {raw_text}")
+                lines.append(f"📋 {timestamp} [{entry_type}] " + raw_text.replace("\n", "\n  "))
                 continue
             direction = {"out": "→", "in": "←"}.get(dir_raw, "?")
-            if dir_raw in ("out", "outgoing"):
-                text = raw_text if i in recent_outgoing else short(raw_text, 800)
+            if dir_raw == "out":
+                full = i in recent_outgoing or i >= len(recent) - full_messages
+                text = raw_text if full else short(raw_text, 800)
             else:
                 text = raw_text  # never truncate creator's messages
-            lines.append(f"{direction} {ts_hhmm} {text}")
+            lines.append(f"{direction} {timestamp} " + text.replace("\n", "\n  "))
+        if max_chars is not None:
+            used = 0
+            for count, line in enumerate(reversed(lines)):
+                used += len(line) + 1
+                if count >= full_messages and used > max_chars:
+                    lines = lines[-count:] if count else []
+                    lines.insert(0, "[Earlier messages are available via chat_history.]")
+                    break
         return "\n".join(lines)
 
     def summarize_progress(self, entries: List[Dict[str, Any]], limit: int = 15) -> str:

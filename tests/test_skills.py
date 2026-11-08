@@ -1,4 +1,4 @@
-"""Tests for skills system step 1: skill_load tool + active_skills state management."""
+"""Tests for local task-scoped skill loading."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import pytest
 class _FakeCtx:
     def __init__(self, tmp_path: pathlib.Path):
         self.drive_root = tmp_path / "drive"
+        self.active_skills = {}
         self.repo_dir = tmp_path / "repo"
         (self.drive_root / "state").mkdir(parents=True)
         (self.repo_dir / "prompts" / "skills").mkdir(parents=True)
@@ -37,28 +38,18 @@ class _FakeCtx:
 # ---------------------------------------------------------------------------
 
 def test_skill_load_success(tmp_path):
-    """skill_load should update active_skills in state and return confirmation."""
+    """skill_load reads the local file into the current task only."""
     from ouroboros.tools.skills import _skill_load
 
     ctx = _FakeCtx(tmp_path)
+    result = _skill_load(ctx, "test-skill")
+    assert "✅" in result, f"Expected success, got: {result}"
+    assert "test-skill" in result
 
-    # Patch supervisor.state to use our fake drive_root
-    import supervisor.state as ss
-    orig_state_path = ss.STATE_PATH
-    ss.STATE_PATH = ctx.drive_root / "state" / "state.json"
-    ss.STATE_LOCK_PATH = ctx.drive_root / "locks" / "state.lock"
-    (ctx.drive_root / "locks").mkdir(exist_ok=True)
-
-    try:
-        result = _skill_load(ctx, "test-skill")
-        assert "✅" in result, f"Expected success, got: {result}"
-        assert "test-skill" in result
-
-        # Verify state was updated
-        state = json.loads((ctx.drive_root / "state" / "state.json").read_text())
-        assert "test-skill" in state.get("active_skills", [])
-    finally:
-        ss.STATE_PATH = orig_state_path
+    # Legacy shared state stays untouched
+    state = json.loads((ctx.drive_root / "state" / "state.json").read_text())
+    assert not state["active_skills"]
+    assert "test-skill" in ctx.active_skills
 
 
 def test_skill_load_not_found(tmp_path):
@@ -66,19 +57,9 @@ def test_skill_load_not_found(tmp_path):
     from ouroboros.tools.skills import _skill_load
 
     ctx = _FakeCtx(tmp_path)
-
-    import supervisor.state as ss
-    orig_state_path = ss.STATE_PATH
-    ss.STATE_PATH = ctx.drive_root / "state" / "state.json"
-    ss.STATE_LOCK_PATH = ctx.drive_root / "locks" / "state.lock"
-    (ctx.drive_root / "locks").mkdir(exist_ok=True)
-
-    try:
-        result = _skill_load(ctx, "nonexistent")
-        assert "⚠️" in result
-        assert "nonexistent" in result
-    finally:
-        ss.STATE_PATH = orig_state_path
+    result = _skill_load(ctx, "nonexistent")
+    assert "⚠️" in result
+    assert "nonexistent" in result
 
 
 def test_skill_load_invalid_name(tmp_path):
@@ -96,22 +77,13 @@ def test_skill_load_dedup(tmp_path):
     from ouroboros.tools.skills import _skill_load
 
     ctx = _FakeCtx(tmp_path)
+    _skill_load(ctx, "test-skill")
+    _skill_load(ctx, "test-skill")
 
-    import supervisor.state as ss
-    orig_state_path = ss.STATE_PATH
-    ss.STATE_PATH = ctx.drive_root / "state" / "state.json"
-    ss.STATE_LOCK_PATH = ctx.drive_root / "locks" / "state.lock"
-    (ctx.drive_root / "locks").mkdir(exist_ok=True)
-
-    try:
-        _skill_load(ctx, "test-skill")
-        _skill_load(ctx, "test-skill")
-
-        state = json.loads((ctx.drive_root / "state" / "state.json").read_text())
-        skills = state.get("active_skills", [])
-        assert skills.count("test-skill") == 1
-    finally:
-        ss.STATE_PATH = orig_state_path
+    state = json.loads((ctx.drive_root / "state" / "state.json").read_text())
+    assert not state["active_skills"]
+    skills = list(ctx.active_skills)
+    assert skills.count("test-skill") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -140,28 +112,6 @@ def test_skill_list_empty(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Tests: active_skills default in state
-# ---------------------------------------------------------------------------
-
-def test_active_skills_default():
-    """ensure_state_defaults must set active_skills to []."""
-    from supervisor.state import ensure_state_defaults
-    st = ensure_state_defaults({})
-    assert "active_skills" in st
-    assert st["active_skills"] == []
-
-
-def test_active_skills_preserved():
-    """ensure_state_defaults must not overwrite existing active_skills."""
-    from supervisor.state import ensure_state_defaults
-    st = ensure_state_defaults({"active_skills": ["3xui", "vpn"]})
-    assert st["active_skills"] == ["3xui", "vpn"]
-
-
-# ---------------------------------------------------------------------------
-# Tests: tool registration
-# ---------------------------------------------------------------------------
-
 def test_skills_tools_registered():
     """get_tools() must return skill_load and skill_list."""
     from ouroboros.tools.skills import get_tools

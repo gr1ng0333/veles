@@ -30,6 +30,8 @@ from ouroboros.loop_copilot import (
 from ouroboros.loop_fallback import call_llm_with_fallback as _call_llm_with_fallback
 from ouroboros.model_modes import execution_style_for_active_mode, get_runtime_diagnostics, max_rounds_for_active_mode, tools_enabled_for_active_mode
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.tools.skills import attach_task_skills, restore_task_skills
+from ouroboros.tools.tool_discovery import bind_tool_discovery
 from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.task_execution import set_outcome
 from ouroboros.antistagnation import (
@@ -43,7 +45,6 @@ from ouroboros.antistagnation import (
 )
 from ouroboros.loop import (
     log,
-    _setup_dynamic_tools,
     _StatefulToolExecutor,
     _maybe_inject_self_check,
     _call_llm_with_retry,
@@ -724,6 +725,7 @@ def _process_llm_response_or_continue(
         emit_progress,
         transport=model_transport(state["active_model"]),
     )
+    attach_task_skills(tools._ctx, messages)
     state["recent_progress"], state["no_progress_rounds"] = _update_progress_windows(
         recent_progress=state["recent_progress"],
         no_progress_rounds=state["no_progress_rounds"],
@@ -877,21 +879,17 @@ def run_llm_loop_impl(
     saved = checkpoint.data if checkpoint and checkpoint.data.get("phase") in ("ready", "response_ready") else None
     if saved:
         messages[:] = saved["messages"]
+        restore_task_skills(tools._ctx, messages)
         for name, value in saved.get("tool_context", {}).items():
             setattr(tools._ctx, name, value)
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
     max_rounds, anti, round_idx, no_progress_rounds, recent_progress, stagnation_check_injected, task_round_warn_emitted = _init_antistagnation_state()
     max_rounds = _copilot_max_rounds_cap(max_rounds, active_model)
-    from ouroboros.tools import tool_discovery as _td
-
-    _td.set_registry(tools)
     tool_schemas = saved["loop"]["tool_schemas"] if saved else tools.schemas(core_only=True)
-    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, [] if saved else messages)
-    if saved:
-        _enabled_extra_tools.update(t.get("function", {}).get("name") for t in tool_schemas)
     if not tools_enabled_for_active_mode():
         tool_schemas = []
+    bind_tool_discovery(tools, tool_schemas)
     tools._ctx.event_queue = event_queue
     tools._ctx.task_id = task_id
 

@@ -1,6 +1,6 @@
 # Skills Map
 
-Available skills — load with `skill_load("name")` in the first round when relevant.
+Choose skills with `skill_load("name")` when their guidance would help with the goal.
 This map is always in context. Skill files are loaded on demand only.
 
 | Name | File | When to load |
@@ -10,10 +10,6 @@ This map is always in context. Skill files are loaded on demand only.
 | `copilot-tgbot` | `prompts/skills/copilot-tgbot.md` | Working on copilot-telegram-bot project: bot.py, storage.py, web.py, billing trick, SQLite schema |
 | `ouro-fitness-bot` | `prompts/skills/ouro-fitness-bot.md` | Working on ouro-fitness-bot: FatSecret, daemon, calisthenics program, deploy on server |
 | `proxy-deploy-bot` | `prompts/skills/proxy-deploy-bot.md` | Working on proxy-deploy-bot: deployer pipeline, 3x-ui provider, diagnostics, SNI, Gemini integration, templates |
-
-## Protocol
-
-At the start of every task, check this map.
-If the task touches a domain listed here — call `skill_load("name")` in the first round.
-The skill content will be available from the second round onward.
-Skills auto-reset after each task. Load them fresh each time.
+| `veles-development` | `prompts/skills/veles-development.md` | Veles code, architecture, reviews, tests, evolution, releases and deployment |
+| `veles-reference` | `prompts/skills/veles-reference.md` | Recovering earlier decisions, inspecting context, tracing failures or resumed tasks |
+| `telegram-account` | `prompts/skills/telegram-account.md` | Working with Veles's personal Telegram accounts, inbox, channels or Telethon session |

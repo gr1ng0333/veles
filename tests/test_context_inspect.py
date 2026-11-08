@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import pathlib
 
 import pytest
 
@@ -11,10 +10,10 @@ from ouroboros.tools.registry import ToolContext
 
 
 @pytest.fixture
-def ctx():
+def ctx(tmp_path):
     return ToolContext(
-        repo_dir=pathlib.Path("/opt/veles"),
-        drive_root=pathlib.Path("/opt/veles-data"),
+        repo_dir=tmp_path / "repo",
+        drive_root=tmp_path / "drive",
     )
 
 
@@ -39,8 +38,7 @@ def test_basic_output(ctx):
 
     # Required top-level keys
     assert "grand_total_est" in data
-    assert "soft_cap_tokens" in data
-    assert "soft_cap_usage_pct" in data
+    assert data["startup_target_tokens"] > 0
     assert "dominant_block" in data
     assert "blocks" in data
     assert "note" in data
@@ -64,7 +62,7 @@ def test_block_structure(ctx):
         assert bdata["tokens_est"] > 0, f"{bname} has 0 tokens"
 
 
-def test_evolution_task_includes_readme(ctx):
+def test_evolution_and_user_share_static_startup(ctx):
     tool = get_tools()[0]
 
     result_user = tool.handler(ctx, task_type="user")
@@ -79,10 +77,8 @@ def test_evolution_task_includes_readme(ctx):
     sections_user = {s["section"] for s in b0_user["sections"]}
     sections_evo = {s["section"] for s in b0_evo["sections"]}
 
-    # evolution should include README.md in block0
-    assert "README.md" in sections_evo
-    # total tokens should be larger for evolution
-    assert b0_evo["tokens_est"] >= b0_user["tokens_est"]
+    assert sections_evo == sections_user
+    assert "README.md" not in sections_evo
 
 
 def test_total_is_sum_of_blocks(ctx):
@@ -92,8 +88,7 @@ def test_total_is_sum_of_blocks(ctx):
 
     blocks = data["blocks"]
     block_sum = sum(b["tokens_est"] for b in blocks.values())
-    # grand_total includes small user message stub (+10)
-    assert abs(data["grand_total_est"] - block_sum) <= 20
+    assert data["grand_total_est"] == block_sum
 
 
 def test_preview_off_by_default(ctx):

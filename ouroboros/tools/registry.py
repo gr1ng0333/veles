@@ -48,6 +48,9 @@ class ToolContext:
     active_model_override: Optional[str] = None
     active_effort_override: Optional[str] = None
 
+    # Local instruction snapshots selected by the model for this task.
+    active_skills: Dict[str, str] = field(default_factory=dict)
+
     # Per-task browser state
     browser_state: BrowserState = field(default_factory=BrowserState)
 
@@ -182,21 +185,8 @@ TOOL_TIMEOUT_OVERRIDES: Dict[str, int] = {
 
 
 CORE_TOOL_NAMES = {
-    "repo_read", "repo_list", "repo_write_commit", "repo_commit_push",
-    "drive_read", "drive_list", "drive_write",
-    "run_shell",
-    "git_status", "git_diff",
-    "schedule_task", "wait_for_task", "get_task_result",
-    "update_scratchpad", "update_identity",
-    "chat_history", "web_search", "academic_search",
-    "send_owner_message", "send_document", "send_local_file", "switch_model",
-    "request_restart", "promote_to_stable",
-    "knowledge_read", "knowledge_write",
-    "browse_page", "browser_action", "analyze_screenshot", "solve_simple_captcha",
-    "send_browser_screenshot",
-    # Plan management
-    "plan_create", "plan_approve", "plan_reject", "plan_step_done",
-    "plan_update", "plan_complete", "plan_status",
+    "repo_read", "drive_read", "chat_history", "memory_search", "knowledge_read",
+    "update_identity", "update_scratchpad", "skill_load", "skill_list", "compact_context",
 }
 
 
@@ -293,15 +283,6 @@ class ToolRegistry:
         for e in self._entries.values():
             if e.name in CORE_TOOL_NAMES or e.name in ("list_available_tools", "enable_tools"):
                 result.append({"type": "function", "function": e.schema, "name": e.name})
-        return result
-
-    def list_non_core_tools(self) -> List[Dict[str, str]]:
-        """Return name+description of all non-core tools."""
-        result = []
-        for e in self._entries.values():
-            if e.name not in CORE_TOOL_NAMES:
-                desc = e.schema.get("description", "No description")
-                result.append({"name": e.name, "description": desc})
         return result
 
     def get_schema_by_name(self, name: str) -> Optional[Dict[str, Any]]:

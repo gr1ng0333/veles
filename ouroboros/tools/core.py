@@ -42,18 +42,8 @@ def _list_dir(root: pathlib.Path, rel: str, max_entries: int = 500) -> List[str]
     return items
 
 
-def _read_from(ctx: ToolContext, path: str, which: str) -> str:
-    return read_text(getattr(ctx, which)(path))
-
-
-def _drive_read(ctx: ToolContext, path: str, offset: int = 0, revision: str | None = None) -> str:
-    target = ctx.drive_path(path)
-    if not protected_memory_tool(ctx.drive_root, target):
-        if offset or revision is not None:
-            return "⚠️ Revision-bound paging is available for identity, scratchpad and their journals."
-        return read_text(target)
-
-    raw = target.read_bytes()
+def _read_page(path: pathlib.Path, offset: int, revision: str | None) -> str:
+    raw = path.read_bytes()
     current = sha256(raw).hexdigest()
     if revision is not None and revision != current:
         return "⚠️ Revision conflict. Start reading again at offset 0."
@@ -62,10 +52,23 @@ def _drive_read(ctx: ToolContext, path: str, offset: int = 0, revision: str | No
     text = raw.decode("utf-8")
     if type(offset) is not int or not 0 <= offset <= len(text):
         return f"⚠️ Offset must be between 0 and {len(text)} characters."
-    # Keep the page and its continuation metadata within Codex's tool result cap.
     end = min(offset + 2000, len(text))
     next_offset = end if end < len(text) else "end"
     return f"revision={current}\nchars={len(text)} offset={offset} next_offset={next_offset}\n\n{text[offset:end]}"
+
+
+def _repo_read(ctx: ToolContext, path: str, offset: int | None = None, revision: str | None = None) -> str:
+    target = ctx.repo_path(path)
+    if offset is None and revision is None:
+        return read_text(target)
+    return _read_page(target, 0 if offset is None else offset, revision)
+
+
+def _drive_read(ctx: ToolContext, path: str, offset: int | None = None, revision: str | None = None) -> str:
+    target = ctx.drive_path(path)
+    if offset is None and revision is None and not protected_memory_tool(ctx.drive_root, target):
+        return read_text(target)
+    return _read_page(target, 0 if offset is None else offset, revision)
 
 
 def _list_from(ctx: ToolContext, dir: str = ".", max_entries: int = 500, root_attr: str = "repo_dir") -> str:
@@ -462,9 +465,13 @@ def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("repo_read", {
             "name": "repo_read",
-            "description": "Read a UTF-8 text file from the GitHub repo (relative path).",
-            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        }, partial(_read_from, which="repo_path")),
+            "description": "Read a repository file. For a long reference, start at offset=0 and follow next_offset with the returned revision.",
+            "parameters": {"type": "object", "properties": {
+                "path": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0, "description": "Optional page offset in characters."},
+                "revision": {"type": "string", "description": "Revision from the first page."},
+            }, "required": ["path"]},
+        }, _repo_read),
         ToolEntry("repo_list", {
             "name": "repo_list",
             "description": "List files under a repo directory (relative path).",
@@ -476,10 +483,10 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("drive_read", {
             "name": "drive_read",
             "description": "Read a UTF-8 file from the data directory. Identity, scratchpad and their journals "
-                           "return a revision and a page. Follow next_offset with the same revision until end.",
+                           "return pages by default. For other long files pass offset=0. Follow next_offset with the same revision.",
             "parameters": {"type": "object", "properties": {
                 "path": {"type": "string"},
-                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Memory page offset in characters."},
+                "offset": {"type": "integer", "minimum": 0, "description": "Optional page offset in characters."},
                 "revision": {"type": "string", "description": "Revision returned by the first memory page."},
             }, "required": ["path"]},
         }, _drive_read),

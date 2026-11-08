@@ -542,65 +542,6 @@ def _maybe_inject_self_check(
     messages.append({"role": "system", "content": reminder})
     emit_progress(f"🔄 Checkpoint {checkpoint_num} at round {round_idx}: ~{ctx_tokens} tokens, ${task_cost:.2f} spent")
 
-def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
-    """
-    Wire tool-discovery handlers onto an existing tool_schemas list.
-
-    Creates closures for list_available_tools / enable_tools, registers them
-    as handler overrides, and injects a system message advertising non-core
-    tools.  Mutates tool_schemas in-place (via list.append) when tools are
-    enabled, so the caller's reference stays live.
-
-    Returns (tool_schemas, enabled_extra_set).
-    """
-    enabled_extra: set = set()
-
-    def _handle_list_tools(ctx=None, **kwargs):
-        non_core = tools_registry.list_non_core_tools()
-        if not non_core:
-            return "All tools are already in your active set."
-        lines = [f"**{len(non_core)} additional tools available** (use `enable_tools` to activate):\n"]
-        for t in non_core:
-            lines.append(f"- **{t['name']}**: {t['description'][:120]}")
-        return "\n".join(lines)
-
-    def _handle_enable_tools(ctx=None, tools: str = "", **kwargs):
-        names = [n.strip() for n in tools.split(",") if n.strip()]
-        enabled, not_found = [], []
-        for name in names:
-            schema = tools_registry.get_schema_by_name(name)
-            if schema and name not in enabled_extra:
-                tool_schemas.append(schema)
-                enabled_extra.add(name)
-                enabled.append(name)
-            elif name in enabled_extra:
-                enabled.append(f"{name} (already active)")
-            else:
-                not_found.append(name)
-        parts = []
-        if enabled:
-            parts.append(f"✅ Enabled: {', '.join(enabled)}")
-        if not_found:
-            parts.append(f"❌ Not found: {', '.join(not_found)}")
-        return "\n".join(parts) if parts else "No tools specified."
-
-    tools_registry.override_handler("list_available_tools", _handle_list_tools)
-    tools_registry.override_handler("enable_tools", _handle_enable_tools)
-
-    non_core_count = len(tools_registry.list_non_core_tools())
-    if non_core_count > 0:
-        messages.append({
-            "role": "system",
-            "content": (
-                f"Note: You have {len(tool_schemas)} core tools loaded. "
-                f"There are {non_core_count} additional tools available "
-                f"(use `list_available_tools` to see them, `enable_tools` to activate). "
-                f"Core tools cover most tasks. Enable extras only when needed."
-            ),
-        })
-
-    return tool_schemas, enabled_extra
-
 def _drain_incoming_messages(
     messages: List[Dict[str, Any]],
     incoming_messages: queue.Queue,

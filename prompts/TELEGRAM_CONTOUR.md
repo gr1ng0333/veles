@@ -1,6 +1,6 @@
 # Telegram Contour — Veles Personal Account
 
-This file is loaded into Block 0 (static context). Always present regardless of model.
+Reference for the telegram-account skill.
 
 ---
 

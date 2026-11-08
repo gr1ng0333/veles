@@ -185,6 +185,8 @@ def _load_dialogue_blocks(drive_root: pathlib.Path) -> List[_Chunk]:
         date = (block.get("ts") or "")[:10]
         block_range = block.get("range", "")
         src = f"dialogue/{block_range}" if block_range else "dialogue"
+        if not block.get("authorship_schema"):
+            src += " (unverified authorship)"
         chunks.extend(_split_into_chunks(content, src, date))
     return chunks
 

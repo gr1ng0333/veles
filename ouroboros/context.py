@@ -2,62 +2,23 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import os
 import pathlib
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.utils import (
-    utc_now_iso, read_text, clip_text, estimate_tokens, get_git_info,
+    utc_now_iso, read_text, estimate_tokens, get_git_info,
 )
 from ouroboros.memory import Memory
 
 log = logging.getLogger(__name__)
 
-RECENT_LOG_FALLBACK_MAX_AGE = timedelta(hours=6)
-RECENT_REFLECTION_MAX_AGE = timedelta(days=14)
+STARTUP_TARGET_TOKENS = 35_000
+RECENT_CHAT_MAX_CHARS = 24_000
+RECENT_CHAT_FULL_MESSAGES = 32
 
-
-def _parse_entry_time(entry: Dict[str, Any]) -> Optional[datetime]:
-    """Parse a JSONL timestamp into UTC datetime when possible."""
-    raw = str(entry.get("ts") or entry.get("timestamp") or "").strip()
-    if not raw:
-        return None
-    try:
-        if raw.endswith("Z"):
-            raw = raw[:-1] + "+00:00"
-        dt = datetime.fromisoformat(raw)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-
-def _filter_fresh_entries(
-    entries: List[Dict[str, Any]],
-    *,
-    max_age: timedelta,
-    now: Optional[datetime] = None,
-) -> List[Dict[str, Any]]:
-    """Keep entries recent enough to be shown as live context.
-
-    Entries without parseable timestamps are kept: old log formats should not
-    vanish silently. Timestamped entries older than max_age are excluded so a
-    stale tail cannot masquerade as "Recent progress" after a long quiet period.
-    """
-    if not entries:
-        return []
-    now = now or datetime.now(timezone.utc)
-    fresh: List[Dict[str, Any]] = []
-    for entry in entries:
-        ts = _parse_entry_time(entry)
-        if ts is None or now - ts <= max_age:
-            fresh.append(entry)
-    return fresh
 
 def _build_user_content(task: Dict[str, Any]) -> Any:
     """Build user message content. Images are auto-described via Codex VLM.
@@ -164,117 +125,34 @@ def _build_runtime_section(env: Any, task: Dict[str, Any]) -> str:
     runtime_ctx = json.dumps(runtime_data, ensure_ascii=False, indent=2)
     return "## Runtime context\n\n" + runtime_ctx
 
-def _build_memory_sections(memory: Memory) -> List[str]:
-    """Build scratchpad, identity, active plan, dialogue summary sections."""
-    sections = []
-
-    scratchpad_raw = memory.load_scratchpad()
-    sections.append("## Scratchpad\n\n" + clip_text(scratchpad_raw, 90000))
-
-    identity_raw = memory.load_identity()
-    sections.append("## Identity\n\n" + clip_text(identity_raw, 80000))
-
-    # Active or draft plan (if any) — draft must be visible across model switches
+def _build_memory_sections(memory: Memory) -> List[Tuple[str, str]]:
+    sections = [
+        ("Identity", "## Identity\n\n" + memory.load_identity()),
+        ("Scratchpad", "## Scratchpad\n\n" + memory.load_scratchpad()),
+    ]
+    # Keep an unfinished owner plan in view across tasks and model changes.
     try:
         from ouroboros.plans import get_active_plan, get_draft_plan, format_plan_for_context
-        plan_in_context = get_active_plan(memory.drive_root) or get_draft_plan(memory.drive_root)
-        if plan_in_context:
-            sections.append(format_plan_for_context(plan_in_context))
+        plan = get_active_plan(memory.drive_root) or get_draft_plan(memory.drive_root)
+        if plan:
+            sections.append(("Current plan", format_plan_for_context(plan)))
     except Exception:
-        pass
-
-    # Dialogue history (block-based consolidator replaces legacy dialogue_summary.md)
-    try:
-        from ouroboros.consolidator import DialogueConsolidator
-        consolidator = DialogueConsolidator(drive_root=memory.drive_root, llm_client=None)
-        blocks_text = consolidator.render_for_context()
-        if blocks_text.strip():
-            sections.append("## Dialogue History\n\n" + clip_text(blocks_text, 20000))
-        else:
-            # Fallback to legacy dialogue_summary.md during migration
-            summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
-            if summary_path.exists():
-                summary_text = read_text(summary_path)
-                if summary_text.strip():
-                    sections.append("## Dialogue Summary\n\n" + clip_text(summary_text, 20000))
-    except Exception:
-        # Ultimate fallback if consolidator import fails
-        summary_path = memory.drive_root / "memory" / "dialogue_summary.md"
-        if summary_path.exists():
-            summary_text = read_text(summary_path)
-            if summary_text.strip():
-                sections.append("## Dialogue Summary\n\n" + clip_text(summary_text, 20000))
-
+        log.debug("Could not load current plan", exc_info=True)
     return sections
 
-def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[str]:
-    """Build recent chat, recent progress, recent tools, recent events sections."""
-    sections = []
 
-    chat_summary = memory.summarize_chat(
-        memory.read_jsonl_tail("chat.jsonl", 200))
-    if chat_summary:
-        sections.append("## Recent chat\n\n" + chat_summary)
-
-    progress_entries = memory.read_jsonl_tail("progress.jsonl", 200)
-    if task_id:
-        filtered = [e for e in progress_entries if str(e.get("task_id", "")).strip() == task_id]
-        progress_entries = filtered if filtered else _filter_fresh_entries(
-            progress_entries[-5:], max_age=RECENT_LOG_FALLBACK_MAX_AGE
-        )
-    else:
-        progress_entries = _filter_fresh_entries(progress_entries, max_age=RECENT_LOG_FALLBACK_MAX_AGE)
-    progress_summary = memory.summarize_progress(progress_entries, limit=15)
-    if progress_summary:
-        sections.append("## Recent progress\n\n" + progress_summary)
-
-    tools_entries = memory.read_jsonl_tail("tools.jsonl", 200)
-    if task_id:
-        filtered = [e for e in tools_entries if str(e.get("task_id", "")).strip() == task_id]
-        tools_entries = filtered if filtered else _filter_fresh_entries(
-            tools_entries[-5:], max_age=RECENT_LOG_FALLBACK_MAX_AGE
-        )
-    else:
-        tools_entries = _filter_fresh_entries(tools_entries, max_age=RECENT_LOG_FALLBACK_MAX_AGE)
-    tools_summary = memory.summarize_tools(tools_entries)
-    if tools_summary:
-        sections.append("## Recent tools\n\n" + tools_summary)
-
-    events_entries = memory.read_jsonl_tail("events.jsonl", 200)
-    if task_id:
-        filtered = [e for e in events_entries if str(e.get("task_id", "")).strip() == task_id]
-        events_entries = filtered if filtered else _filter_fresh_entries(
-            events_entries[-5:], max_age=RECENT_LOG_FALLBACK_MAX_AGE
-        )
-    else:
-        events_entries = _filter_fresh_entries(events_entries, max_age=RECENT_LOG_FALLBACK_MAX_AGE)
-    events_summary = memory.summarize_events(events_entries)
-    if events_summary:
-        sections.append("## Recent events\n\n" + events_summary)
-
-    supervisor_summary = memory.summarize_supervisor(
-        _filter_fresh_entries(
-            memory.read_jsonl_tail("supervisor.jsonl", 200),
-            max_age=RECENT_LOG_FALLBACK_MAX_AGE,
-        )
+def _build_recent_chat(memory: Memory, chat_id: int | str | None) -> str:
+    entries = memory.read_jsonl_tail("chat.jsonl", 100, chat_id=chat_id)
+    history = memory.summarize_chat(
+        entries, max_chars=RECENT_CHAT_MAX_CHARS, full_messages=RECENT_CHAT_FULL_MESSAGES,
     )
-    if supervisor_summary:
-        sections.append("## Supervisor\n\n" + supervisor_summary)
+    if not history:
+        return ""
+    return ("## Recent chat\n\n"
+            "Historical messages. ← owner, → Veles, ? unknown speaker, 📋 system event. "
+            "The current request follows separately. Older messages are available via chat_history.\n\n"
+            + history)
 
-    # Execution reflections — process memory from previous tasks
-    try:
-        from ouroboros.reflection import format_recent_reflections
-        reflections_entries = _filter_fresh_entries(
-            memory.read_jsonl_tail("task_reflections.jsonl", 20),
-            max_age=RECENT_REFLECTION_MAX_AGE,
-        )
-        reflections_text = format_recent_reflections(reflections_entries, limit=10)
-        if reflections_text:
-            sections.append("## Execution reflections\n\n" + reflections_text)
-    except Exception:
-        pass
-
-    return sections
 
 def _build_health_invariants(env: Any) -> str:
     """Build health invariants section for LLM-first self-detection.
@@ -450,276 +328,41 @@ def _compute_cache_hit_rate(env: Any) -> Optional[float]:
         return None
     return total_cached / total_prompt
 
-def _build_active_skills_sections(env: Any) -> list:
-    """Load active skill files from prompts/skills/ based on state active_skills."""
-    sections = []
-    try:
-        state_path = env.drive_path('state/state.json')
-        state_data = json.loads(state_path.read_text(encoding='utf-8'))
-        active_skills = state_data.get('active_skills') or []
-        if not active_skills:
-            return sections
-        skills_dir = pathlib.Path(env.repo_path('prompts/skills'))
-        for skill_name in active_skills:
-            skill_file = skills_dir / f'{skill_name}.md'
-            if skill_file.exists():
-                content = skill_file.read_text(encoding='utf-8').strip()
-                if content:
-                    sections.append(f'## Skill: {skill_name}' + '\n\n' + content)
-            else:
-                log.debug('Skill file not found: %s', skill_file)
-    except Exception:
-        log.debug('Failed to load active skills for context', exc_info=True)
-    return sections
+def build_startup_sections(env: Any, memory: Memory, task: Dict[str, Any]) -> List[List[Tuple[str, str]]]:
+    """One initial view for ordinary tasks. The model opens extra sources as needed."""
+    static = [
+        ("Language rule", "Respond in Russian unless the owner explicitly writes in English."),
+        ("SYSTEM.md", _safe_read(env.repo_path("prompts/SYSTEM.md"), "You are Veles.")),
+        ("BIBLE.md", "## BIBLE.md\n\n" + _safe_read(env.repo_path("BIBLE.md"))),
+        ("Skill map", _safe_read(env.repo_path("prompts/skills/_map.md"))),
+    ]
+    dynamic = [
+        ("Runtime", _build_runtime_section(env, task)),
+        ("Health invariants", _build_health_invariants(env)),
+        ("Recent chat", _build_recent_chat(memory, task.get("chat_id"))),
+    ]
+    return [static, _build_memory_sections(memory), dynamic]
+
 
 def build_llm_messages(
-    env: Any,
-    memory: Memory,
-    task: Dict[str, Any],
-    review_context_builder: Optional[Any] = None,
+    env: Any, memory: Memory, task: Dict[str, Any],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """
-    Build the full LLM message context for a task.
-
-    Args:
-        env: Env instance with repo_path/drive_path helpers
-        memory: Memory instance for scratchpad/identity/logs
-        task: Task dict with id, type, text, etc.
-        review_context_builder: Optional callable for review tasks (signature: () -> str)
-
-    Returns:
-        (messages, cap_info) tuple:
-            - messages: List of message dicts ready for LLM
-            - cap_info: Dict with token trimming metadata
-    """
-    # --- Extract task type for adaptive context ---
-    task_type = str(task.get("type") or "user")
-
-    # --- Read base prompts and state ---
-    base_prompt = _safe_read(
-        env.repo_path("prompts/SYSTEM.md"),
-        fallback="You are Ouroboros. Your base prompt could not be loaded."
-    )
-    bible_md = _safe_read(env.repo_path("BIBLE.md"))
-    readme_md = _safe_read(env.repo_path("README.md"))
-    state_json = _safe_read(env.drive_path("state/state.json"), fallback="{}")
-
-    # --- Load memory ---
     memory.ensure_files()
-
-    # --- Assemble messages with 3-block prompt caching ---
-    # Block 1: Static content (SYSTEM.md + BIBLE.md + README) — cached
-    # Block 2: Semi-stable content (identity + scratchpad + knowledge) — cached
-    # Block 3: Dynamic content (state + runtime + recent logs) — uncached
-
-    # BIBLE.md always included (Constitution requires it for every decision)
-    # README.md only for evolution/review (architecture context)
-    needs_full_context = task_type in ("evolution", "review", "scheduled")
-
-    # Language rule — must come before all other instructions
-    _lang_rule = (
-        "LANGUAGE RULE: Always respond in Russian (русский язык) unless the user "
-        "explicitly writes in English. This applies to all messages, status reports, "
-        "evolution logs, and consciousness outputs. Internal tool calls and code "
-        "can remain in English.\n\n"
-    )
-
-    static_text = (
-        _lang_rule
-        + base_prompt + "\n\n"
-        + "## BIBLE.md\n\n" + clip_text(bible_md, 180000)
-    )
-
-    # Architecture map — agent needs to know the system before safety rules
-    arch_path = env.repo_path("prompts/ARCHITECTURE.md")
-    arch_text = _safe_read(arch_path, fallback="")
-    if arch_text.strip():
-        static_text += "\n\n## ARCHITECTURE.md\n\n" + clip_text(arch_text, 20000)
-
-    # Pre-commit review checklist — always visible so agent self-checks commits
-    checklists_md = _safe_read(env.repo_path("prompts/CHECKLISTS.md"), fallback="")
-    if checklists_md.strip():
-        static_text += "\n\n" + clip_text(checklists_md, 2500)
-
-    # Skills map — always visible so agent knows what to load on demand
-    skills_map_md = _safe_read(env.repo_path("prompts/skills/_map.md"), fallback="")
-    if skills_map_md.strip():
-        static_text += "\n\n" + clip_text(skills_map_md, 3000)
-
-    # Telegram contour — always in Block 0 (presence memory)
-    tg_contour_md = _safe_read(env.repo_path("prompts/TELEGRAM_CONTOUR.md"), fallback="")
-    if tg_contour_md.strip():
-        static_text += "\n\n## Telegram Contour\n\n" + clip_text(tg_contour_md, 1500)
-
-    if needs_full_context:
-        readme_limit = 2000 if task_type == "evolution" else 180000
-        static_text += "\n\n## README.md\n\n" + clip_text(readme_md, readme_limit)
-
-    # Semi-stable content: identity, scratchpad, knowledge
-    # These change ~once per task, not per round
-    semi_stable_parts = []
-    semi_stable_parts.extend(_build_memory_sections(memory))
-    semi_stable_parts.extend(_build_active_skills_sections(env))
-
-    kb_index_path = env.drive_path("memory/knowledge/_index.md")
-    if kb_index_path.exists():
-        kb_index = kb_index_path.read_text(encoding="utf-8")
-        if kb_index.strip():
-            semi_stable_parts.append("## Knowledge base\n\n" + clip_text(kb_index, 50000))
-
-    # Pattern Register — recurring error patterns from execution reflections
-    try:
-        patterns_path = env.drive_path("memory/knowledge/patterns.md")
-        if patterns_path.exists():
-            patterns_text = patterns_path.read_text(encoding="utf-8")
-            if patterns_text.strip():
-                semi_stable_parts.append(
-                    "## Known error patterns (Pattern Register)\n\n"
-                    + clip_text(patterns_text, 30000)
-                )
-    except Exception:
-        pass
-
-    semi_stable_text = "\n\n".join(semi_stable_parts)
-
-    # Dynamic content: changes every round
-    dynamic_parts = [
-        "## Drive state\n\n" + clip_text(state_json, 90000),
-        _build_runtime_section(env, task),
+    blocks = [
+        {"type": "text", "text": "\n\n".join(text for _, text in sections if text)}
+        for sections in build_startup_sections(env, memory, task)
     ]
+    blocks[0]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+    blocks[1]["cache_control"] = {"type": "ephemeral"}
+    user_content = _build_user_content(task)
+    user_parts = user_content if isinstance(user_content, list) else [{"type": "text", "text": user_content}]
+    estimated = 12 + sum(estimate_tokens(part["text"]) for part in [*blocks, *user_parts]
+                         if part.get("type") == "text")
+    return [
+        {"role": "system", "content": blocks},
+        {"role": "user", "content": user_content},
+    ], {"estimated_input_text_tokens": estimated, "startup_target_tokens": STARTUP_TARGET_TOKENS}
 
-    # Health invariants — surfaces anomalies for LLM-first self-detection (Bible P0+P3)
-    health_section = _build_health_invariants(env)
-    if health_section:
-        dynamic_parts.append(health_section)
-
-    dynamic_parts.extend(_build_recent_sections(memory, env, task_id=task.get("id", "")))
-
-    if str(task.get("type") or "") == "review" and review_context_builder is not None:
-        try:
-            review_ctx = review_context_builder()
-            if review_ctx:
-                dynamic_parts.append(review_ctx)
-        except Exception:
-            log.debug("Failed to build review context", exc_info=True)
-            pass
-
-    dynamic_text = "\n\n".join(dynamic_parts)
-
-    # Language reminder at end of prompt (recency bias)
-    _lang_rule_reminder = (
-        "\n\n---\nНАПОМИНАНИЕ: отвечай на русском языке. "
-        "Код и tool calls — на английском, всё остальное — русский.\n"
-    )
-    dynamic_text += _lang_rule_reminder
-
-    # System message with 3 content blocks for optimal caching
-    messages: List[Dict[str, Any]] = [
-        {
-            "role": "system",
-            "content": [
-                {
-                    "type": "text",
-                    "text": static_text,
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                },
-                {
-                    "type": "text",
-                    "text": semi_stable_text,
-                    "cache_control": {"type": "ephemeral"},
-                },
-                {
-                    "type": "text",
-                    "text": dynamic_text,
-                },
-            ],
-        },
-        {"role": "user", "content": _build_user_content(task)},
-    ]
-
-    # --- Soft-cap token trimming ---
-    messages, cap_info = apply_message_token_soft_cap(messages, 200000)
-
-    return messages, cap_info
-
-def apply_message_token_soft_cap(
-    messages: List[Dict[str, Any]],
-    soft_cap_tokens: int,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """
-    Trim prunable context sections if estimated tokens exceed soft cap.
-
-    Returns (pruned_messages, cap_info_dict).
-    """
-    def _estimate_message_tokens(msg: Dict[str, Any]) -> int:
-        """Estimate tokens for a message, handling multipart content."""
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            # Multipart content: sum tokens from all text blocks
-            total = 0
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    total += estimate_tokens(str(block.get("text", "")))
-            return total + 6
-        return estimate_tokens(str(content)) + 6
-
-    estimated = sum(_estimate_message_tokens(m) for m in messages)
-    info: Dict[str, Any] = {
-        "estimated_tokens_before": estimated,
-        "estimated_tokens_after": estimated,
-        "soft_cap_tokens": soft_cap_tokens,
-        "trimmed_sections": [],
-    }
-
-    if soft_cap_tokens <= 0 or estimated <= soft_cap_tokens:
-        return messages, info
-
-    # Prune log summaries from the dynamic text block in multipart system messages
-    prunable = ["## Recent chat", "## Recent progress", "## Recent tools", "## Recent events", "## Supervisor"]
-    pruned = copy.deepcopy(messages)
-    for prefix in prunable:
-        if estimated <= soft_cap_tokens:
-            break
-        for i, msg in enumerate(pruned):
-            content = msg.get("content")
-
-            # Handle multipart content (trim from dynamic text block)
-            if isinstance(content, list) and msg.get("role") == "system":
-                # Find the dynamic text block (the block without cache_control)
-                for j, block in enumerate(content):
-                    if (isinstance(block, dict) and
-                        block.get("type") == "text" and
-                        "cache_control" not in block):
-                        text = block.get("text", "")
-                        if prefix in text:
-                            # Remove this section from the dynamic text
-                            lines = text.split("\n\n")
-                            new_lines = []
-                            skip_section = False
-                            for line in lines:
-                                if line.startswith(prefix):
-                                    skip_section = True
-                                    info["trimmed_sections"].append(prefix)
-                                    continue
-                                if line.startswith("##"):
-                                    skip_section = False
-                                if not skip_section:
-                                    new_lines.append(line)
-
-                            block["text"] = "\n\n".join(new_lines)
-                            estimated = sum(_estimate_message_tokens(m) for m in pruned)
-                            break
-                break
-
-            # Handle legacy string content (for backwards compatibility)
-            elif isinstance(content, str) and content.startswith(prefix):
-                pruned.pop(i)
-                info["trimmed_sections"].append(prefix)
-                estimated = sum(_estimate_message_tokens(m) for m in pruned)
-                break
-
-    info["estimated_tokens_after"] = estimated
-    return pruned, info
 
 # --- Protected compaction tools ---
 

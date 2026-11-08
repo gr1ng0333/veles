@@ -1,7 +1,7 @@
 """Tests for context optimizations ported from Ouroboros Desktop v4.5.0.
 
 Covers:
-- Task-scoped filtering in _build_recent_sections
+- Shared startup with intact recent dialogue
 - Cache hit rate computation and health invariant
 - System message provenance in chat formatting
 """
@@ -12,22 +12,22 @@ import tempfile
 
 import pytest
 
-from ouroboros.context import _build_recent_sections, _compute_cache_hit_rate, _build_health_invariants
-from ouroboros.memory import Memory, RECENT_FULL_REPLIES
+from ouroboros.context import build_llm_messages, _compute_cache_hit_rate, _build_health_invariants
+from ouroboros.memory import Memory
 
 
 # ---------- helpers ----------
 
 class _EnvStub:
     def __init__(self, repo_root: pathlib.Path, drive_root: pathlib.Path):
-        self._repo_root = repo_root
-        self._drive_root = drive_root
+        self.repo_dir = repo_root
+        self.drive_root = drive_root
 
     def repo_path(self, rel: str) -> pathlib.Path:
-        return self._repo_root / rel
+        return self.repo_dir / rel
 
     def drive_path(self, rel: str) -> pathlib.Path:
-        return self._drive_root / rel
+        return self.drive_root / rel
 
 
 def _make_env(tmp_path: pathlib.Path) -> _EnvStub:
@@ -60,150 +60,47 @@ def _chat_entry(direction: str, text: str, ts: str = "2026-03-20T12:00:00Z",
     return d
 
 
-# ---------- Task-scoped filtering ----------
+# ---------- Startup context ----------
 
-class TestTaskScopedFiltering:
-    """Recent progress/tools/events should filter by current task_id."""
+@pytest.mark.parametrize("task_type", ["task", "review", "scheduled", "evolution"])
+def test_same_startup_with_full_memory_and_chat(tmp_path, task_type):
+    env = _make_env(tmp_path)
+    mem = _make_memory(env.drive_root)
+    mem.ensure_files()
+    identity = "identity-start " + "identity " * 10000 + "identity-end"
+    scratchpad = "scratchpad-start " + "scratchpad " * 10000 + "scratchpad-end"
+    (env.drive_root / "memory/identity.md").write_text(identity, encoding="utf-8")
+    (env.drive_root / "memory/scratchpad.md").write_text(scratchpad, encoding="utf-8")
+    for rel in ("README.md", "prompts/ARCHITECTURE.md", "prompts/CHECKLISTS.md", "prompts/TELEGRAM_CONTOUR.md"):
+        p = env.repo_dir / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("OPTIONAL_REPOSITORY_REFERENCE", encoding="utf-8")
+    _write_jsonl(env.drive_root / "logs/tools.jsonl", [{"text": "OLD_TOOL_PAYLOAD"}])
+    _write_jsonl(env.drive_root / "state/state.json", [{"note": "UNRELATED_RUNTIME_STATE"}])
+    older = [{"direction": "in", "text": "older-message", "chat_id": 42}]
+    recent = [
+        {"role": "in" if i % 2 == 0 else "out", "text": f"row-{i}: " + "данные " * 200,
+         "chat_id": 42}
+        for i in range(31)
+    ]
+    legacy = {"direction": "outgoing", "text": "legacy answer"}
+    foreign = [{"role": "in", "text": "foreign-chat", "chat_id": 7}] * 101
+    _write_jsonl(env.drive_root / "logs/chat.jsonl", older + recent + [legacy] + foreign)
 
-    def test_recent_events_filtered_by_task_id(self, tmp_path):
-        """Recent events should only show entries matching current task_id."""
-        env = _make_env(tmp_path)
-        mem = _make_memory(env._drive_root)
-
-        events = [
-            {"ts": "2026-03-20T12:00:00Z", "type": "tool_call", "task_id": "task-A", "text": "old task event"},
-            {"ts": "2026-03-20T12:01:00Z", "type": "tool_call", "task_id": "task-A", "text": "another old event"},
-            {"ts": "2026-03-20T12:02:00Z", "type": "tool_call", "task_id": "task-B", "text": "current task event"},
-            {"ts": "2026-03-20T12:03:00Z", "type": "error", "task_id": "task-B", "text": "current error"},
-        ]
-        _write_jsonl(env._drive_root / "logs" / "events.jsonl", events)
-        # Empty other logs
-        _write_jsonl(env._drive_root / "logs" / "chat.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "progress.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "tools.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "supervisor.jsonl", [])
-
-        sections = _build_recent_sections(mem, env, task_id="task-B")
-        events_text = [s for s in sections if "Recent events" in s]
-
-        assert events_text, "Expected Recent events section"
-        combined = events_text[0]
-        # Filtered to task-B: 1 tool_call + 1 error (not 2 tool_call from task-A)
-        assert "tool_call: 1" in combined
-        assert "error: 1" in combined
-
-    def test_recent_events_fallback_when_fresh(self, tmp_path, monkeypatch):
-        """If no events match task_id, show fresh global fallback entries."""
-        env = _make_env(tmp_path)
-        mem = _make_memory(env._drive_root)
-
-        class _FixedDateTime:
-            @classmethod
-            def now(cls, tz=None):
-                from datetime import datetime, timezone
-                return datetime(2026, 3, 20, 13, 0, 0, tzinfo=timezone.utc)
-
-            @classmethod
-            def fromisoformat(cls, value):
-                from datetime import datetime
-                return datetime.fromisoformat(value)
-
-        import ouroboros.context as context
-        monkeypatch.setattr(context, "datetime", _FixedDateTime)
-
-        events = [
-            {"ts": "2026-03-20T12:00:00Z", "type": "tool_call", "task_id": "task-A", "text": "event A1"},
-            {"ts": "2026-03-20T12:01:00Z", "type": "tool_call", "task_id": "task-A", "text": "event A2"},
-            {"ts": "2026-03-20T12:02:00Z", "type": "tool_call", "task_id": "task-A", "text": "event A3"},
-        ]
-        _write_jsonl(env._drive_root / "logs" / "events.jsonl", events)
-        _write_jsonl(env._drive_root / "logs" / "chat.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "progress.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "tools.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "supervisor.jsonl", [])
-
-        sections = _build_recent_sections(mem, env, task_id="task-X")
-        events_text = [s for s in sections if "Recent events" in s]
-
-        assert events_text, "Expected fresh fallback Recent events section"
-
-    def test_recent_events_ignores_stale_fallback(self, tmp_path, monkeypatch):
-        """Old global fallback entries should not masquerade as Recent events."""
-        env = _make_env(tmp_path)
-        mem = _make_memory(env._drive_root)
-
-        class _FixedDateTime:
-            @classmethod
-            def now(cls, tz=None):
-                from datetime import datetime, timezone
-                return datetime(2026, 5, 28, 21, 0, 0, tzinfo=timezone.utc)
-
-            @classmethod
-            def fromisoformat(cls, value):
-                from datetime import datetime
-                return datetime.fromisoformat(value)
-
-        import ouroboros.context as context
-        monkeypatch.setattr(context, "datetime", _FixedDateTime)
-
-        events = [
-            {"ts": "2026-03-20T12:00:00Z", "type": "tool_call", "task_id": "task-A", "text": "stale event"},
-        ]
-        _write_jsonl(env._drive_root / "logs" / "events.jsonl", events)
-        _write_jsonl(env._drive_root / "logs" / "chat.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "progress.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "tools.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "supervisor.jsonl", [])
-
-        sections = _build_recent_sections(mem, env, task_id="task-X")
-        events_text = [s for s in sections if "Recent events" in s]
-
-        assert not events_text
-
-    def test_recent_progress_filtered_by_task_id(self, tmp_path):
-        """Recent progress should only show entries matching current task_id."""
-        env = _make_env(tmp_path)
-        mem = _make_memory(env._drive_root)
-
-        progress = [
-            {"ts": "2026-03-20T12:00:00Z", "task_id": "task-A", "text": "old progress"},
-            {"ts": "2026-03-20T12:01:00Z", "task_id": "task-B", "text": "current progress"},
-        ]
-        _write_jsonl(env._drive_root / "logs" / "progress.jsonl", progress)
-        _write_jsonl(env._drive_root / "logs" / "chat.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "events.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "tools.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "supervisor.jsonl", [])
-
-        sections = _build_recent_sections(mem, env, task_id="task-B")
-        progress_text = [s for s in sections if "Recent progress" in s]
-        assert progress_text
-        combined = progress_text[0]
-        assert "current progress" in combined
-        assert "old progress" not in combined
-
-    def test_chat_not_filtered(self, tmp_path):
-        """Recent chat should NOT be filtered by task_id."""
-        env = _make_env(tmp_path)
-        mem = _make_memory(env._drive_root)
-
-        chats = [
-            {"ts": "2026-03-20T12:00:00Z", "direction": "in", "text": "hi from old task",
-             "session_id": "s1", "chat_id": 1, "user_id": 1, "task_id": "task-A"},
-            {"ts": "2026-03-20T12:01:00Z", "direction": "out", "text": "reply from agent",
-             "session_id": "s1", "chat_id": 1, "user_id": 1, "task_id": "task-A"},
-        ]
-        _write_jsonl(env._drive_root / "logs" / "chat.jsonl", chats)
-        _write_jsonl(env._drive_root / "logs" / "progress.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "events.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "tools.jsonl", [])
-        _write_jsonl(env._drive_root / "logs" / "supervisor.jsonl", [])
-
-        sections = _build_recent_sections(mem, env, task_id="task-B")
-        chat_text = [s for s in sections if "Recent chat" in s]
-        # Chat from task-A should still appear (no task filtering on chat)
-        assert chat_text, "Chat should appear regardless of task_id"
-        assert "hi from old task" in chat_text[0]
+    messages, estimate = build_llm_messages(env, mem, {"text": "Current SSH request",
+                                                      "type": task_type, "chat_id": 42})
+    static, memory, dynamic = [block["text"] for block in messages[0]["content"]]
+    assert identity in memory and scratchpad in memory
+    assert "OPTIONAL_REPOSITORY_REFERENCE" not in static
+    assert "OLD_TOOL_PAYLOAD" not in dynamic and "UNRELATED_RUNTIME_STATE" not in dynamic
+    assert "foreign-chat" not in dynamic and "older-message" not in dynamic
+    for i, row in enumerate(recent):
+        marker = "←" if i % 2 == 0 else "→"
+        assert f"{marker}  {row['text']}" in dynamic
+    assert "→  legacy answer" in dynamic
+    assert "chat_history" in dynamic
+    assert messages[1] == {"role": "user", "content": "Current SSH request"}
+    assert estimate["estimated_input_text_tokens"] > estimate["startup_target_tokens"]
 
 
 # ---------- Cache hit rate ----------
@@ -221,7 +118,7 @@ class TestCacheHitRate:
                 "ts": f"2026-03-20T12:{i:02d}:00Z",
                 "usage": {"prompt_tokens": 1000, "cached_tokens": 700},
             })
-        _write_jsonl(env._drive_root / "logs" / "events.jsonl", events)
+        _write_jsonl(env.drive_root / "logs" / "events.jsonl", events)
 
         rate = _compute_cache_hit_rate(env)
         assert rate is not None
@@ -234,7 +131,7 @@ class TestCacheHitRate:
             {"type": "tool_call", "ts": "2026-03-20T12:00:00Z"},
             {"type": "error", "ts": "2026-03-20T12:01:00Z"},
         ]
-        _write_jsonl(env._drive_root / "logs" / "events.jsonl", events)
+        _write_jsonl(env.drive_root / "logs" / "events.jsonl", events)
 
         rate = _compute_cache_hit_rate(env)
         assert rate is None
@@ -246,7 +143,7 @@ class TestCacheHitRate:
             {"type": "llm_round", "ts": "2026-03-20T12:00:00Z",
              "usage": {"prompt_tokens": 1000, "cached_tokens": 500}},
         ]
-        _write_jsonl(env._drive_root / "logs" / "events.jsonl", events)
+        _write_jsonl(env.drive_root / "logs" / "events.jsonl", events)
 
         rate = _compute_cache_hit_rate(env)
         assert rate is None
@@ -264,14 +161,14 @@ class TestCacheHitRate:
 
         env = _make_env(tmp_path)
         # Set up minimal required files
-        (env._repo_root / "VERSION").write_text("1.0.0", encoding="utf-8")
-        (env._repo_root / "pyproject.toml").write_text(
+        (env.repo_dir / "VERSION").write_text("1.0.0", encoding="utf-8")
+        (env.repo_dir / "pyproject.toml").write_text(
             "[project]\nname='x'\nversion='1.0.0'\n", encoding="utf-8")
-        (env._drive_root / "state" / "state.json").write_text(
+        (env.drive_root / "state" / "state.json").write_text(
             json.dumps({"budget_drift_pct": 0, "spent_usd": 0, "openrouter_total_usd": 0}),
             encoding="utf-8")
         import time, os
-        identity_path = env._drive_root / "memory" / "identity.md"
+        identity_path = env.drive_root / "memory" / "identity.md"
         identity_path.write_text("identity", encoding="utf-8")
 
         # Low cache rate events (10% hit rate)
@@ -282,7 +179,7 @@ class TestCacheHitRate:
                 "ts": f"2026-03-20T12:{i:02d}:00Z",
                 "usage": {"prompt_tokens": 1000, "cached_tokens": 100},
             })
-        _write_jsonl(env._drive_root / "logs" / "events.jsonl", events)
+        _write_jsonl(env.drive_root / "logs" / "events.jsonl", events)
 
         result = _build_health_invariants(env)
         assert "LOW CACHE HIT RATE" in result

@@ -1,7 +1,6 @@
 import pathlib
-import pytest
 
-SKILLS_DIR = pathlib.Path("/opt/veles/prompts/skills")
+SKILLS_DIR = pathlib.Path(__file__).resolve().parents[1] / "prompts/skills"
 MAP_FILE = SKILLS_DIR / "_map.md"
 
 
@@ -37,16 +36,14 @@ def test_map_contains_skill_load_hint():
     assert "skill_load" in content
 
 
-def test_context_loads_map_into_static_block(tmp_path, monkeypatch):
+def test_context_loads_map_into_static_block(tmp_path):
     """context.py must inject skills map into Block 0 static_text."""
-    import os, sys
-    sys.path.insert(0, "/opt/veles")
     from ouroboros.context import build_llm_messages
     from ouroboros.memory import Memory
 
     # Minimal env mock
     class FakeEnv:
-        repo_dir = pathlib.Path("/opt/veles")
+        repo_dir = SKILLS_DIR.parents[1]
         drive_root = tmp_path
 
         def repo_path(self, rel):
@@ -56,12 +53,6 @@ def test_context_loads_map_into_static_block(tmp_path, monkeypatch):
             return self.drive_root / rel
 
     env = FakeEnv()
-    # Create minimal drive structure
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "state.json").write_text('{"active_skills":[]}', encoding="utf-8")
-    (tmp_path / "memory").mkdir()
-    (tmp_path / "logs").mkdir()
-
     memory = Memory(drive_root=tmp_path)
 
     task = {"id": "test-map-01", "type": "task", "text": "hello"}
@@ -72,3 +63,10 @@ def test_context_loads_map_into_static_block(tmp_path, monkeypatch):
     assert "Skills Map" in static_block or "skill_load" in static_block, (
         "Skills map not found in Block 0 static_text"
     )
+
+
+def test_map_matches_local_skills():
+    content = MAP_FILE.read_text(encoding="utf-8")
+    for skill in SKILLS_DIR.glob("*.md"):
+        if not skill.name.startswith("_"):
+            assert f"prompts/skills/{skill.name}" in content
