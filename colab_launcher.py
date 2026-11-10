@@ -1,11 +1,12 @@
 # Veles runtime launcher: thin orchestrator; heavy logic lives in supervisor/.
 import logging
 import os, sys, json, time, uuid, pathlib, subprocess, datetime, threading, queue as _queue_mod
+from collections import deque
 from typing import Any, Dict, List, Optional, Set, Tuple
 log = logging.getLogger(__name__)
 def install_launcher_deps() -> None:
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "requests", "SpeechRecognition"],
+        [sys.executable, "-m", "pip", "install", "-q", "requests", "SpeechRecognition>=3.14.5"],
         check=True,
     )
 install_launcher_deps()
@@ -617,6 +618,11 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
     return ""
 
 offset = int(load_state().get("tg_offset") or 0)
+_TELEGRAM_AUDIO_PREFIXES = {
+    "voice": "[Голосовое сообщение]",
+    "audio": "[Аудио]",
+    "video_note": "[Кружок]",
+}
 _last_diag_heartbeat_ts = 0.0
 _last_message_ts: float = time.time()  # Start in active mode after restart
 _ACTIVE_MODE_SEC: int = 300  # 5 min of activity = active polling mode
@@ -658,7 +664,9 @@ while True:
         )
         time.sleep(1.5)
         continue
-    for upd in updates:
+    pending_updates = deque(updates)
+    while pending_updates:
+        upd = pending_updates.popleft()
         offset = int(upd["update_id"]) + 1
         msg = upd.get("message") or upd.get("edited_message") or {}
         if not msg:
@@ -671,6 +679,7 @@ while True:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         # Extract image/audio/file payload if present
         image_data = None  # Will be (base64, mime_type, caption) or None
+        audio_kind = next((kind for kind in _TELEGRAM_AUDIO_PREFIXES if msg.get(kind)), None)
         if msg.get("photo"):
             # photo is array of PhotoSize, last one is largest
             best_photo = msg["photo"][-1]
@@ -679,39 +688,35 @@ while True:
                 b64, mime = TG.download_file_base64(file_id)
                 if b64:
                     image_data = (b64, mime, caption)
-        elif msg.get("voice") or msg.get("audio") or msg.get("video_note"):
-            audio_obj = msg.get("voice") or msg.get("audio") or msg.get("video_note") or {}
-            audio_kind = "voice" if msg.get("voice") else ("audio" if msg.get("audio") else "video_note")
-            file_id = str(audio_obj.get("file_id") or "")
-            mime_type = str(audio_obj.get("mime_type") or "")
-            file_name = str(audio_obj.get("file_name") or f"{audio_kind}")
-            if file_id:
-                audio_b64, audio_mime = TG.download_file_base64(file_id, max_bytes=25_000_000)
-                if audio_b64:
-                    try:
-                        tr = transcribe_telegram_audio(
-                            drive_root=DRIVE_ROOT,
-                            audio_b64=audio_b64,
-                            mime_type=mime_type or audio_mime,
-                            kind=audio_kind,
-                            file_name=file_name,
-                            language="ru-RU",
-                        )
-                        transcribed = str(tr.get("text") or "").strip()
-                        voice_prefix_map = {
-                            "voice": "[Голосовое сообщение]",
-                            "audio": "[Аудио]",
-                            "video_note": "[Кружок]",
-                        }
-                        prefix = voice_prefix_map.get(audio_kind, "[Аудио]")
-                        text = f"{prefix}\n{transcribed}" if transcribed else prefix
-                        if caption:
-                            text = f"{caption}\n\n{text}" if text else caption
-                    except AudioTranscriptionError as e:
-                        send_with_budget(chat_id, f"⚠️ Не удалось распознать голосовое: {e}")
-                        continue
-                else:
+        elif audio_kind:
+            owner_id = load_state().get("owner_id")
+            # First-contact registration below can run without downloading the recording.
+            if owner_id is not None:
+                if user_id != int(owner_id):
+                    continue
+                audio_obj = msg[audio_kind]
+                file_id = str(audio_obj.get("file_id") or "")
+                if not file_id:
                     send_with_budget(chat_id, "⚠️ Не удалось скачать голосовое из Telegram.")
+                    continue
+                audio_b64, audio_mime = TG.download_file_base64(file_id, max_bytes=25_000_000)
+                if not audio_b64:
+                    send_with_budget(chat_id, "⚠️ Не удалось скачать голосовое из Telegram.")
+                    continue
+                try:
+                    tr = transcribe_telegram_audio(
+                        drive_root=DRIVE_ROOT,
+                        audio_b64=audio_b64,
+                        mime_type=str(audio_obj.get("mime_type") or audio_mime),
+                        kind=audio_kind,
+                        file_name=str(audio_obj.get("file_name") or audio_kind),
+                        language="ru-RU",
+                    )
+                    text = f"{_TELEGRAM_AUDIO_PREFIXES[audio_kind]}\n{tr['text']}"
+                    if caption:
+                        text = f"{caption}\n\n{text}"
+                except AudioTranscriptionError as e:
+                    send_with_budget(chat_id, f"⚠️ Не удалось распознать голосовое: {e}")
                     continue
         elif msg.get("document"):
             doc = msg["document"]
@@ -785,18 +790,23 @@ while True:
             _batched_image = image_data  # keep first image
             _batch_state = load_state()
             _batch_state_dirty = False
-            while time.time() < _batch_deadline:
+            while not pending_updates and time.time() < _batch_deadline:
                 time.sleep(0.1)
                 try:
-                    _extra_updates = TG.get_updates(offset=offset, timeout=0) or []
+                    pending_updates.extend(TG.get_updates(offset=offset, timeout=0) or [])
                 except Exception:
-                    _extra_updates = []
-                if not _extra_updates and (time.time() - _batch_start) < _EARLY_EXIT_SEC:
+                    pass
+                if not pending_updates and (time.time() - _batch_start) < _EARLY_EXIT_SEC:
                     # No follow-up messages in first 150ms → single message, dispatch immediately
                     break
-                for _upd in _extra_updates:
-                    offset = max(offset, int(_upd.get("update_id", offset - 1)) + 1)
+                while pending_updates:
+                    _upd = pending_updates[0]
                     _msg2 = _upd.get("message") or _upd.get("edited_message") or {}
+                    if any(_msg2.get(kind) for kind in _TELEGRAM_AUDIO_PREFIXES):
+                        # Let the main ingress authorize and transcribe it before advancing the offset.
+                        break
+                    pending_updates.popleft()
+                    offset = max(offset, int(_upd.get("update_id", offset - 1)) + 1)
                     _uid2 = (_msg2.get("from") or {}).get("id")
                     _cid2 = (_msg2.get("chat") or {}).get("id")
                     _txt2 = _msg2.get("text") or _msg2.get("caption") or ""

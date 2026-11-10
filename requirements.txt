@@ -6,7 +6,7 @@ playwright-stealth
 pdfplumber
 ddddocr
 Pillow
-SpeechRecognition
+SpeechRecognition>=3.14.5
 yt-dlp
 numpy>=1.24
 onnxruntime>=1.17
