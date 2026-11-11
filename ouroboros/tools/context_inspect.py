@@ -18,7 +18,10 @@ def _build_context_inspect(
     include_preview: bool = False,
     task_type: str = "user",
 ) -> str:
-    task = {"id": ctx.task_id, "type": task_type, "chat_id": ctx.current_chat_id}
+    task = {
+        "id": ctx.task_id, "type": task_type, "chat_id": ctx.current_chat_id,
+        "conversation_mode": ctx.conversation_mode,
+    }
     blocks = {}
     for name, sections in zip(_BLOCKS, build_startup_sections(ctx, Memory(ctx.drive_root), task)):
         entries: List[Dict[str, Any]] = []

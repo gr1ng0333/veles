@@ -22,6 +22,8 @@ from supervisor.state import (
     budget_remaining, EVOLUTION_BUDGET_RESERVE,
 )
 from supervisor.telegram import send_with_budget
+from ouroboros.conversation import PERSONAL, WORK, conversation_root
+from ouroboros.utils import utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +124,16 @@ def enqueue_task(task: Dict[str, Any], front: bool = False) -> Dict[str, Any]:
     return t
 
 
+def enqueue_personal_chat(task: Dict[str, Any]) -> None:
+    from ouroboros.task_execution import TaskCheckpoint
+
+    personal = conversation_root(DRIVE_ROOT, PERSONAL)
+    personal.mkdir(mode=0o700, parents=True, exist_ok=True)
+    task = {**task, "conversation_mode": PERSONAL, "queued_at": utc_now_iso()}
+    TaskCheckpoint(DRIVE_ROOT, task).queue()
+    enqueue_task(task)
+
+
 def queue_has_task_type(task_type: str) -> bool:
     """Check if a task of given type exists in PENDING or RUNNING."""
     tt = str(task_type or "")
@@ -138,6 +150,8 @@ def persist_queue_snapshot(reason: str = "") -> None:
     """Save PENDING and RUNNING to snapshot file."""
     pending_rows = []
     for t in PENDING:
+        if t.get("conversation_mode") == PERSONAL:
+            continue  # Its full payload already lives in its own checkpoint.
         pending_rows.append({
             "id": t.get("id"), "type": t.get("type"), "priority": t.get("priority"),
             "attempt": t.get("_attempt"), "queued_at": t.get("queued_at"),
@@ -150,6 +164,8 @@ def persist_queue_snapshot(reason: str = "") -> None:
     now = time.time()
     for task_id, meta in RUNNING.items():
         task = meta.get("task") if isinstance(meta, dict) else {}
+        if task.get("conversation_mode") == PERSONAL:
+            continue
         started = float(meta.get("started_at") or 0.0) if isinstance(meta, dict) else 0.0
         hb = float(meta.get("last_heartbeat_at") or 0.0) if isinstance(meta, dict) else 0.0
         running_rows.append({
@@ -247,7 +263,7 @@ def restore_pending_from_snapshot(max_age_sec: Optional[int] = None) -> int:
                 continue
             if not task.get("id") or not task.get("chat_id"):
                 continue
-            if str(task["id"]) in seen or execution_settled(DRIVE_ROOT, str(task["id"])):
+            if str(task["id"]) in seen or execution_settled(DRIVE_ROOT, str(task["id"]), task.get("conversation_mode", WORK)):
                 continue
             enqueue_task(task)
             seen.add(str(task["id"]))
@@ -259,14 +275,15 @@ def restore_pending_from_snapshot(max_age_sec: Optional[int] = None) -> int:
                 continue
             if not task.get("id") or not task.get("chat_id"):
                 continue
-            if str(task["id"]) in seen or execution_settled(DRIVE_ROOT, str(task["id"])):
+            if str(task["id"]) in seen or execution_settled(DRIVE_ROOT, str(task["id"]), task.get("conversation_mode", WORK)):
                 continue
             enqueue_task({**task, "_resume_execution": True}, front=True)
             seen.add(str(task["id"]))
             restored += 1
-        for task in recoverable_tasks(DRIVE_ROOT):
+        tasks = recoverable_tasks(DRIVE_ROOT)
+        for task in sorted(tasks, key=lambda t: t.get("queued_at", "") if t.get("conversation_mode") == PERSONAL else ""):
             if str(task["id"]) not in seen:
-                enqueue_task(task, front=True)
+                enqueue_task(task, front=task.get("conversation_mode") != PERSONAL)
                 seen.add(str(task["id"]))
                 restored += 1
         if restored > 0:

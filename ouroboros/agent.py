@@ -32,6 +32,7 @@ from ouroboros.tools import ToolRegistry
 from ouroboros.tools.git import _release_copilot_write_lock
 from ouroboros.tools.registry import ToolContext
 from ouroboros.memory import Memory
+from ouroboros.conversation import PERSONAL, WORK, conversation_root
 from ouroboros.context import build_llm_messages
 from ouroboros.loop import run_llm_loop
 from supervisor import git_ops
@@ -329,7 +330,8 @@ class OuroborosAgent:
 
     def _prepare_task_context(self, task: Dict[str, Any]) -> Tuple[ToolContext, List[Dict[str, Any]], Dict[str, Any]]:
         """Set up ToolContext, build messages, return (ctx, messages, cap_info)."""
-        drive_logs = self.env.drive_path("logs")
+        mode = task.get("conversation_mode", WORK)
+        drive_logs = conversation_root(self.env.drive_root, mode) / "logs"
         sanitized_task = sanitize_task_for_event(task, drive_logs)
         append_jsonl(drive_logs / "events.jsonl", {"ts": utc_now_iso(), "type": "task_received", "task": sanitized_task})
 
@@ -346,6 +348,7 @@ class OuroborosAgent:
             branch_dev=self.env.branch_dev,
             pending_events=self._pending_events,
             current_chat_id=self._current_chat_id,
+            conversation_mode=mode,
             current_task_type=self._current_task_type,
             emit_progress_fn=self._emit_progress,
             task_depth=int(task.get("depth", 0)),
@@ -410,7 +413,8 @@ class OuroborosAgent:
         is_direct = bool(task.get("_is_direct_chat"))
         chat_id = self._current_chat_id
 
-        drive_logs = self.env.drive_path("logs")
+        mode = task.get("conversation_mode", WORK)
+        drive_logs = conversation_root(self.env.drive_root, mode) / "logs"
         heartbeat_stop = self._start_task_heartbeat_loop(str(task.get("id") or ""))
 
         # For direct chat: obtain the persistent executor bound to this chat_id
@@ -423,7 +427,9 @@ class OuroborosAgent:
 
             # Set initial reasoning effort based on task type
             task_type_str = str(task.get("type") or "").lower()
-            if task_type_str == "review":
+            if mode == PERSONAL:
+                initial_effort = "xhigh"
+            elif task_type_str == "review":
                 initial_effort = "high"
             elif task_type_str == "evolution":
                 initial_effort = "medium"
@@ -556,6 +562,9 @@ class OuroborosAgent:
             except Exception:
                 log.debug("Dialogue consolidation setup failed (non-critical)", exc_info=True)
 
+            if mode == PERSONAL:
+                for event in self._pending_events:
+                    event["conversation_mode"] = PERSONAL
             return order_task_events(self._pending_events)
 
         finally:
@@ -725,7 +734,7 @@ class OuroborosAgent:
 
         # Store task result for parent task retrieval
         try:
-            results_dir = pathlib.Path(self.env.drive_root) / "task_results"
+            results_dir = drive_logs.parent / "task_results"
             results_dir.mkdir(parents=True, exist_ok=True)
             result_data = {
                 "task_id": task.get("id"),

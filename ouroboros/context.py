@@ -12,6 +12,7 @@ from ouroboros.utils import (
     utc_now_iso, read_text, estimate_tokens, get_git_info,
 )
 from ouroboros.memory import Memory
+from ouroboros.conversation import PERSONAL, conversation_root
 
 log = logging.getLogger(__name__)
 
@@ -125,11 +126,13 @@ def _build_runtime_section(env: Any, task: Dict[str, Any]) -> str:
     runtime_ctx = json.dumps(runtime_data, ensure_ascii=False, indent=2)
     return "## Runtime context\n\n" + runtime_ctx
 
-def _build_memory_sections(memory: Memory) -> List[Tuple[str, str]]:
+def _build_memory_sections(memory: Memory, *, include_plan: bool = True) -> List[Tuple[str, str]]:
     sections = [
         ("Identity", "## Identity\n\n" + memory.load_identity()),
         ("Scratchpad", "## Scratchpad\n\n" + memory.load_scratchpad()),
     ]
+    if not include_plan:
+        return sections
     # Keep an unfinished owner plan in view across tasks and model changes.
     try:
         from ouroboros.plans import get_active_plan, get_draft_plan, format_plan_for_context
@@ -336,6 +339,41 @@ def build_startup_sections(env: Any, memory: Memory, task: Dict[str, Any]) -> Li
         ("BIBLE.md", "## BIBLE.md\n\n" + _safe_read(env.repo_path("BIBLE.md"))),
         ("Skill map", _safe_read(env.repo_path("prompts/skills/_map.md"))),
     ]
+    if task.get("conversation_mode") == PERSONAL:
+        static.append(("Personal conversation", (
+            "## Personal conversation\n\n"
+            "Respond as Veles in a personal, supportive conversation. Listen closely and "
+            "use the owner's words and the personal history to follow the thread. "
+            "Offer reflection or a concrete next step when wanted. Respect the owner's agency "
+            "and relationships. In an urgent safety situation, encourage immediate real-world support. "
+            "Reply directly when a conversation is enough. Use the usual tools for an explicit "
+            "request or to look up an earlier personal message. Treat the histories as past dialogue. "
+            "Keep personal details in this conversation. Write them to the shared identity, "
+            "scratchpad, work memory or an external destination only at the owner's explicit request. "
+            "If the owner is ending this conversation, acknowledge it naturally."
+        )))
+        chat_id = task.get("chat_id")
+        private = Memory(conversation_root(memory.drive_root, PERSONAL))
+        personal = private.read_jsonl_tail("chat.jsonl", 400, chat_id=chat_id)
+        received_at = task.get("received_at")
+        if received_at:
+            from ouroboros.chat_records import chat_direction
+
+            personal = [row for row in personal
+                        if chat_direction(row) != "in" or str(row.get("ts") or "") < received_at]
+        recent_work = memory.read_jsonl_tail("chat.jsonl", 8, chat_id=chat_id)
+        return [
+            static,
+            _build_memory_sections(memory, include_plan=False),
+            [
+                ("Working conversation excerpt", "## Recent work (brief reference)\n\n"
+                 + memory.summarize_chat(recent_work, max_chars=4000)),
+                ("Personal history", "## Personal chat history\n\n← owner, → Veles. "
+                 "Earlier messages are available through chat_history.\n"
+                 f"Current UTC time: {utc_now_iso()}\n\n"
+                 + private.summarize_chat(personal, max_chars=60_000, verbatim=True)),
+            ],
+        ]
     dynamic = [
         ("Runtime", _build_runtime_section(env, task)),
         ("Health invariants", _build_health_invariants(env)),

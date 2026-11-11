@@ -182,6 +182,35 @@ def test_restart_request_is_delivered_after_task_done(tmp_path, monkeypatch):
     assert TaskCheckpoint(tmp_path, TASK).data["phase"] == "finished"
 
 
+def test_queued_personal_chat_uses_xhigh_and_recovers_without_working_copy(tmp_path, monkeypatch):
+    a, mod = make_agent(tmp_path, monkeypatch)
+    a._prepare_task_context = lambda task: mod.OuroborosAgent._prepare_task_context(a, task)
+    monkeypatch.setenv("OUROBOROS_REASONING_EFFORT", "medium")
+    calls = []
+
+    def run(**kwargs):
+        calls.append(kwargs)
+        return "Личный ответ", {}, {}
+
+    monkeypatch.setattr(mod, "run_llm_loop", run)
+    task = {**TASK, "conversation_mode": "personal"}
+    TaskCheckpoint(tmp_path, task).queue()
+    recovered, = recoverable_tasks(tmp_path)
+    assert recovered["_resume_execution"]
+    events = a.handle_task(recovered)
+    assert calls[0]["initial_effort"] == "xhigh"
+    assert calls[0]["messages"][-1]["content"] == TASK["text"]
+    assert calls[0]["tools"].get_schema_by_name("run_shell")
+    assert all(event["conversation_mode"] == "personal" for event in events)
+    assert any(event["type"] == "task_done" and event["ok"] for event in events)
+    assert (tmp_path / "personal/logs/events.jsonl").exists()
+    assert (tmp_path / "personal/task_results/p0task.json").exists()
+    assert not (tmp_path / "task_results/p0task.json").exists()
+
+    a.handle_task({**TASK, "id": "back-to-work"})
+    assert calls[1]["initial_effort"] == "medium"
+
+
 def test_stale_running_snapshot_cannot_revive_settled_task(tmp_path, monkeypatch):
     from supervisor import queue as q
     cp = TaskCheckpoint(tmp_path, TASK)

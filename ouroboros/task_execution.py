@@ -10,6 +10,7 @@ import shutil
 from typing import Any
 
 from ouroboros.utils import utc_now_iso
+from ouroboros.conversation import PERSONAL, WORK, conversation_root
 
 
 def set_outcome(usage: dict, status: str, reason: str = "") -> None:
@@ -62,7 +63,8 @@ class TaskCheckpoint:
         task_id = str(task.get("id") or "")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task_id):
             raise ValueError("Invalid task checkpoint id")
-        self.path = pathlib.Path(root) / "state" / "task_execution" / (task_id + ".json")
+        directory = conversation_root(pathlib.Path(root), task.get("conversation_mode", WORK))
+        self.path = directory / "state" / "task_execution" / (task_id + ".json")
         self.data: dict[str, Any] = {}
         if self.path.exists():
             try:
@@ -78,6 +80,16 @@ class TaskCheckpoint:
     def begin(self) -> None:
         if not self.data:
             self.data = {"schema_version": 1, "task": self.task, "phase": "preparing"}
+            self.write()
+        elif self.data.get("phase") == "queued":
+            self.existing = False
+            self.task.pop("_resume_execution", None)
+            self.data["phase"] = "preparing"
+            self.write()
+
+    def queue(self) -> None:
+        if not self.data:
+            self.data = {"schema_version": 1, "task": self.task, "phase": "queued"}
             self.write()
 
     def write(self) -> None:
@@ -104,6 +116,8 @@ class TaskCheckpoint:
         if self.task.get("_recovery_interrupted"):
             return str(self.task["_recovery_interrupted"])
         phase = self.data.get("phase")
+        if phase == "queued":
+            return ""
         if phase == "finished":
             # Deferred control events may have reached the supervisor before it
             # crashed. Replaying them can repeat scheduling/restarts/actions.
@@ -123,12 +137,15 @@ class TaskCheckpoint:
 def recoverable_tasks(root: pathlib.Path) -> list[dict]:
     """Include direct-chat tasks, which never entered the supervisor queue."""
     tasks = []
-    for path in sorted((pathlib.Path(root) / "state" / "task_execution").glob("*.json")):
+    directory = pathlib.Path(root) / "state" / "task_execution"
+    private = conversation_root(pathlib.Path(root), PERSONAL) / "state" / "task_execution"
+    for path in sorted([*directory.glob("*.json"), *private.glob("*.json")]):
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
             task = row.get("task")
             if not row.get("delivery_settled") and isinstance(task, dict) and task.get("id") and task.get("chat_id"):
-                tasks.append({**task, "_resume_execution": True})
+                mode = {"conversation_mode": PERSONAL} if path.parent == private else {}
+                tasks.append({**task, **mode, "_resume_execution": True})
         except (OSError, ValueError, TypeError, AttributeError):
             # A corrupt checkpoint is still addressable via its queued task;
             # the agent refuses to execute it rather than erasing the evidence.
@@ -136,10 +153,10 @@ def recoverable_tasks(root: pathlib.Path) -> list[dict]:
     return tasks
 
 
-def execution_settled(root: pathlib.Path, task_id: str) -> bool:
+def execution_settled(root: pathlib.Path, task_id: str, mode: str = WORK) -> bool:
     """A settled checkpoint outranks an older queue snapshot."""
     try:
-        row = TaskCheckpoint(root, {"id": task_id}).data
+        row = TaskCheckpoint(root, {"id": task_id, "conversation_mode": mode}).data
     except (OSError, ValueError):
         return False
     return row.get("phase") == "finished" and row.get("delivery_settled") is True
@@ -159,15 +176,14 @@ def stop_execution(root: pathlib.Path, task: dict, status: str, reason: str) -> 
     checkpoint.finish(text, usage, checkpoint.data.get("loop", {}).get("llm_trace", {}), [])
     checkpoint.data["delivery_settled"] = True
     checkpoint.write()
-    atomic_json(pathlib.Path(root) / "task_results" / (str(task["id"]) + ".json"),
+    directory = conversation_root(pathlib.Path(root), task.get("conversation_mode", WORK))
+    atomic_json(directory / "task_results" / (str(task["id"]) + ".json"),
                 {"task_id": task["id"], "status": status, "reason": reason, "result": text,
                  "ts": utc_now_iso()})
 
 
-def settle_execution(root: pathlib.Path, task_id: str) -> None:
-    path = pathlib.Path(root) / "state" / "task_execution" / (task_id + ".json")
-    if path.exists():
-        checkpoint = TaskCheckpoint(root, {"id": task_id})
-        if checkpoint.data.get("phase") == "finished":
-            checkpoint.data["delivery_settled"] = True
-            checkpoint.write()
+def settle_execution(root: pathlib.Path, task_id: str, mode: str = WORK) -> None:
+    checkpoint = TaskCheckpoint(root, {"id": task_id, "conversation_mode": mode})
+    if checkpoint.data.get("phase") == "finished":
+        checkpoint.data["delivery_settled"] = True
+        checkpoint.write()

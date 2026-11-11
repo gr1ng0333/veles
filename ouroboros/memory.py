@@ -163,11 +163,12 @@ class Memory:
     # --- Log summarization ---
 
     def summarize_chat(
-        self, entries: List[Dict[str, Any]], *, max_chars: int | None = None, full_messages: int = 0,
+        self, entries: List[Dict[str, Any]], *, max_chars: int | None = None,
+        full_messages: int = 0, verbatim: bool = False,
     ) -> str:
         if not entries:
             return ""
-        recent = entries[-100:]
+        recent = entries if verbatim else entries[-100:]
         # Identify recent outgoing messages to keep untruncated
         outgoing_indices = [
             i for i, e in enumerate(recent)
@@ -185,7 +186,7 @@ class Memory:
                 continue
             direction = {"out": "→", "in": "←"}.get(dir_raw, "?")
             if dir_raw == "out":
-                full = i in recent_outgoing or i >= len(recent) - full_messages
+                full = verbatim or i in recent_outgoing or i >= len(recent) - full_messages
                 text = raw_text if full else short(raw_text, 800)
             else:
                 text = raw_text  # never truncate creator's messages

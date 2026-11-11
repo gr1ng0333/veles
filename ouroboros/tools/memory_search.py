@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Tuple
 
 from ouroboros.tools.registry import ToolEntry, ToolContext
 from ouroboros.chat_records import chat_direction, owner_chat_id
+from ouroboros.conversation import WORK, conversation_root
 from ouroboros.tools.notes import read_active_notes
 
 log = logging.getLogger(__name__)
@@ -260,12 +261,12 @@ def _load_md(path: pathlib.Path, label: str) -> List[_Chunk]:
     return chunks
 
 
-def _build_corpus(drive_root: pathlib.Path) -> List[_Chunk]:
+def _build_corpus(drive_root: pathlib.Path, history_root: pathlib.Path | None = None) -> List[_Chunk]:
     """Assemble the full searchable corpus from all memory sources."""
     corpus: List[_Chunk] = []
 
     # Chat history (most recent messages)
-    corpus.extend(_load_chat(drive_root))
+    corpus.extend(_load_chat(history_root or drive_root))
 
     # Task reflections (evolution history, error patterns)
     corpus.extend(_load_task_reflections(drive_root))
@@ -323,9 +324,11 @@ def _run_search(
     query: str,
     drive_root: pathlib.Path,
     top_k: int = 5,
+    *,
+    history_root: pathlib.Path | None = None,
 ) -> List[Tuple[float, _Chunk]]:
     """Build corpus, score all chunks, return top-K."""
-    corpus = _build_corpus(drive_root)
+    corpus = _build_corpus(drive_root, history_root)
     if not corpus:
         return []
     query_tokens = _tokenize(query)
@@ -349,13 +352,14 @@ def _memory_search(ctx: ToolContext, query: str, top_k: int = 5, scope: str = "a
     if not query:
         return "⚠️ memory_search: query must be non-empty."
     top_k = max(1, min(20, int(top_k)))
+    history_root = conversation_root(ctx.drive_root, getattr(ctx, "conversation_mode", WORK))
     if scope == "chat":
         chat_id = ctx.current_chat_id or owner_chat_id(ctx.drive_root)
         if chat_id is None:
             return "⚠️ No chat is available for semantic search."
         try:
             from ouroboros.chat_search import search_chat
-            return search_chat(ctx.drive_root, chat_id, query, top_k)
+            return search_chat(ctx.drive_root, chat_id, query, top_k, history_root=history_root)
         except Exception as exc:
             log.warning("Local chat search unavailable (%s)", type(exc).__name__)
             return ("⚠️ Semantic chat search is unavailable. "
@@ -363,7 +367,7 @@ def _memory_search(ctx: ToolContext, query: str, top_k: int = 5, scope: str = "a
     if scope != "all":
         return "⚠️ memory_search: scope must be 'chat' or 'all'."
 
-    results = _run_search(query, ctx.drive_root, top_k)
+    results = _run_search(query, ctx.drive_root, top_k, history_root=history_root)
     if not results:
         return f"memory_search: no results for query '{query}'."
 

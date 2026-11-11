@@ -84,13 +84,17 @@ def _rows(drive_root: pathlib.Path, chat_id: int) -> list[dict]:
     return Memory(drive_root).read_jsonl_tail("chat.jsonl", CHAT_WINDOW, chat_id=chat_id)
 
 
-def search_chat(drive_root: pathlib.Path, chat_id: int, query: str, top_k: int) -> str:
-    rows = _rows(drive_root, chat_id)
+def search_chat(
+    drive_root: pathlib.Path, chat_id: int, query: str, top_k: int, *,
+    history_root: pathlib.Path | None = None,
+) -> str:
+    history_root = history_root or drive_root
+    rows = _rows(history_root, chat_id)
     passages = _passages(rows)
     if not passages:
         return "Semantic chat search: no messages in the current chat window."
     encoder = E5Encoder(_model_dir(drive_root))
-    vectors, total = _vectors(drive_root, chat_id, encoder, passages, limit=_ONLINE_BATCH_LIMIT)
+    vectors, total = _vectors(history_root, chat_id, encoder, passages, limit=_ONLINE_BATCH_LIMIT)
     keys = list(vectors)
     scores = np.stack([vectors[key] for key in keys]) @ encoder.encode([query[:2000]], query=True)[0]
     by_key = dict(zip(keys, scores))

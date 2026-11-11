@@ -10,9 +10,11 @@ from unittest.mock import Mock
 import pytest
 
 from supervisor.audio_stt import AudioTranscriptionError
+from supervisor.workers import make_chat_task
+from ouroboros.conversation import PERSONAL, WORK, conversation_root
 
 
-def _run_launcher_poll(tmp_path, tg, owner_id, transcribe):
+def _run_launcher_poll(tmp_path, tg, owner_id, transcribe, *, selector=None, logged=None, personal=None):
     # Importing the launcher starts the supervisor. Run its actual poll loop once with fake I/O.
     launcher = Path(__file__).resolve().parents[1] / "colab_launcher.py"
     tree = ast.parse(launcher.read_text(encoding="utf-8"))
@@ -26,7 +28,7 @@ def _run_launcher_poll(tmp_path, tg, owner_id, transcribe):
     loop.test = ast.Call(func=ast.Name(id="run_once", ctx=ast.Load()), args=[], keywords=[])
     program = ast.fix_missing_locations(ast.Module(body=[prefixes, loop], type_ignores=[]))
 
-    state = {"owner_id": owner_id}
+    state = {"owner_id": owner_id, "owner_chat_id": owner_id}
     clock = [100.0]
     thread = Mock()
     send = Mock()
@@ -41,8 +43,11 @@ def _run_launcher_poll(tmp_path, tg, owner_id, transcribe):
         rotate_chat_log_if_needed=Mock(), ensure_workers_healthy=Mock(), get_event_q=queue.Queue,
         enforce_task_timeouts=Mock(), enqueue_evolution_task_if_needed=Mock(), assign_tasks=Mock(),
         persist_queue_snapshot=Mock(), load_state=state.copy, save_state=state.update,
-        log_chat=Mock(), _consciousness=Mock(), _get_chat_agent=lambda: SimpleNamespace(_busy=False),
+        log_chat=logged or Mock(), _consciousness=Mock(), _get_chat_agent=lambda: SimpleNamespace(_busy=False),
         send_with_budget=send, transcribe_telegram_audio=transcribe,
+        PERSONAL=PERSONAL, WORK=WORK, conversation_root=conversation_root,
+        select_conversation_mode=selector or Mock(return_value=WORK),
+        make_chat_task=make_chat_task, enqueue_personal_chat=personal or Mock(),
     )
     exec(compile(program, str(launcher), "exec"), context)
     dispatched = [call.kwargs["args"][1] for call in thread.call_args_list]
@@ -123,3 +128,36 @@ def test_voice_after_text_burst_is_handled_even_if_transcription_fails(tmp_path)
     assert state["tg_offset"] == 4
     assert dispatched == ["Текст", "[Голосовое сообщение]\nДальше"]
     send.assert_called_once_with(10, "⚠️ Не удалось распознать голосовое: provider timed out")
+
+
+def test_natural_mode_changes_route_first_and_last_personal_turns(tmp_path):
+    working = "Проверь статус ветки."
+    opening = "Есть кое-что личное, что хотелось бы с тобой обсудить."
+    followup = "Спасибо, ещё хочу рассказать про вчера."
+    closing = "На сегодня хватит, вернёмся к обычным делам."
+    next_work = "Теперь покажи состояние сборки."
+    texts = [working, opening, followup, closing, next_work]
+    updates = [
+        {"update_id": index, "message": {"text": text, "chat": {"id": 10}, "from": {"id": 10}}}
+        for index, text in enumerate(texts, 1)
+    ]
+    replies = {1: updates[:1], 2: updates[1:], 6: []}
+    tg = SimpleNamespace(get_updates=Mock(side_effect=lambda *, offset, timeout: replies[offset]))
+    seen = []
+
+    def select(state, chat_id, text, **kwargs):
+        seen.append((bool(state.get("personal_chat_active")), text))
+        return PERSONAL if text in (opening, followup) else WORK
+
+    logged = Mock()
+    personal = Mock()
+    state, dispatched, _ = _run_launcher_poll(
+        tmp_path, tg, 10, Mock(), selector=select, logged=logged, personal=personal,
+    )
+    assert [call.args[0]["text"] for call in personal.call_args_list] == [opening, followup, closing]
+    assert dispatched == [working, next_work]
+    assert [call.kwargs["conversation_mode"] for call in logged.call_args_list] == [
+        WORK, PERSONAL, PERSONAL, PERSONAL, WORK,
+    ]
+    assert seen == [(False, working), (False, opening), (True, followup), (True, closing), (False, next_work)]
+    assert state["personal_chat_active"] is False

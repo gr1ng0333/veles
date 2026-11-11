@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from supervisor.state import load_state, save_state, append_jsonl
 from supervisor import git_ops
 from supervisor.telegram import send_with_budget
+from ouroboros.conversation import PERSONAL, WORK, conversation_root
 
 
 # ---------------------------------------------------------------------------
@@ -199,27 +200,34 @@ def handle_post_restart_ack(chat_id: int, restart_reason: str = "", restart_sour
         return False
 
 
+def make_chat_task(
+    chat_id: int, text: str, image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None,
+) -> Dict[str, Any]:
+    task = {
+        "id": uuid.uuid4().hex[:8],
+        "type": "task",
+        "chat_id": chat_id,
+        "text": text,
+        "_is_direct_chat": True,
+    }
+    if image_data:
+        # image_data is (base64, mime) or (base64, mime, caption)
+        task["image_base64"] = image_data[0]
+        task["image_mime"] = image_data[1]
+        if len(image_data) > 2 and image_data[2]:
+            task["image_caption"] = image_data[2]
+            # Prefer caption as task text if text is empty
+            if not text:
+                task["text"] = image_data[2]
+    # Fallback for truly empty messages
+    if not task["text"]:
+        task["text"] = "(image attached)" if image_data else ""
+    return task
+
+
 def handle_chat_direct(chat_id: int, text: str, image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None) -> None:
     try:
-        task = {
-            "id": uuid.uuid4().hex[:8],
-            "type": "task",
-            "chat_id": chat_id,
-            "text": text,
-            "_is_direct_chat": True,
-        }
-        if image_data:
-            # image_data is (base64, mime) or (base64, mime, caption)
-            task["image_base64"] = image_data[0]
-            task["image_mime"] = image_data[1]
-            if len(image_data) > 2 and image_data[2]:
-                task["image_caption"] = image_data[2]
-                # Prefer caption as task text if text is empty
-                if not text:
-                    task["text"] = image_data[2]
-        # Fallback for truly empty messages
-        if not task["text"]:
-            task["text"] = "(image attached)" if image_data else ""
+        task = make_chat_task(chat_id, text, image_data)
         events = _run_direct_chat_task(task)
         for e in events:
             get_event_q().put(e)
@@ -342,6 +350,7 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str)
     # Focused agent — created lazily on first focused task
     focused_agent = None
     while True:
+        task = None
         try:
             task = in_q.get()
             if task is None or task.get("type") == "shutdown":
@@ -367,7 +376,8 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str)
                 e2["worker_id"] = wid
                 out_q.put(e2)
         except Exception as _e:
-            _log_worker_crash(wid, _drive, "handle_task", _e, _tb.format_exc())
+            mode = task.get("conversation_mode", WORK) if isinstance(task, dict) else WORK
+            _log_worker_crash(wid, conversation_root(_drive, mode), "handle_task", _e, _tb.format_exc())
 
 
 def _log_worker_crash(wid: int, drive_root: pathlib.Path, phase: str, exc: Exception, tb: str) -> None:
@@ -553,15 +563,21 @@ def assign_tasks() -> None:
             if w.busy_task_id is None and PENDING and w.proc.is_alive():
                 # Find first suitable task (skip over-budget evolution tasks)
                 chosen_idx = None
+                personal_running = any(
+                    (meta.get("task") or {}).get("conversation_mode") == PERSONAL for meta in RUNNING.values()
+                )
                 for i, candidate in enumerate(PENDING):
+                    if personal_running and candidate.get("conversation_mode") == PERSONAL:
+                        continue
                     if str(candidate.get("type") or "") == "evolution" and budget_remaining(load_state()) < EVOLUTION_BUDGET_RESERVE:
                         continue
                     chosen_idx = i
                     break
                 if chosen_idx is None:
                     # Only over-budget evolution tasks remain — clean them out
-                    PENDING[:] = [t for t in PENDING if str(t.get("type") or "") != "evolution"]
-                    queue.persist_queue_snapshot(reason="evolution_dropped_budget")
+                    if any(t.get("type") == "evolution" for t in PENDING):
+                        PENDING[:] = [t for t in PENDING if t.get("type") != "evolution"]
+                        queue.persist_queue_snapshot(reason="evolution_dropped_budget")
                     continue
                 task = PENDING.pop(chosen_idx)
                 w.busy_task_id = task["id"]

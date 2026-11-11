@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ouroboros.memory_publication import MemoryWriteRefused, publish_memory_file
+from ouroboros.conversation import WORK, conversation_root
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import utc_now_iso, write_text, run_cmd
 
@@ -92,7 +93,7 @@ def _chat_history(
     message_id: str = "", text_offset: int = 0,
 ) -> str:
     from ouroboros.memory import Memory
-    mem = Memory(drive_root=ctx.drive_root)
+    mem = Memory(drive_root=conversation_root(ctx.drive_root, getattr(ctx, "conversation_mode", WORK)))
     if message_id:
         from ouroboros.chat_records import owner_chat_id, read_chat_message
         chat_id = ctx.current_chat_id or owner_chat_id(ctx.drive_root)

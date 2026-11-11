@@ -15,6 +15,7 @@ import requests
 
 from supervisor.state import load_state, save_state, append_jsonl
 from ouroboros.utils import sanitize_owner_facing_text
+from ouroboros.conversation import PERSONAL, WORK, conversation_root
 
 log = logging.getLogger(__name__)
 
@@ -409,13 +410,17 @@ def _send_markdown_telegram(chat_id: int, text: str) -> Tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 def send_with_budget(chat_id: int, text: str, *, force: bool = False,
-                     progress: bool = False, parse_mode: str = "") -> bool:
+                     progress: bool = False, parse_mode: str = "",
+                     conversation_mode: str = WORK) -> bool:
     """Send a message; increment budget counter; handle budget limit."""
     if not text or not str(text).strip():
         return False
     import pathlib
     tg = get_tg()
     drive = DRIVE_ROOT or pathlib.Path("/opt/veles-data")
+    history = conversation_root(drive, conversation_mode)
+    if conversation_mode == PERSONAL:
+        history.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     # --- sanitize ---
     text = sanitize_owner_facing_text(text)
@@ -436,7 +441,7 @@ def send_with_budget(chat_id: int, text: str, *, force: bool = False,
     # --- persist ---
     if not progress:
         append_jsonl(
-            drive / "logs" / "chat.jsonl",
+            history / "logs" / "chat.jsonl",
             {
                 "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "role": "out",
@@ -451,12 +456,15 @@ def send_with_budget(chat_id: int, text: str, *, force: bool = False,
     return True
 
 
-def log_chat(direction: str, chat_id: int, user_id: int, text: str) -> None:
+def log_chat(direction: str, chat_id: int, user_id: int, text: str, *, conversation_mode: str = WORK) -> None:
     """Log a chat message to chat.jsonl."""
     import pathlib
     drive = DRIVE_ROOT or pathlib.Path("/opt/veles-data")
+    history = conversation_root(drive, conversation_mode)
+    if conversation_mode == PERSONAL:
+        history.mkdir(mode=0o700, parents=True, exist_ok=True)
     append_jsonl(
-        drive / "logs" / "chat.jsonl",
+        history / "logs" / "chat.jsonl",
         {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "role": direction,

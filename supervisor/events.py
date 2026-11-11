@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 # Lazy imports to avoid circular dependencies — everything comes through ctx
 from ouroboros.artifacts import save_artifact
+from ouroboros.conversation import PERSONAL, WORK, conversation_root
 
 log = logging.getLogger(__name__)
 
@@ -89,11 +90,13 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
     try:
         is_progress = bool(evt.get("is_progress"))
         fmt = str(evt.get("format") or "")
+        mode = {"conversation_mode": PERSONAL} if evt.get("conversation_mode") == PERSONAL else {}
         ctx.send_with_budget(
             int(evt["chat_id"]),
             str(evt.get("text") or ""),
             progress=is_progress,
             parse_mode=fmt.upper() if fmt else "",
+            **mode,
         )
     except Exception as e:
         ctx.append_jsonl(
@@ -156,6 +159,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     task_id = evt.get("task_id")
     task_type = str(evt.get("task_type") or "")
     wid = evt.get("worker_id")
+    mode = evt.get("conversation_mode", WORK)
 
     running_meta = ctx.RUNNING.get(str(task_id)) if task_id else None
     if not isinstance(running_meta, dict):
@@ -288,7 +292,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     # Store task result for subtask retrieval
     try:
         from pathlib import Path
-        results_dir = Path(ctx.DRIVE_ROOT) / "task_results"
+        results_dir = conversation_root(Path(ctx.DRIVE_ROOT), mode) / "task_results"
         results_dir.mkdir(parents=True, exist_ok=True)
         # Only write if agent didn't already write (check if file exists)
         result_file = results_dir / f"{task_id}.json"
@@ -309,7 +313,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
 
     if task_id:
         from ouroboros.task_execution import settle_execution
-        settle_execution(ctx.DRIVE_ROOT, str(task_id))
+        settle_execution(ctx.DRIVE_ROOT, str(task_id), mode)
     ctx.persist_queue_snapshot(reason="task_done")
 
     # For focused tasks: enqueue a review task for the main agent
@@ -362,7 +366,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             or task_type in {"review"}
             or soft_sent
         )
-        if owner_chat_id and should_report and task_id:
+        if owner_chat_id and should_report and task_id and mode != PERSONAL:
             ctx.send_with_budget(
                 owner_chat_id,
                 _format_done_summary(str(task_id), task_type, runtime_sec, rounds, cost_usd,
@@ -447,12 +451,14 @@ def _find_duplicate_task(desc: str, pending: list, running: dict) -> Optional[st
     """
     existing = []
     for task in pending:
+        if task.get("conversation_mode") == PERSONAL:
+            continue
         text = str(task.get("text") or task.get("description") or "")
         if text.strip():
             existing.append({"id": task.get("id", "?"), "text": text[:200]})
     for task_id, meta in running.items():
         task_data = meta.get("task") if isinstance(meta, dict) else None
-        if not isinstance(task_data, dict):
+        if not isinstance(task_data, dict) or task_data.get("conversation_mode") == PERSONAL:
             continue
         text = str(task_data.get("text") or task_data.get("description") or "")
         if text.strip():

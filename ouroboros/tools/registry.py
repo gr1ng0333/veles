@@ -41,6 +41,7 @@ class ToolContext:
     pending_events: List[Dict[str, Any]] = field(default_factory=list)
     current_chat_id: Optional[int] = None
     current_task_type: Optional[str] = None
+    conversation_mode: str = "work"
     last_push_succeeded: bool = False
     emit_progress_fn: Callable[[str], None] = field(default=lambda _: None)
 

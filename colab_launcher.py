@@ -2,6 +2,7 @@
 import logging
 import os, sys, json, time, uuid, pathlib, subprocess, datetime, threading, queue as _queue_mod
 from collections import deque
+from functools import partial
 from typing import Any, Dict, List, Optional, Set, Tuple
 log = logging.getLogger(__name__)
 def install_launcher_deps() -> None:
@@ -181,14 +182,16 @@ git_ops_init(
     branch_dev=BRANCH_DEV, branch_stable=BRANCH_STABLE,
 )
 from supervisor.queue import (
-    enqueue_task, enforce_task_timeouts, enqueue_evolution_task_if_needed,
+    enqueue_task, enqueue_personal_chat, enforce_task_timeouts, enqueue_evolution_task_if_needed,
     persist_queue_snapshot, restore_pending_from_snapshot, snapshot_interrupted_work_info,
     cancel_task_by_id, queue_review_task, sort_pending,
 )
+from ouroboros.conversation import PERSONAL, WORK, conversation_root
+from supervisor.conversation_mode import select_conversation_mode
 from supervisor.workers import (
     init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
     spawn_workers, kill_workers, assign_tasks, ensure_workers_healthy,
-    handle_chat_direct, handle_post_restart_ack, _get_chat_agent, owner_message_allows_auto_resume_release,
+    handle_chat_direct, handle_post_restart_ack, make_chat_task, _get_chat_agent, owner_message_allows_auto_resume_release,
 )
 workers_init(
     repo_dir=REPO_DIR, drive_root=DRIVE_ROOT, max_workers=MAX_WORKERS,
@@ -665,6 +668,7 @@ while True:
         time.sleep(1.5)
         continue
     pending_updates = deque(updates)
+    mode_decisions = {}
     while pending_updates:
         upd = pending_updates.popleft()
         offset = int(upd["update_id"]) + 1
@@ -675,8 +679,16 @@ while True:
         from_user = msg.get("from") or {}
         user_id = int(from_user.get("id") or 0)
         text = str(msg.get("text") or "")
+        is_command = text.lstrip().startswith("/")
         caption = str(msg.get("caption") or "")
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        st = load_state()
+        owner_id = st.get("owner_id")
+        if owner_id is not None and user_id != int(owner_id):
+            continue
+        selected_mode = mode_decisions.pop(upd["update_id"], None)
+        owner_chat = str(chat_id) == str(st.get("owner_chat_id"))
+        current_personal = owner_chat and bool(st.get("personal_chat_active"))
         # Extract image/audio/file payload if present
         image_data = None  # Will be (base64, mime_type, caption) or None
         audio_kind = next((kind for kind in _TELEGRAM_AUDIO_PREFIXES if msg.get(kind)), None)
@@ -689,19 +701,17 @@ while True:
                 if b64:
                     image_data = (b64, mime, caption)
         elif audio_kind:
-            owner_id = load_state().get("owner_id")
             # First-contact registration below can run without downloading the recording.
             if owner_id is not None:
-                if user_id != int(owner_id):
-                    continue
+                audio_notice = partial(send_with_budget, progress=True) if current_personal else send_with_budget
                 audio_obj = msg[audio_kind]
                 file_id = str(audio_obj.get("file_id") or "")
                 if not file_id:
-                    send_with_budget(chat_id, "⚠️ Не удалось скачать голосовое из Telegram.")
+                    audio_notice(chat_id, "⚠️ Не удалось скачать голосовое из Telegram.")
                     continue
                 audio_b64, audio_mime = TG.download_file_base64(file_id, max_bytes=25_000_000)
                 if not audio_b64:
-                    send_with_budget(chat_id, "⚠️ Не удалось скачать голосовое из Telegram.")
+                    audio_notice(chat_id, "⚠️ Не удалось скачать голосовое из Telegram.")
                     continue
                 try:
                     tr = transcribe_telegram_audio(
@@ -716,11 +726,22 @@ while True:
                     if caption:
                         text = f"{caption}\n\n{text}"
                 except AudioTranscriptionError as e:
-                    send_with_budget(chat_id, f"⚠️ Не удалось распознать голосовое: {e}")
+                    audio_notice(chat_id, f"⚠️ Не удалось распознать голосовое: {e}")
                     continue
         elif msg.get("document"):
             doc = msg["document"]
-            text_override, doc_image_data, handled = _document_to_text_payload(doc, caption, TG, chat_id, DRIVE_ROOT, send_with_budget, int(msg.get("message_id") or 0))
+            selected_mode = select_conversation_mode(st, chat_id, caption, event_queue=get_event_q())
+            if selected_mode is None:
+                send_with_budget(chat_id, "Не удалось определить режим разговора. Повтори сообщение, пожалуйста.", progress=True)
+                continue
+            document_mode = PERSONAL if current_personal or selected_mode == PERSONAL else WORK
+            document_root = conversation_root(DRIVE_ROOT, document_mode)
+            if document_mode == PERSONAL:
+                document_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            text_override, doc_image_data, handled = _document_to_text_payload(
+                doc, caption, TG, chat_id, document_root,
+                partial(send_with_budget, conversation_mode=document_mode), int(msg.get("message_id") or 0),
+            )
             if not handled:
                 continue
             if text_override:
@@ -738,9 +759,22 @@ while True:
             continue
         if user_id != int(st.get("owner_id")):
             continue
-        log_chat("in", chat_id, user_id, text)
+        if selected_mode is None:
+            selected_mode = WORK if is_command else select_conversation_mode(
+                st, chat_id, text or caption, event_queue=get_event_q(),
+            )
+        if selected_mode is None:
+            send_with_budget(chat_id, "Не удалось определить режим разговора. Повтори сообщение, пожалуйста.", progress=True)
+            continue
+        mode = PERSONAL if (current_personal or selected_mode == PERSONAL) and not is_command else WORK
+        if owner_chat and not is_command:
+            st["personal_chat_active"] = selected_mode == PERSONAL
+        if mode == PERSONAL and image_data and not text:
+            text = caption
+        log_chat("in", chat_id, user_id, text, conversation_mode=mode)
         st["last_owner_message_at"] = now_iso
-        if bool(st.get("suppress_auto_resume_until_owner_message")) and owner_message_allows_auto_resume_release(text):
+        if (mode == WORK and st.get("suppress_auto_resume_until_owner_message")
+                and owner_message_allows_auto_resume_release(text)):
             st["suppress_auto_resume_until_owner_message"] = False
             append_jsonl(
                 DRIVE_ROOT / "logs" / "supervisor.jsonl",
@@ -753,7 +787,7 @@ while True:
         _last_message_ts = time.time()
         save_state(st)
         # --- Supervisor commands ---
-        if text.strip().lower().startswith("/"):
+        if is_command:
             try:
                 result = _handle_supervisor_command(text, chat_id, tg_offset=offset)
                 if result is True:
@@ -767,6 +801,11 @@ while True:
         # All other messages (and dual-path commands) → direct chat with Ouroboros
         if not text and not image_data:
             continue  # empty message, skip
+        if mode == PERSONAL:
+            task = make_chat_task(chat_id, text, image_data)
+            task["received_at"] = now_iso
+            enqueue_personal_chat(task)
+            continue
         # Feed observation to consciousness
         _consciousness.inject_observation(f"Owner message: {text[:100]}")
         agent = _get_chat_agent()
@@ -802,15 +841,24 @@ while True:
                 while pending_updates:
                     _upd = pending_updates[0]
                     _msg2 = _upd.get("message") or _upd.get("edited_message") or {}
-                    if any(_msg2.get(kind) for kind in _TELEGRAM_AUDIO_PREFIXES):
-                        # Let the main ingress authorize and transcribe it before advancing the offset.
+                    if any(_msg2.get(kind) for kind in (*_TELEGRAM_AUDIO_PREFIXES, "document", "photo")):
+                        # The main ingress routes media before any history write.
                         break
-                    pending_updates.popleft()
-                    offset = max(offset, int(_upd.get("update_id", offset - 1)) + 1)
                     _uid2 = (_msg2.get("from") or {}).get("id")
                     _cid2 = (_msg2.get("chat") or {}).get("id")
                     _txt2 = _msg2.get("text") or _msg2.get("caption") or ""
-                    if _uid2 and _batch_state.get("owner_id") and _uid2 == int(_batch_state["owner_id"]):
+                    _is_owner = _uid2 and _batch_state.get("owner_id") and _uid2 == int(_batch_state["owner_id"])
+                    if _is_owner:
+                        _mode2 = WORK if _txt2.lstrip().startswith("/") else select_conversation_mode(
+                            _batch_state, _cid2, _txt2, event_queue=get_event_q(),
+                        )
+                        if _mode2 != WORK:
+                            if _mode2 is not None:
+                                mode_decisions[_upd["update_id"]] = _mode2
+                            break
+                    pending_updates.popleft()
+                    offset = max(offset, int(_upd.get("update_id", offset - 1)) + 1)
+                    if _is_owner:
                         log_chat("in", _cid2, _uid2, _txt2)
                         _batch_state["last_owner_message_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
                         _batch_state_dirty = True
@@ -829,22 +877,6 @@ while True:
                         if _txt2:
                             _batched_texts.append(_txt2)
                             _batch_deadline = max(_batch_deadline, time.time() + 0.3)  # extend for burst
-                        if not _batched_image:
-                            _photo2 = (_msg2.get("photo") or [None])[-1] or {}
-                            _fid2 = _photo2.get("file_id")
-                            if _fid2:
-                                _b642, _mime2 = TG.download_file_base64(_fid2)
-                                if _b642 and _is_supported_image_mime(_mime2):
-                                    _batched_image = (_b642, _mime2, _txt2)
-                            elif _msg2.get("document"):
-                                _doc_text2, _doc_img2, _doc_handled2 = _document_to_text_payload(_msg2.get("document") or {}, _txt2, TG, _cid2, DRIVE_ROOT, send_with_budget, int(_msg2.get("message_id") or 0))
-                                if _doc_text2:
-                                    _batched_texts.append(_doc_text2)
-                                    _batch_deadline = max(_batch_deadline, time.time() + 0.3)
-                                if _doc_img2 and not _batched_image:
-                                    _batched_image = _doc_img2
-                                if not _doc_handled2:
-                                    continue
             # Save state once if mutated during batch window
             if _batch_state_dirty:
                 save_state(_batch_state)

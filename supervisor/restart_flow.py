@@ -10,6 +10,7 @@ import uuid
 from typing import Any, Dict
 
 from ouroboros.task_execution import atomic_json
+from ouroboros.conversation import WORK, conversation_root
 
 
 def _acknowledge_restart_request(root: pathlib.Path, evt: Dict[str, Any]) -> None:
@@ -18,7 +19,7 @@ def _acknowledge_restart_request(root: pathlib.Path, evt: Dict[str, Any]) -> Non
     if not isinstance(ts, str) or not ts:
         return
     task_id = evt.get("task_id")
-    directory = root / "state" / "task_execution"
+    directory = conversation_root(root, evt.get("conversation_mode", WORK)) / "state" / "task_execution"
     if task_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", str(task_id)):
         return
     # Old workers sent no task ID, including direct chats outside the queue.
