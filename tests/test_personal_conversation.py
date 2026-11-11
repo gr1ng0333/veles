@@ -95,15 +95,49 @@ def test_work_deduplication_does_not_send_personal_tasks_to_the_model(monkeypatc
     assert "рабочая задача" in prompt and "личная реплика" not in prompt
 
 
-def test_selector_uses_separate_model_request_and_respects_current_mode(monkeypatch):
-    client = Mock()
-    client.default_model.return_value = "codex/test"
-    client.chat.return_value = ({"content": "personal"}, {})
-    monkeypatch.setattr(conversation_mode, "LLMClient", lambda: client)
-    assert conversation_mode._classify("personal", "Спасибо, что выслушал.", None) == "personal"
-    args = client.chat.call_args.kwargs
-    assert args["reasoning_effort"] == "low"
-    assert "tools" not in args
-    assert json.loads(args["messages"][-1]["content"]) == {
-        "mode": "personal", "message": "Спасибо, что выслушал.",
-    }
+def test_ingress_reads_persistent_mode_without_model_calls():
+    state = {"owner_chat_id": 42, "personal_chat_active": True}
+    for text in ("", "вернёмся к Docker", "выключи личный режим"):
+        assert conversation_mode.select_conversation_mode(state, 42, text) == "personal"
+    assert conversation_mode.select_conversation_mode(state, 43, "hello") == "work"
+    assert state["personal_chat_active"] is True
+    state["personal_chat_active"] = False
+    assert conversation_mode.select_conversation_mode(state, 42, "личное") == "work"
+
+
+def test_main_dialogue_switch_is_persisted():
+    from queue import Queue
+    from ouroboros.tools.control import _set_conversation_mode
+    from supervisor.events import _handle_set_conversation_mode
+
+    events = Queue()
+    tool_ctx = SimpleNamespace(event_queue=events, current_chat_id=42)
+    state = {"owner_chat_id": 42}
+    ctx = SimpleNamespace(load_state=lambda: dict(state), save_state=lambda new: state.update(new))
+    for mode in ("personal", "work"):
+        _set_conversation_mode(tool_ctx, mode)
+        _handle_set_conversation_mode(events.get_nowait(), ctx)
+        assert conversation_mode.select_conversation_mode(state, 42, "anything") == mode
+
+
+def test_mode_switch_rejects_invalid_input():
+    import pytest
+    from ouroboros.tools.control import _set_conversation_mode
+    with pytest.raises(ValueError):
+        _set_conversation_mode(SimpleNamespace(event_queue=None), "invalid")
+    with pytest.raises(RuntimeError):
+        _set_conversation_mode(SimpleNamespace(event_queue=None), "personal")
+
+
+def test_background_and_foreign_chat_cannot_switch_mode():
+    import pytest
+    from queue import Queue
+    from ouroboros.tools.control import _set_conversation_mode
+    from supervisor.events import _handle_set_conversation_mode
+    with pytest.raises(RuntimeError):
+        _set_conversation_mode(SimpleNamespace(event_queue=Queue(), current_chat_id=None), "personal")
+    state = {"owner_chat_id": 42}
+    ctx = SimpleNamespace(load_state=lambda: dict(state), save_state=lambda new: state.update(new))
+    with pytest.raises(ValueError):
+        _handle_set_conversation_mode({"mode": "personal", "chat_id": 43}, ctx)
+    assert "personal_chat_active" not in state

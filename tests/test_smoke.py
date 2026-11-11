@@ -97,7 +97,7 @@ EXPECTED_TOOLS = [
     "chat_history", "update_scratchpad", "update_identity",
     "request_restart", "promote_to_stable", "request_review",
     "schedule_task", "cancel_task",
-    "switch_model", "toggle_evolution", "toggle_consciousness",
+    "switch_model", "toggle_evolution", "toggle_consciousness", "set_conversation_mode",
     "send_owner_message", "send_photo", "send_browser_screenshot", "save_artifact", "list_incoming_artifacts", "send_document", "send_local_file", "send_documents",
     "short_video_pack_download",
     "switch_codex_account",

@@ -731,9 +731,6 @@ while True:
         elif msg.get("document"):
             doc = msg["document"]
             selected_mode = select_conversation_mode(st, chat_id, caption, event_queue=get_event_q())
-            if selected_mode is None:
-                send_with_budget(chat_id, "Не удалось определить режим разговора. Повтори сообщение, пожалуйста.", progress=True)
-                continue
             document_mode = PERSONAL if current_personal or selected_mode == PERSONAL else WORK
             document_root = conversation_root(DRIVE_ROOT, document_mode)
             if document_mode == PERSONAL:
@@ -763,12 +760,7 @@ while True:
             selected_mode = WORK if is_command else select_conversation_mode(
                 st, chat_id, text or caption, event_queue=get_event_q(),
             )
-        if selected_mode is None:
-            send_with_budget(chat_id, "Не удалось определить режим разговора. Повтори сообщение, пожалуйста.", progress=True)
-            continue
         mode = PERSONAL if (current_personal or selected_mode == PERSONAL) and not is_command else WORK
-        if owner_chat and not is_command:
-            st["personal_chat_active"] = selected_mode == PERSONAL
         if mode == PERSONAL and image_data and not text:
             text = caption
         log_chat("in", chat_id, user_id, text, conversation_mode=mode)

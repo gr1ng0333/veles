@@ -339,6 +339,16 @@ def build_startup_sections(env: Any, memory: Memory, task: Dict[str, Any]) -> Li
         ("BIBLE.md", "## BIBLE.md\n\n" + _safe_read(env.repo_path("BIBLE.md"))),
         ("Skill map", _safe_read(env.repo_path("prompts/skills/_map.md"))),
     ]
+    static.append(("Conversation mode control", (
+        "## Conversation mode control\n\n"
+        "Decide conversation mode in this main dialogue, never through a separate classifier. "
+        "Use set_conversation_mode to enter personal conversation when appropriate; ask the owner "
+        "if their intent is unclear. Announce a switch naturally, without a mechanical status report. "
+        "Personal mode persists until the owner asks to leave it: topic changes alone do not end it. "
+        "Use mode=work when the owner asks to return. The switch affects subsequent messages; "
+        "the current task keeps its original history scope. No switch is needed just to respond warmly. "
+        f"Current task mode: {task.get('conversation_mode') or 'work'}."
+    )))
     if task.get("conversation_mode") == PERSONAL:
         static.append(("Personal conversation", (
             "## Personal conversation\n\n"

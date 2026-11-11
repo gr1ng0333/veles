@@ -23,6 +23,17 @@ _MEMORY_REVISION_ARG = {
 }
 
 
+def _set_conversation_mode(ctx: ToolContext, mode: str) -> str:
+    if mode not in ("work", "personal"):
+        raise ValueError("mode must be work or personal")
+    if not ctx.event_queue:
+        raise RuntimeError("Supervisor event queue unavailable; mode was not changed")
+    if not ctx.current_chat_id:
+        raise RuntimeError("Conversation mode can only change from an owner chat task")
+    ctx.event_queue.put({"type": "set_conversation_mode", "mode": mode, "chat_id": ctx.current_chat_id})
+    return f"Conversation mode change requested: {mode}. Applies to subsequent messages."
+
+
 def _request_restart(ctx: ToolContext, reason: str) -> str:
     if str(ctx.current_task_type or "") == "evolution" and not ctx.last_push_succeeded:
         return "⚠️ RESTART_BLOCKED: in evolution mode, commit+push first."
@@ -251,6 +262,14 @@ def _switch_codex_account(ctx: ToolContext, account_index: int = -1) -> str:
 
 def get_tools() -> List[ToolEntry]:
     return [
+        ToolEntry("set_conversation_mode", {
+            "name": "set_conversation_mode",
+            "description": "Switch the persistent owner conversation mode through the main dialogue. Tell the owner naturally. Personal stays active until the owner asks to leave; ask if intent is unclear. Applies to subsequent messages, not the running task's history.",
+            "parameters": {"type": "object", "properties": {
+                "mode": {"type": "string", "enum": ["work", "personal"]}
+            }, "required": ["mode"]},
+        }, _set_conversation_mode),
+
         ToolEntry("request_restart", {
             "name": "request_restart",
             "description": "Ask supervisor to restart runtime (after successful push).",

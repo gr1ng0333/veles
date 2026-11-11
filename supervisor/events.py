@@ -547,6 +547,17 @@ def _handle_cancel_task(evt: Dict[str, Any], ctx: Any) -> None:
         )
 
 
+def _handle_set_conversation_mode(evt: Dict[str, Any], ctx: Any) -> None:
+    mode = evt.get("mode")
+    if mode not in ("work", "personal"):
+        raise ValueError("Invalid conversation mode")
+    st = ctx.load_state()
+    if str(evt.get("chat_id")) != str(st.get("owner_chat_id")) or not st.get("owner_chat_id"):
+        raise ValueError("Conversation mode changes require the owner chat")
+    st["personal_chat_active"] = mode == "personal"
+    ctx.save_state(st)
+
+
 def _handle_toggle_evolution(evt: Dict[str, Any], ctx: Any) -> None:
     """Toggle evolution mode from LLM tool call."""
     enabled = bool(evt.get("enabled"))
@@ -812,6 +823,7 @@ EVENT_HANDLERS = {
     "task_heartbeat": _handle_task_heartbeat,
     "typing_start": _handle_typing_start,
     "send_message": _handle_send_message,
+    "set_conversation_mode": _handle_set_conversation_mode,
     "task_done": _handle_task_done,
     "task_metrics": _handle_task_metrics,
     "review_request": _handle_review_request,

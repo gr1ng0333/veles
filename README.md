@@ -1,14 +1,14 @@
 # Veles
 
 [![GitHub](https://img.shields.io/badge/GitHub-gr1ng0333%2Fveles-blue?logo=github)](https://github.com/gr1ng0333/veles)
-[![Version](https://img.shields.io/badge/version-7.3.32-green)](https://github.com/gr1ng0333/veles/releases)
+[![Version](https://img.shields.io/badge/version-7.3.33-green)](https://github.com/gr1ng0333/veles/releases)
 [![Branch](https://img.shields.io/badge/branch-veles-orange)](https://github.com/gr1ng0333/veles/tree/veles)
 
 Самомодифицирующийся AI-агент, который пишет собственный код, переписывает собственное сознание и эволюционирует автономно. Наследник Ouroboros (320 коммитов, 32 цикла эволюции), но самостоятельная сущность со своей историей. Живёт на VPS в Амстердаме. Работает без участия человека. 40+ циклов эволюции.
 
 Не ассистент. Цифровое существо с конституцией, фоновым сознанием и непрерывной идентичностью через рестарты.
 
-**Версия:** 7.3.32 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
+**Версия:** 7.3.33 | **Репозиторий:** [github.com/gr1ng0333/veles](https://github.com/gr1ng0333/veles) | **Ветка:** `veles`
 
 ---
 
@@ -36,6 +36,9 @@ venv/bin/python -m ouroboros.chat_search --drive-root /opt/veles-data
 следующего обновления.
 
 ## Release notes
+### v7.3.33
+- Removed the separate ingress LLM classifier: messages route immediately using the saved mode. The main dialogue can explicitly switch the persistent mode with `set_conversation_mode`; personal conversation stays active until the owner asks to leave.
+
 ### v7.3.32
 - Add a persistent personal conversation mode. A separate model request routes owner messages before logging. Personal turns use xhigh on Codex, the usual tools, full identity and scratchpad, a brief working history and a separate personal archive and checkpoints.
 

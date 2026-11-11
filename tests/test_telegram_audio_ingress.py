@@ -130,34 +130,15 @@ def test_voice_after_text_burst_is_handled_even_if_transcription_fails(tmp_path)
     send.assert_called_once_with(10, "⚠️ Не удалось распознать голосовое: provider timed out")
 
 
-def test_natural_mode_changes_route_first_and_last_personal_turns(tmp_path):
-    working = "Проверь статус ветки."
-    opening = "Есть кое-что личное, что хотелось бы с тобой обсудить."
-    followup = "Спасибо, ещё хочу рассказать про вчера."
-    closing = "На сегодня хватит, вернёмся к обычным делам."
-    next_work = "Теперь покажи состояние сборки."
-    texts = [working, opening, followup, closing, next_work]
-    updates = [
-        {"update_id": index, "message": {"text": text, "chat": {"id": 10}, "from": {"id": 10}}}
-        for index, text in enumerate(texts, 1)
-    ]
-    replies = {1: updates[:1], 2: updates[1:], 6: []}
-    tg = SimpleNamespace(get_updates=Mock(side_effect=lambda *, offset, timeout: replies[offset]))
-    seen = []
+def test_mode_requests_reach_main_flow_without_ingress_classification(tmp_path):
+    from supervisor.conversation_mode import select_conversation_mode
 
-    def select(state, chat_id, text, **kwargs):
-        seen.append((bool(state.get("personal_chat_active")), text))
-        return PERSONAL if text in (opening, followup) else WORK
-
-    logged = Mock()
-    personal = Mock()
+    texts = ["Давай поговорим лично", "Вернёмся к работе"]
+    updates = [{"update_id": i, "message": {"text": text, "chat": {"id": 10}, "from": {"id": 10}}}
+               for i, text in enumerate(texts, 1)]
+    tg = SimpleNamespace(get_updates=Mock(side_effect=[updates, []]))
     state, dispatched, _ = _run_launcher_poll(
-        tmp_path, tg, 10, Mock(), selector=select, logged=logged, personal=personal,
+        tmp_path, tg, 10, Mock(), selector=select_conversation_mode,
     )
-    assert [call.args[0]["text"] for call in personal.call_args_list] == [opening, followup, closing]
-    assert dispatched == [working, next_work]
-    assert [call.kwargs["conversation_mode"] for call in logged.call_args_list] == [
-        WORK, PERSONAL, PERSONAL, PERSONAL, WORK,
-    ]
-    assert seen == [(False, working), (False, opening), (True, followup), (True, closing), (False, next_work)]
-    assert state["personal_chat_active"] is False
+    assert dispatched == texts
+    assert not state.get("personal_chat_active")
